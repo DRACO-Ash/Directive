@@ -163,22 +163,31 @@ def verification_keys() -> dict[str, bytes]:
     A configuration fault must announce itself as a configuration fault.
     """
     result: dict[str, bytes] = {}
-    for pair in read_verbatim("AUDIT_RETIRED_KEYS").split(";"):
+    for position, pair in enumerate(read_verbatim("AUDIT_RETIRED_KEYS").split(";"), start=1):
         if not pair:
             continue
+        # The pair IS the secret, so no branch below may echo it, and none may echo the
+        # identifier either, since a mistyped separator makes the whole key the identifier.
+        # This message used to interpolate the raw pair, so an operator who pasted the key
+        # without its prefix, or typed a space for the colon, put full key material into an
+        # exception that the first caller to log it would write to the container log. The
+        # module already omits even the LENGTH of a key from an error for the same reason.
         identifier, separator, secret = pair.partition(":")
         if not separator:
             raise AuditKeyError(
-                f"AUDIT_RETIRED_KEYS holds {pair!r}, which is not an `id:key` pair. "
-                f"Separate pairs with a semicolon."
+                f"AUDIT_RETIRED_KEYS entry {position} is not an `id:key` pair. Separate "
+                f"pairs with a semicolon. The value is not repeated here because it may be "
+                f"key material."
             )
         try:
             checked = check_key_id(identifier)
-        except AuditFieldError as error:
+        except AuditFieldError:
             raise AuditKeyError(
-                f"AUDIT_RETIRED_KEYS holds an unusable identifier: {error}"
-            ) from error
-        result[checked] = _key_from(f"AUDIT_RETIRED_KEYS[{checked}]", secret)
+                f"AUDIT_RETIRED_KEYS entry {position} has an unusable identifier: it must "
+                f"be 1 to 32 characters of letters, digits, underscore or hyphen. The value "
+                f"is not repeated here because it may be key material."
+            ) from None
+        result[checked] = _key_from(f"AUDIT_RETIRED_KEYS entry {position}", secret)
 
     if os.environ.get("AUDIT_HMAC_KEY"):
         result[key_id()] = signing_key()

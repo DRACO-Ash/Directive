@@ -251,3 +251,31 @@ def test_the_distinct_byte_floor_is_enforced_at_the_boundary_in_both_directions(
     monkeypatch.setenv("AUDIT_HMAC_KEY", below.hex())
     with pytest.raises(keys.AuditKeyError, match="real key material"):
         keys.signing_key()
+
+
+@pytest.mark.parametrize(
+    ("label", "template"),
+    [
+        ("the key pasted without its id prefix", "{key}"),
+        ("a space where the colon should be", "k0 {key}"),
+        ("an unusable identifier", "k 0:{key}"),
+    ],
+)
+def test_a_malformed_retired_pair_never_echoes_the_key(
+    monkeypatch: pytest.MonkeyPatch, label: str, template: str
+) -> None:
+    """The pair IS the secret, so no error message may repeat it.
+
+    The message used to interpolate the raw pair, so an operator who pasted the key without
+    its prefix put full key material into an exception that the first caller to log it
+    would write to the container log.
+    """
+    key = bytes(range(64, 96)).hex()
+    monkeypatch.setenv("AUDIT_RETIRED_KEYS", template.format(key=key))
+    with pytest.raises(keys.AuditKeyError) as raised:
+        keys.verification_keys()
+
+    message = str(raised.value)
+    assert key not in message, f"{label}: the key leaked into the message"
+    assert key[:16] not in message, f"{label}: a prefix of the key leaked"
+    assert "entry 1" in message, "the operator still needs to know which entry is at fault"

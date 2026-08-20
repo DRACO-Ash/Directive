@@ -162,3 +162,22 @@ def test_is_hash_rejects_uppercase_short_and_non_string_values() -> None:
 def test_hashes_are_compared_in_constant_time() -> None:
     assert hashing.hashes_equal("f" * 64, "f" * 64)
     assert not hashing.hashes_equal("f" * 64, "e" * 64)
+
+
+@pytest.mark.parametrize("hostile", [None, 7, b"bytes", ["a"], {"a": 1}])
+def test_a_non_string_field_value_fails_closed_in_the_hasher(hostile: object) -> None:
+    """Type is the one rule the hash path still enforces, and it must stay.
+
+    The required-field rule was deliberately removed from here, because enforcing today's
+    rules inside the digest made tightened history read as tampering. Type is different: a
+    non-string cannot be length-prefixed at all, so hashing a guess is the only alternative.
+    """
+    fields = dict(fixed_entry())
+    fields["user_agent"] = hostile  # type: ignore[assignment]
+    with pytest.raises(hashing.AuditHashError, match="missing the 'user_agent' field"):
+        hashing.canonical_payload(fields, TEST_KEY_ID)  # type: ignore[arg-type]
+
+
+def test_the_key_identifier_must_be_a_string_too() -> None:
+    with pytest.raises(hashing.AuditHashError, match="missing the 'key_id' field"):
+        hashing.canonical_payload(fixed_entry(), None)  # type: ignore[arg-type]

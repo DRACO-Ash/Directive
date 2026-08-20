@@ -346,13 +346,61 @@ def test_the_anchor_tracks_the_head_the_length_and_the_key() -> None:
     assert chain.anchor() == Anchor(head=entries[2].entry_hash, length=3, key_id=TEST_KEY_ID)
 
 
-def test_an_entry_that_cannot_be_re_hashed_reports_a_break_rather_than_raising() -> None:
-    """An empty covered field passes the shape checks and then defeats the hasher."""
+def test_an_emptied_required_field_reports_a_digest_mismatch() -> None:
+    """The hash path no longer enforces the required set, so this is a normal mismatch.
+
+    It used to raise out of the hasher, which the verifier then reported as
+    "could not be re-hashed". That was a problem in the other direction: tightening the
+    required set made untouched history raise the same way and read as tampering, against
+    the rule that history under looser rules must never do so.
+    """
     chain, entries = build(1)
     entries[0] = dataclasses.replace(entries[0], actor="")
     verdict = verify_log(entries, KEYS, chain.anchor())
     assert not verdict.ok
-    assert "could not be re-hashed" in (verdict.reason or "")
+    assert verdict.tampered
+    assert "recomputed hash does not match" in (verdict.reason or "")
+
+
+def test_a_field_missing_altogether_still_fails_closed_in_the_hasher() -> None:
+    """Absence is not emptiness: it would shift every later field in the payload.
+
+    So it stays fail-closed inside the hash path regardless of the required-field rule.
+    """
+    from complyops.audit.hashing import AuditHashError, entry_hash  # noqa: PLC0415
+
+    fields = fixed_entry()
+    del fields["user_agent"]
+    with pytest.raises(AuditHashError, match="missing the 'user_agent' field"):
+        entry_hash(GENESIS_HASH, fields, key=TEST_KEY, key_id=TEST_KEY_ID)
+
+
+def test_tightening_the_required_set_reports_a_rule_failure_not_tampering() -> None:
+    """The hard rule this protects: history under looser rules never reads as tampered.
+
+    Enforcing the required set inside the hash path made `entry_hash` raise on
+    legitimately written entries the moment the set grew, and the verifier called that
+    "chain broken".
+    """
+    from complyops.audit import hashing, validation  # noqa: PLC0415
+
+    chain, entries = build(1)
+    assert verify_log(entries, KEYS, chain.anchor()).ok
+
+    original_required = validation.REQUIRED_FIELDS
+    original_hashed = hashing._REQUIRED_NON_EMPTY
+    try:
+        validation.REQUIRED_FIELDS = (*original_required, "outcome")
+        hashing._REQUIRED_NON_EMPTY = original_hashed | {"outcome"}
+        verdict = verify_log(entries, KEYS, chain.anchor())
+    finally:
+        validation.REQUIRED_FIELDS = original_required
+        hashing._REQUIRED_NON_EMPTY = original_hashed
+
+    assert not verdict.ok
+    assert verdict.invalid_under_current_rules
+    assert not verdict.tampered
+    assert "its digest is unbroken" in verdict.summary()
 
 
 def test_a_key_rotation_does_not_make_untampered_evidence_read_as_tampered() -> None:
@@ -426,11 +474,11 @@ def test_the_archive_boundary_survives_a_prune_a_restart_and_an_append(tmp_path:
     ever than the stored one, the write was refused, and the audit path wedged.
     """
     chain, entries = build(10)
-    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY)
+    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY, KEYS)
 
     # Prune to the newest four, archiving six.
     pruned = chain.anchor().after_prune(kept=4, pruned_head=entries[5].entry_hash)
-    write_anchor(str(tmp_path), pruned, TEST_KEY)
+    write_anchor(str(tmp_path), pruned, TEST_KEY, KEYS)
 
     # Restart: a fresh process reads the anchor and rebuilds the chain from it.
     anchor_module.reset_high_water_mark()
@@ -447,7 +495,7 @@ def test_the_archive_boundary_survives_a_prune_a_restart_and_an_append(tmp_path:
     assert advanced.pruned_head == entries[5].entry_hash, "the boundary must be carried"
 
     # And the advanced anchor is a legitimate write, not a regression.
-    write_anchor(str(tmp_path), advanced, TEST_KEY)
+    write_anchor(str(tmp_path), advanced, TEST_KEY, KEYS)
 
     active = [*entries[6:], eleventh]
     verdict = verify_log(active, KEYS, advanced)
@@ -501,3 +549,103 @@ def test_a_fully_pruned_log_verifies_as_empty() -> None:
     verdict = verify_log([], KEYS, pruned)
     assert verdict.ok, verdict.summary()
     assert (pruned.length, pruned.total_length) == (0, 5)
+
+
+def test_pruning_a_live_chain_keeps_the_boundary_without_a_restart(tmp_path: Path) -> None:
+    """The annual prune AUD-001 mandates runs as a job inside the serving process.
+
+    The chain object has to be told, not just the anchor. Pruning the anchor beside a live
+    chain left the chain believing it still held every entry: the next append produced an
+    anchor with the archived entries and the boundary gone, the regression guard permitted
+    it because the total had risen, and the genuine active log then verified as tampered.
+    Six entries of evidence lost with no alarm and no attacker.
+    """
+    chain, entries = build(10)
+    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY, KEYS)
+
+    moved = chain.prune(kept=4, pruned_head=entries[5].entry_hash)
+    write_anchor(str(tmp_path), moved, TEST_KEY, KEYS)
+
+    eleventh = chain.append(fixed_entry(11))
+    advanced = chain.anchor()
+    assert advanced.length == 5
+    assert advanced.total_length == 11
+    assert advanced.archived_length == 6
+    assert advanced.pruned_head == entries[5].entry_hash
+
+    write_anchor(str(tmp_path), advanced, TEST_KEY, KEYS)
+    verdict = verify_log([*entries[6:], eleventh], KEYS, advanced)
+    assert verdict.ok, verdict.summary()
+    assert not verdict.tampered
+    assert not verify_log(entries[7:], KEYS, advanced).ok
+
+
+def test_pruning_is_serialised_against_a_concurrent_append() -> None:
+    """The move and an append must not interleave, or the head forks."""
+    chain, entries = build(6)
+    results: list[object] = []
+
+    def appender() -> None:
+        results.append(chain.append(fixed_entry(20)))
+
+    def pruner() -> None:
+        results.append(chain.prune(kept=3, pruned_head=entries[2].entry_hash))
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-9)
+    try:
+        threads = [threading.Thread(target=appender), threading.Thread(target=pruner)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(previous)
+
+    final = chain.anchor()
+    assert final.total_length == 7, "the append is counted whichever order they ran in"
+    assert final.archived_length == final.total_length - final.length
+    assert final.archived_length >= 0
+
+
+def test_a_no_op_prune_leaves_the_anchor_untouched() -> None:
+    """Nothing archived means no new boundary.
+
+    Accepting the caller's digest here wrote an anchor claiming a non-genesis boundary with
+    zero archived entries, which is incoherent, was refused nowhere, and made an untouched
+    log verify as tampered.
+    """
+    chain, entries = build(3)
+    before = chain.anchor()
+    assert chain.prune(kept=3, pruned_head="d" * 64) == before
+    assert chain.anchor() == before
+    assert verify_log(entries, KEYS, chain.anchor()).ok
+
+
+def test_an_entry_missing_a_covered_field_reports_a_break_rather_than_raising() -> None:
+    """Absence still fails closed inside the hasher, and the verifier converts it.
+
+    A verdict for every input including a hostile one, so a row with a field removed
+    outright is reported, never raised.
+    """
+    chain, entries = build(1)
+    broken = _EntryMissingAField(entries[0])
+    verdict = verify_log([broken], KEYS, chain.anchor())  # type: ignore[list-item]
+    assert not verdict.ok
+    assert "could not be re-hashed" in (verdict.reason or "")
+
+
+class _EntryMissingAField:
+    """An entry whose covered fields are incomplete, as a hostile store might return."""
+
+    def __init__(self, real: object) -> None:
+        self._real = real
+        self.key_id = real.key_id
+        self.previous_hash = real.previous_hash
+        self.entry_hash = real.entry_hash
+
+    def covered_fields(self) -> dict[str, str]:
+        """Return the covered fields with one removed."""
+        fields = self._real.covered_fields()
+        del fields["user_agent"]
+        return fields

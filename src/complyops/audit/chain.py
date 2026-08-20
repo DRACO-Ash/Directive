@@ -10,8 +10,9 @@ Appending is serialised under a lock. The head read, the digest, the head advanc
 the length increment are one critical section: without the lock, two concurrent appends
 read the same head, and the log then fails its own verification with no tampering at
 all. A false tamper alarm on the evidence an assessor is shown is worse than no control.
-The lock covers this process only, and the persistent write is the remaining gap: see
-the note on that in `append`.
+The lock covers this process only, and the persistent write is the remaining gap: see the
+note on that in `append`. The container runs two gunicorn workers, so nothing here is
+shared between them yet.
 """
 
 from __future__ import annotations
@@ -36,17 +37,22 @@ from .validation import AuditFieldError, check_key_id, normalise_fields
 class AuditEntry:
     """One immutable audit-log row.
 
-    The field set is the AUD-001 Audit Log Scope table in one fixed shape. ``resource_id``
-    is the identifier of the record acted on, for example an incident reference. Fields
-    that do not apply to an event are empty rather than absent, so the digest covers a
-    fixed shape.
+        The field set is the AUD-001 Audit Log Scope table in one fixed shape. ``resource_id``
+        is the identifier of the record acted on, for example an incident reference. Fields
+        that do not apply to an event are empty rather than absent, so the digest covers a
+        fixed shape.
 
-    No field holds a credential, a session token, or the content of a record. ``actor``,
-    ``source_ip`` and ``user_agent`` are personal data, collected deliberately under
-    legitimate interest per POL-002 section 03. ``fields_changed`` names the fields a
-    change touched and never their values; ``old_state`` and ``new_state`` carry an
-    enumerated workflow state under a character rule that cannot hold record content.
-    ``key_id`` names the signing key, so history stays verifiable across a rotation.
+    No field should hold a credential, a session token, or the content of a record, and
+        the boundary rules in ``validation`` enforce that for the SHAPES record content
+        usually takes rather than for record content itself. ``resource``, ``resource_id``,
+        ``actor`` and ``user_agent`` are free-form within printable ASCII and a byte cap, so a
+        caller that puts a clinical note in ``resource`` will succeed. Caller discipline is
+        load-bearing; the rules narrow the surface, they do not close it.
+
+        ``actor``, ``source_ip`` and ``user_agent`` are personal data, collected deliberately
+        under legitimate interest per POL-002 section 03. ``fields_changed`` names the fields a
+        change touched and never their values. ``key_id`` names the signing key, so history
+        stays verifiable across a rotation.
     """
 
     timestamp: str
@@ -179,6 +185,33 @@ class AuditChain:
             self._tail_key_id = self._key_id
         return entry
 
+    def prune(self, kept: int, pruned_head: str) -> Anchor:
+        """Move all but the newest ``kept`` active entries into the archive.
+
+        The chain object must be told, not just the anchor. AUD-001 prunes annually and
+        that runs as a job inside the serving process, so an anchor pruned beside a live
+        chain left the chain still believing it held every entry: the next append produced
+        an anchor with the archived entries and the boundary gone, the regression guard
+        permitted it because the total had risen, and the genuine active log then verified
+        as tampered. Six entries of evidence lost with no alarm and no attacker.
+
+        Returns the new anchor to write. The caller writes it; this method only moves the
+        chain's own view, under the same lock as an append so a concurrent append cannot
+        interleave with the move.
+        """
+        with self._lock:
+            current = Anchor(
+                head=self.head,
+                length=self.length,
+                key_id=self._tail_key_id,
+                total_length=self._total_length,
+                pruned_head=self._pruned_head,
+            )
+            moved = current.after_prune(kept, pruned_head)
+            self.length = moved.length
+            self._pruned_head = moved.pruned_head
+            return moved
+
     def anchor(self) -> Anchor:
         """Return the anchor describing where the log should now end.
 
@@ -208,7 +241,7 @@ def _break(index: int, reason: str, entry: AuditEntry | None = None) -> ChainVer
 def _check_link(index: int, entry: AuditEntry, expected_previous: str) -> ChainVerdict | None:
     """Check the entry's shape and its link to the preceding entry."""
     if not is_hash(entry.previous_hash) or not is_hash(entry.entry_hash):
-        # The two hash columns are exactly what an actor with item-edit rights on the list
+        # The two hash columns are exactly what an actor with write access to the log
         # can type into, so a non-digest value must produce a verdict, never an exception.
         return _break(
             index,

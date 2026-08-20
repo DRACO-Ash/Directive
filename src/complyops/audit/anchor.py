@@ -114,6 +114,17 @@ def _record_length(data_dir: str, length: int) -> None:
             _high_water[resolved] = length
 
 
+def _set_length(data_dir: str, length: int) -> None:
+    """Set the mark exactly, for a deliberate operator re-anchor.
+
+    `_record_length` only ever raises the mark, so after a re-anchor from 9 to 4 the next
+    legitimate write of 5 was refused and the audit path wedged. Since no register write
+    may happen without an audit entry, that took the whole write path down.
+    """
+    with _high_water_lock:
+        _high_water[_key(data_dir)] = length
+
+
 def _seen_length(data_dir: str) -> int:
     """Return the highest length seen for a data directory, or -1."""
     with _high_water_lock:
@@ -161,6 +172,11 @@ class Anchor:
                 f"an anchor cannot record {self.total_length} entries ever while holding "
                 f"{self.length} active: refusing to build one that could never be read back"
             )
+        if self.total_length == self.length and self.pruned_head != GENESIS_HASH:
+            raise AnchorError(
+                "an anchor with nothing archived must carry the genesis boundary: a "
+                "non-genesis boundary with no archived entries is incoherent"
+            )
 
     @property
     def archived_length(self) -> int:
@@ -179,6 +195,12 @@ class Anchor:
         what the remaining active log chains from. ``total_length`` does not move: the
         entries left the active log, not the chain.
         """
+        if kept == self.length:
+            # Nothing is archived, so there is no new boundary. Accepting the caller's
+            # digest here wrote an anchor claiming a non-genesis boundary with zero
+            # archived entries, which is incoherent, was refused nowhere, and made an
+            # untouched log verify as tampered.
+            return self
         if kept < 0 or kept > self.length:
             raise AnchorError(
                 f"cannot keep {kept} of {self.length} active entries: pruning removes "
@@ -279,27 +301,32 @@ def write_anchor(
     data_dir: str,
     anchor: Anchor,
     key: bytes,
+    keys: Mapping[str, bytes],
     *,
     allow_shortening: bool = False,
-    keys: Mapping[str, bytes] | None = None,
 ) -> None:
     """Write the anchor atomically and durably, refusing to shorten the record.
 
-    A shorter length than the one already recorded destroys the durable head irrecoverably,
-    which is worse than any read-time control can repair. Pass ``allow_shortening`` only
-    for a deliberate operator re-anchor.
+    A shorter total than the one already recorded destroys the durable record
+    irrecoverably, which is worse than any read-time control can repair.
+
+    ``keys`` is every key still held, and it is POSITIONAL AND REQUIRED. It was briefly an
+    optional keyword defaulting to the signing key alone, which meant the rotation fix
+    applied only when a caller remembered to opt in: omit it after a rotation and a
+    shortening write was accepted. That is the same fail-open default that `verify_log` and
+    `AuditChain` had their anchors made positional and required to remove, and it does not
+    get to survive here.
+
+    Pass ``allow_shortening`` only for a deliberate operator re-anchor; it also lowers the
+    in-process high-water mark, so the next ordinary write is not then refused.
     """
     target = anchor_path(data_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if not allow_shortening:
-        _refuse_regression(data_dir, anchor, keys or {"": key})
+        _refuse_regression(data_dir, anchor, keys)
 
     document = anchor.as_json(key)
-    # The marker goes down BEFORE the rename, so an anchor can never exist without one: a
-    # kill in that window used to leave an anchor whose deletion then read as a fresh
-    # install, silently disarming the alarm.
-    marker_path(data_dir).write_text(_marker_tag(data_dir, key), encoding="utf-8")
 
     # A unique temp name in the SAME directory: a shared fixed name is not atomic across
     # writers, and a rename is only atomic within one filesystem.
@@ -313,8 +340,18 @@ def write_anchor(
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+    # The marker goes down AFTER the anchor, and as durably. Before was worse in both
+    # directions: a failed anchor write left a marker on a virgin volume, so the next read
+    # raised "it was deleted" and wedged the audit path; and a plain non-fsynced write left
+    # a zero-length marker beside a durable anchor, so deleting the anchor then read as a
+    # fresh install, which is the alarm the ordering existed to protect. "Anchor present,
+    # marker absent" is now repaired on read rather than treated as evidence.
+    _write_marker(data_dir, key)
     _fsync_directory(target.parent)
-    _record_length(data_dir, anchor.total_length)
+    if allow_shortening:
+        _set_length(data_dir, anchor.total_length)
+    else:
+        _record_length(data_dir, anchor.total_length)
 
 
 def _refuse_regression(data_dir: str, anchor: Anchor, keys: Mapping[str, bytes]) -> None:
@@ -326,9 +363,15 @@ def _refuse_regression(data_dir: str, anchor: Anchor, keys: Mapping[str, bytes])
     was treated as no evidence of a longer log, and a shortening write was accepted.
     """
     floor = _seen_length(data_dir)
-    stored = _read_stored(data_dir, keys, strict=False)
-    if stored is not None:
-        floor = max(floor, stored.total_length)
+    if anchor_path(data_dir).exists():
+        # Strict: an anchor that exists but authenticates under no held key is evidence of
+        # a record, not the absence of one. Reading it leniently collapsed "there is no
+        # anchor" and "there is one I cannot authenticate" into the same answer, and the
+        # second is exactly the state the alarm exists for. An operator who genuinely needs
+        # to write over it has `allow_shortening`.
+        stored = _read_stored(data_dir, keys, strict=True)
+        if stored is not None:
+            floor = max(floor, stored.total_length)
     total = anchor.total_length
     if total < floor:
         raise AnchorError(
@@ -342,6 +385,21 @@ def _refuse_regression(data_dir: str, anchor: Anchor, keys: Mapping[str, bytes])
 def _is_count(value: object) -> TypeGuard[int]:
     """Return whether a value is a usable non-negative count, refusing booleans."""
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _write_marker(data_dir: str, key: bytes) -> None:
+    """Write the first-use marker atomically and durably, like the anchor itself."""
+    target = marker_path(data_dir)
+    handle, temporary = tempfile.mkstemp(dir=str(target.parent), prefix=".marker-", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(_marker_tag(data_dir, key))
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(temporary).replace(target)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -362,10 +420,20 @@ def read_anchor(data_dir: str, keys: Mapping[str, bytes]) -> Anchor | None:
     deletion alarm.
 
     ``None`` means only "this volume holds no anchor". It is NOT proof the log is empty:
-    an attacker with volume write access can delete the anchor and the marker together.
-    The caller must corroborate against the list before treating it as a fresh install.
+    an attacker with volume write access can delete the anchor and the marker together. The
+    caller must corroborate against the last exported evidence pack before treating it as a
+    fresh install.
     """
     anchor = _read_stored(data_dir, keys, strict=True)
+    if anchor is not None and not _marker_is_valid(data_dir, keys):
+        # The anchor is the evidence; the marker only records that a log exists. A missing
+        # or truncated marker beside a genuine anchor is a crash artefact, so repair it
+        # rather than raising: raising here would wedge the audit path over a control that
+        # the anchor itself already satisfies.
+        for candidate in keys.values():
+            if candidate:
+                _write_marker(data_dir, candidate)
+                break
     if anchor is None:
         if _marker_is_valid(data_dir, keys):
             raise AnchorError(
@@ -407,7 +475,16 @@ def _parse_stored(target: Path, keys: Mapping[str, bytes]) -> Anchor | None:
 
 
 def _check_not_rolled_back(target: Path, data_dir: str, length: int) -> None:
-    """Refuse an anchor shorter than one already seen in this process."""
+    """Refuse an anchor recording fewer entries ever than one already seen in this process.
+
+    The total is the only component that can be guarded here. The active length and the
+    head both fall legitimately on every prune, so refusing a fall in either would refuse
+    the annual prune AUD-001 requires. That leaves a real gap, stated rather than implied:
+    an actor who replaces a genuine anchor with an older genuine one of the SAME total but
+    a shorter active log is not caught by this check. See the residual risk in
+    `docs/DEPLOYMENT.md`, and note the mark is per process while the container runs two
+    workers, so it is not shared between them.
+    """
     seen = _seen_length(data_dir)
     if length < seen:
         raise AnchorError(

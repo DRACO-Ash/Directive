@@ -118,7 +118,7 @@ and that gap is recorded rather than assumed closed.
 | --- | --- | --- |
 | AUD-001, SHA-256 hash over timestamp, user, action, resource | **Exceeded.** HMAC-SHA256 under a server-held key, over the full AUD-001 event field set, chained to the previous entry. Deviation recorded for the Managing Director's sign-off. | `src/complyops/audit/hashing.py`, golden vector in `tests/test_audit_hashing.py` |
 | AUD-001, write-once from the application's perspective | **Met by design, not yet implemented.** `AuditChain.append` is the only path that produces an entry and it never updates or deletes, but nothing persists an entry yet, so this is a property of code that does not exist. | `AuditChain.append` |
-| AUD-001, event field set (all seven categories) | **Met**, in one fixed shape rather than one per category, because a digest over a varying field set cannot be verified without knowing the variant. | `FIELD_ORDER`, `tests/test_audit_validation.py` |
+| AUD-001, event field set | **Met for four categories, deviated for three.** One fixed shape rather than one per category, because a digest over a varying field set cannot be verified without knowing the variant. Authentication, Task management, Register operations and Audit export map onto `FIELD_ORDER` directly. Incident management and Administration are covered by the old-and-new-value deviation below. **Form submissions asks for "key field values" and no field can carry a value**, so that clause is unimplementable under the same decision and is recorded as a deviation in its own right, not covered by the row below. | `FIELD_ORDER`, `policy/AUD-001-audit-controls.md` |
 | AUD-001, old and new value of a changed field | **Deviated, deliberately, and the deviation is weaker than first claimed.** Field NAMES only in `fields_changed`, capped at 128 bytes; an enumerated workflow state in `old_state` and `new_state` under a character rule that rejects the common SHAPES of record content (a space, lower case, an `@`, over 32 characters) but does not make it impossible: a single upper-case token such as `HIGGINS` or `SW1A1AA` satisfies it. A closed state vocabulary would be structural and is not yet definable, because the real state set is not knowable until the records module. Caller discipline is load-bearing in the meantime. Ash's decision, recorded for sign-off; the vocabulary is `TBC, re-verify`. | `src/complyops/audit/validation.py` |
 | AUD-001, 24-month active retention, annual CSV export, annual pruning | **Met by design, not yet implemented.** The anchor records the archive boundary, the chain carries it across an append, and `verify_log` walks from it, so a pruned active log verifies rather than reading as tampered. The export and prune procedure itself lands with the export module. | `Anchor.after_prune`, `test_the_archive_boundary_survives_a_prune_a_restart_and_an_append` |
 | AUD-001, Q-06 quarterly hash verification on a sample | **Mechanism met, procedure open.** `verify_sample` is the sampling entry point and cannot report a truncation, by construction; `verify_log` verifies the whole ACTIVE log and requires the anchor. There is no scheduler, no runbook step, and no caller, so the quarterly activity itself is not yet real. | `src/complyops/audit/chain.py` |
@@ -158,3 +158,27 @@ proves the entries were internally consistent and nothing about whether any were
 `TBC, re-verify` the cadence with the ISM. The audit log review rhythm in AUD-001 is
 weekly, monthly and quarterly, so a weekly export aligned to task W-01 is the obvious
 candidate and is not yet agreed.
+
+## Deferred by design, and why each one cannot be finished here
+
+Five controls in the audit module are deliberately incomplete. Each is blocked on a module
+that does not exist yet, and each was attempted inside this slice and produced a worse
+result than declaring it. They are listed here so a reviewer can tell a deferral from an
+oversight, and so nobody closes one by adding another file to the same volume.
+
+| Control | Why it cannot be finished here | Lands with |
+| --- | --- | --- |
+| Anchor corroboration against an off-volume store | The anchor lives on the volume, so an actor who can write the volume can delete it and anything placed beside it to notice. Two attempts (an authentication tag, then a first-use marker) raised the cost from one deletion to two in the same directory. Closing it needs a copy the attacker cannot reach, which is the exported evidence pack. | The export module |
+| Cross-process append and anchor serialisation | The append lock and the rollback high-water mark are per process, and the container serves two gunicorn workers, so neither is shared between them. Closing it needs an inter-process lock on the storage volume, which needs a write path to hold it. | The records module |
+| A closed vocabulary of workflow states | The character rule on `old_state` and `new_state` rejects the common shapes of record content, not record content itself. Making it structural needs the real state set, and the v1 prototype yields only a partial one (`open`, `pending`, `closed`, `done`, `On Track`, `At Risk`, `Planned`). Inventing the rest would breach the no-invention rule. | The records module |
+| Spreadsheet safety of the exported pack | The boundary rules exclude the double quote, so a value cannot terminate its own comma-separated field, but the comma itself is legitimate in a user agent and required in `fields_changed`. A safe export must quote every field and prefix any cell starting `=+-@`. There is no exporter to put that in. | The export module |
+| AUD-001 Q-06 quarterly verification | `verify_sample` and `verify_log` exist and are tested. There is no scheduler, no runbook step and no caller, so the quarterly activity is a mechanism rather than a practice. | The records module and the operating rhythm |
+
+Two AUD-001 clauses need a policy amendment rather than code, and both are Ash and Adam
+Field's to make:
+
+● **Form submissions, "key field values"** (`policy/AUD-001-audit-controls.md`). No field in
+  `FIELD_ORDER` can carry a value, by the same decision that keeps old and new values out
+  of the log. The clause is unimplementable under that decision. Recorded as a deviation.
+● **Monitoring and Alerting**, five Application Insights alerts the App Store does not
+  provide. Recorded as not applicable as written.

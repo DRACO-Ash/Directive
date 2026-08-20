@@ -22,11 +22,20 @@ name and every resource is a register name, which holds for the nine registers i
 architecture. A non-ASCII actor would be rejected loudly rather than mangled, which
 is the right failure, but the owner should confirm the assumption.
 
-Four classes are therefore rejected: anything outside printable ASCII; anything over its
+Four classes are therefore rejected: anything outside printable ASCII (which excludes the
+double quote, so a value cannot terminate its own comma-separated field); anything over its
 byte cap, so no single entry can dominate the log; leading or trailing whitespace, which
-lets a formula character hide behind a space; and a leading formula character, because
-an assessor evidence pack is exported to a spreadsheet where a leading equals sign is
+lets a formula character hide behind a space; and a leading formula character, because an
+assessor evidence pack is exported to a spreadsheet where a leading equals sign is
 executed.
+
+These rules do NOT make the exported pack safe, and must not be presented as if they do.
+The comma is a legitimate character in a user agent and is required in `fields_changed`, so
+a value such as ``Mozilla/5.0,=cmd|'/c calc'!A1`` is accepted here and would break into a
+formula cell if an exporter joined fields with commas and did not quote them. The guard
+belongs at the export boundary as well: quote every field unconditionally, and prefix any
+cell whose first character is in ``=+-@`` . That exporter does not exist yet, and until it
+does the spreadsheet risk is open. TBC, re-verify when the export module lands.
 """
 
 from __future__ import annotations
@@ -88,9 +97,10 @@ OUTCOMES = frozenset({"SUCCESS", "FAILURE"})
 #: TBC, re-verify the state vocabulary with the ISM.
 _STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
 
-#: A comma-separated list of field names. Names only, for the reason above. Capped hard
-#: at 128 bytes by FIELD_LIMITS: a change touches a handful of fields, and the previous
-#: 512-byte cap accepted a whole free-text sentence spelled in snake case.
+#: A comma-separated list of field names. Names only, for the reason above. Capped at 128
+#: bytes by FIELD_LIMITS, down from 512, which is a reduction and not a fix: a 79-byte
+#: snake-case sentence still satisfies both the pattern and the cap. Nothing here can tell
+#: a field name from a sentence written like one.
 _FIELD_NAMES = re.compile(
     r"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(,[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*)*\Z"
 )
