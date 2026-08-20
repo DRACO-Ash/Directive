@@ -82,6 +82,9 @@ ANCHOR_SCHEMA_VERSION = 2
 #: The anchor is a fixed, small document. Anything larger is refused unread.
 MAXIMUM_ANCHOR_BYTES = 4096
 
+#: Sentinel for "total_length not supplied", which means a log that has never been pruned.
+UNSET_TOTAL = -1
+
 #: The highest length seen in this process, per resolved data directory. Keyed on the
 #: real path, so the same directory spelt two ways cannot bypass the refusal.
 _high_water_lock = threading.Lock()
@@ -141,19 +144,28 @@ class Anchor:
     head: str
     length: int
     key_id: str
-    total_length: int | None = None
+    #: Entries ever written. ``UNSET`` means "the same as ``length``", which is a log that
+    #: has never been pruned. A sentinel rather than ``None`` so the field is always an
+    #: ``int`` after construction and no caller needs an ``or 0`` guard, where a genuine
+    #: zero and an unset value would be indistinguishable.
+    total_length: int = UNSET_TOTAL
     pruned_head: str = GENESIS_HASH
     schema_version: int = ANCHOR_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         """Set ``total_length`` to ``length`` for a log that has never been pruned."""
-        if self.total_length is None:
+        if self.total_length == UNSET_TOTAL:
             object.__setattr__(self, "total_length", self.length)
+        if self.total_length < self.length:
+            raise AnchorError(
+                f"an anchor cannot record {self.total_length} entries ever while holding "
+                f"{self.length} active: refusing to build one that could never be read back"
+            )
 
     @property
     def archived_length(self) -> int:
         """Return how many entries have been pruned out of the active log."""
-        return (self.total_length or 0) - self.length
+        return self.total_length - self.length
 
     @classmethod
     def genesis(cls, key_id: str) -> Anchor:
@@ -174,6 +186,14 @@ class Anchor:
             )
         if kept and not is_hash(pruned_head):
             raise AnchorError("the pruned head must be the digest of the last archived entry")
+        if kept and kept < self.length and pruned_head == GENESIS_HASH:
+            # Genesis satisfies is_hash, so this would otherwise write an anchor claiming
+            # archived entries whose boundary is the start of the chain: incoherent, and it
+            # reads and writes cleanly before failing much later at verification.
+            raise AnchorError(
+                "pruning archived entries, so the boundary cannot be the genesis digest: "
+                "pass the digest of the last archived entry"
+            )
         if not kept:
             # Everything archived, so the last archived entry IS the current head by
             # definition, whatever the caller passed. An empty active log ends where it
@@ -256,7 +276,12 @@ def _marker_is_valid(data_dir: str, keys: Mapping[str, bytes]) -> bool:
 
 
 def write_anchor(
-    data_dir: str, anchor: Anchor, key: bytes, *, allow_shortening: bool = False
+    data_dir: str,
+    anchor: Anchor,
+    key: bytes,
+    *,
+    allow_shortening: bool = False,
+    keys: Mapping[str, bytes] | None = None,
 ) -> None:
     """Write the anchor atomically and durably, refusing to shorten the record.
 
@@ -268,7 +293,7 @@ def write_anchor(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if not allow_shortening:
-        _refuse_regression(data_dir, anchor, key)
+        _refuse_regression(data_dir, anchor, keys or {"": key})
 
     document = anchor.as_json(key)
     # The marker goes down BEFORE the rename, so an anchor can never exist without one: a
@@ -289,16 +314,22 @@ def write_anchor(
         Path(temporary).unlink(missing_ok=True)
         raise
     _fsync_directory(target.parent)
-    _record_length(data_dir, anchor.total_length or 0)
+    _record_length(data_dir, anchor.total_length)
 
 
-def _refuse_regression(data_dir: str, anchor: Anchor, key: bytes) -> None:
-    """Refuse a write that would shorten the recorded log."""
+def _refuse_regression(data_dir: str, anchor: Anchor, keys: Mapping[str, bytes]) -> None:
+    """Refuse a write that would shorten the recorded log.
+
+    ``keys`` is every key still held, not just the signing key. Reading the stored anchor
+    under the current key alone meant that after a rotation, which the deployment notes
+    document as needing no re-anchor, the stored anchor could not be authenticated here,
+    was treated as no evidence of a longer log, and a shortening write was accepted.
+    """
     floor = _seen_length(data_dir)
-    stored = _read_stored(data_dir, {"": key}, strict=False)
+    stored = _read_stored(data_dir, keys, strict=False)
     if stored is not None:
-        floor = max(floor, stored.total_length or 0)
-    total = anchor.total_length or 0
+        floor = max(floor, stored.total_length)
+    total = anchor.total_length
     if total < floor:
         raise AnchorError(
             f"refusing to write an anchor recording {total} entries ever over one recording "
@@ -343,8 +374,8 @@ def read_anchor(data_dir: str, keys: Mapping[str, bytes]) -> Anchor | None:
                 f"until an operator re-anchors it from the evidence library."
             )
         return None
-    _check_not_rolled_back(anchor_path(data_dir), data_dir, anchor.total_length or 0)
-    _record_length(data_dir, anchor.total_length or 0)
+    _check_not_rolled_back(anchor_path(data_dir), data_dir, anchor.total_length)
+    _record_length(data_dir, anchor.total_length)
     return anchor
 
 

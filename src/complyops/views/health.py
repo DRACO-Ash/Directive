@@ -48,7 +48,6 @@ CRITICAL_INPUTS: tuple[str, ...] = (
     "CLIENT_ID",
     "CLIENT_SECRET",
     "SESSION_KEY",
-    "SHAREPOINT_SITE_ID",
     "REDIRECT_URI",
     "AUDIT_HMAC_KEY",
 )

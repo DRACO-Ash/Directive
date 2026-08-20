@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from pathlib import Path
 
@@ -567,3 +569,118 @@ def test_the_archive_boundary_is_covered_by_the_authentication_tag(
     (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(json.dumps(stored), encoding="utf-8")
     with pytest.raises(AnchorError, match="not authenticated"):
         read_anchor(str(tmp_path), KEYS)
+
+
+def test_a_truncation_after_a_prune_is_refused_across_a_restart(tmp_path: Path) -> None:
+    """The headline claim of the boundary change, which no test exercised.
+
+    Guarding the active length instead of the total behaved identically in every existing
+    test, because `after_prune` keeps the total constant, so the mutation survived.
+    """
+    write_anchor(str(tmp_path), Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID), TEST_KEY)
+    pruned = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID).after_prune(
+        kept=4, pruned_head="a" * 64
+    )
+    write_anchor(str(tmp_path), pruned, TEST_KEY)
+
+    anchor_module.reset_high_water_mark()
+    with pytest.raises(AnchorError, match="entries ever over one recording 10"):
+        write_anchor(
+            str(tmp_path),
+            Anchor(
+                head="b" * 64, length=4, key_id=TEST_KEY_ID, total_length=5, pruned_head="a" * 64
+            ),
+            TEST_KEY,
+        )
+
+
+def test_a_shortening_write_is_refused_after_a_key_rotation(tmp_path: Path) -> None:
+    """Reading the stored anchor under the current key alone reopened the hole.
+
+    The deployment notes document rotation as needing no re-anchor, and an environment
+    change restarts the pod, so this is the routine path rather than an exotic one: the
+    stored anchor was signed under the retired key, could not be authenticated by the
+    guard, was treated as no evidence of a longer log, and a genesis write was accepted.
+    """
+    write_anchor(str(tmp_path), Anchor(head="e" * 64, length=9, key_id=TEST_KEY_ID), TEST_KEY)
+    anchor_module.reset_high_water_mark()
+
+    rotated = {TEST_KEY_ID: TEST_KEY, "k2": ROTATED_KEY}
+    with pytest.raises(AnchorError, match="would destroy the durable record"):
+        write_anchor(str(tmp_path), Anchor.genesis("k2"), ROTATED_KEY, keys=rotated)
+
+    stored = read_anchor(str(tmp_path), rotated)
+    assert stored is not None
+    assert stored.total_length == 9
+
+
+def test_a_signed_but_incoherent_anchor_is_refused_by_the_coherence_guard(
+    tmp_path: Path,
+) -> None:
+    """Signed, so the authentication tag cannot be what catches it.
+
+    The existing test edited the field after signing, so the tag caught it and the
+    coherence guard was never exercised: deleting the guard left the suite green.
+    """
+    coherent = Anchor(head="a" * 64, length=5, key_id=TEST_KEY_ID, total_length=9)
+    document = json.loads(coherent.as_json(TEST_KEY))
+    document["length"] = 12
+    forged = Anchor(
+        head="a" * 64, length=12, key_id=TEST_KEY_ID, total_length=12, pruned_head=GENESIS_HASH
+    )
+    document["mac"] = forged.mac(TEST_KEY)
+    document["totalLength"] = 9
+    (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(AnchorError):
+        read_anchor(str(tmp_path), KEYS)
+
+
+def test_an_anchor_cannot_be_built_incoherent_in_the_first_place() -> None:
+    """Cheaper than refusing to read one back, which is a self-inflicted lockout."""
+    with pytest.raises(AnchorError, match="could never be read back"):
+        Anchor(head="a" * 64, length=5, key_id=TEST_KEY_ID, total_length=2)
+
+
+def test_a_signed_non_digest_boundary_is_refused_by_its_own_guard(tmp_path: Path) -> None:
+    """Signed, so again the tag cannot be what catches it."""
+    document = {
+        "schemaVersion": anchor_module.ANCHOR_SCHEMA_VERSION,
+        "head": "a" * 64,
+        "length": 1,
+        "keyId": TEST_KEY_ID,
+        "totalLength": 1,
+        "prunedHead": "not a digest",
+    }
+    message = json.dumps(document, sort_keys=True).encode("utf-8")
+    document["mac"] = hmac.new(TEST_KEY, message, hashlib.sha256).hexdigest()
+    (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(AnchorError, match="not a usable anchor"):
+        read_anchor(str(tmp_path), KEYS)
+
+
+def test_pruning_cannot_leave_a_genesis_boundary_with_archived_entries() -> None:
+    """Genesis satisfies is_hash, so this wrote and read cleanly before failing later."""
+    before = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID)
+    with pytest.raises(AnchorError, match="cannot be the genesis digest"):
+        before.after_prune(kept=4, pruned_head=GENESIS_HASH)
+
+
+def test_the_stored_schema_version_is_pinned_to_a_literal(tmp_path: Path) -> None:
+    """Otherwise the on-disk contract can be bumped with no test noticing.
+
+    The same reasoning as the golden vector on FIELD_ORDER: a version the code derives
+    from itself pins nothing.
+    """
+    assert anchor_module.ANCHOR_SCHEMA_VERSION == 2
+    write_anchor(str(tmp_path), Anchor.genesis(TEST_KEY_ID), TEST_KEY)
+    document = json.loads((tmp_path / anchor_module.ANCHOR_FILENAME).read_text(encoding="utf-8"))
+    assert document["schemaVersion"] == 2
+    assert set(document) == {
+        "schemaVersion",
+        "head",
+        "length",
+        "keyId",
+        "totalLength",
+        "prunedHead",
+        "mac",
+    }

@@ -47,7 +47,7 @@ FIELD_LIMITS: dict[str, int] = {
     "outcome": 16,
     "source_ip": 45,
     "user_agent": 512,
-    "fields_changed": 512,
+    "fields_changed": 128,
     "old_state": 32,
     "new_state": 32,
 }
@@ -65,23 +65,45 @@ OUTCOMES = frozenset({"SUCCESS", "FAILURE"})
 #: An enumerated workflow state: a task status, an incident phase, a role name. Upper
 #: snake case and short.
 #:
-#: This pattern is the data-minimisation control, not a convention. AUD-001 asks for the
-#: old and new value of a changed field, and for a task status or an incident phase that
-#: is exactly right. For an incident's content it would put personal data into a log that
-#: is immutable by design, so no correction and no Article 17 erasure can reach it. A
-#: field that cannot hold a name, an address, an email, or a sentence cannot carry that
-#: content by accident, whatever a future caller intends. Record content changes are
-#: therefore reported as field NAMES in `fields_changed`, never as values.
+#: What this rule does, stated precisely, because it was over-claimed. It REJECTS THE
+#: COMMON SHAPES of record content: anything with a space, lower case, an `@`, or over 32
+#: characters, which covers a free-text sentence, an email address, and a formatted name
+#: or address. It does NOT make record content impossible: `HIGGINS`, `ASHLEY_HIGGINS`
+#: and `SW1A1AA` all satisfy it. A single upper-case token can be a surname.
+#:
+#: So the guarantee is a large reduction in surface plus caller discipline, not an
+#: impossibility, and the documents say that now rather than the stronger thing they used
+#: to say. AUD-001 asks for the old and new value of a changed field, and for a task
+#: status or an incident phase that is exactly right; for an incident's content it would
+#: put personal data into a log that is immutable by design, where no correction and no
+#: Article 17 erasure can reach it. Record content changes are therefore reported as field
+#: NAMES in `fields_changed`, never as values.
+#:
+#: The control that WOULD be structural is a closed vocabulary of permitted states, the
+#: way `OUTCOMES` is closed. It is not defined here because the real state set is not yet
+#: knowable: the v1 prototype yields `open`, `pending`, `closed`, `done`, `On Track`,
+#: `At Risk` and `Planned`, and inventing the rest would breach the no-invention rule.
+#: Define it with the records module, which is when the vocabulary becomes real, and note
+#: that a cap or a closed set is cheaper before the first entry is written than after.
+#: TBC, re-verify the state vocabulary with the ISM.
 _STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
 
-#: A comma-separated list of field names. Names only, for the reason above.
+#: A comma-separated list of field names. Names only, for the reason above. Capped hard
+#: at 128 bytes by FIELD_LIMITS: a change touches a handful of fields, and the previous
+#: 512-byte cap accepted a whole free-text sentence spelled in snake case.
 _FIELD_NAMES = re.compile(
     r"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(,[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*)*\Z"
 )
 
-#: Printable ASCII, space through tilde. An allowlist, because a denylist over Unicode
-#: leaks: see the module docstring.
-_PRINTABLE_ASCII = re.compile(r"\A[\x20-\x7e]+\Z")
+#: Printable ASCII, space through tilde, MINUS the double quote. An allowlist, because a
+#: denylist over Unicode leaks: see the module docstring.
+#:
+#: The double quote is excluded because the evidence pack is exported to a spreadsheet. A
+#: value containing one can terminate its own comma-separated field and land a formula in
+#: the next cell, which is the harm the leading-character guard below exists to prevent and
+#: could not see. No field here has a legitimate use for it: not a user principal name, an
+#: address, an action, a register name, a state, or a list of field names.
+_PRINTABLE_ASCII = re.compile(r"\A[\x20-\x21\x23-\x7e]+\Z")
 
 #: A character a spreadsheet treats as the start of a formula.
 _FORMULA_LEAD = frozenset("=+-@")

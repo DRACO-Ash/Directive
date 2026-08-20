@@ -5,10 +5,20 @@ from __future__ import annotations
 import dataclasses
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
-from complyops.audit import GENESIS_HASH, Anchor, AuditChain, verify_log, verify_sample
+from complyops.audit import (
+    GENESIS_HASH,
+    Anchor,
+    AuditChain,
+    read_anchor,
+    verify_log,
+    verify_sample,
+    write_anchor,
+)
+from complyops.audit import anchor as anchor_module
 from complyops.audit.hashing import entry_hash
 from complyops.audit.validation import AuditFieldError
 from conftest import TEST_KEY, TEST_KEY_ID, fixed_entry, keys_for_verification, new_chain
@@ -405,3 +415,89 @@ def test_a_chain_requires_its_anchor_to_be_passed_explicitly() -> None:
     """
     with pytest.raises(TypeError):
         AuditChain(key=TEST_KEY, key_id=TEST_KEY_ID)  # type: ignore[call-arg]
+
+
+def test_the_archive_boundary_survives_a_prune_a_restart_and_an_append(tmp_path: Path) -> None:
+    """The round trip that had no test, which is why the boundary never worked.
+
+    Every piece existed and was tested in isolation, and nothing drove them together
+    through the object the write path actually uses. The consequence was not a subtle
+    one: the first append after a prune tried to write an anchor recording fewer entries
+    ever than the stored one, the write was refused, and the audit path wedged.
+    """
+    chain, entries = build(10)
+    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY)
+
+    # Prune to the newest four, archiving six.
+    pruned = chain.anchor().after_prune(kept=4, pruned_head=entries[5].entry_hash)
+    write_anchor(str(tmp_path), pruned, TEST_KEY)
+
+    # Restart: a fresh process reads the anchor and rebuilds the chain from it.
+    anchor_module.reset_high_water_mark()
+    stored = read_anchor(str(tmp_path), KEYS)
+    assert stored is not None
+    assert (stored.length, stored.total_length, stored.archived_length) == (4, 10, 6)
+
+    resumed = AuditChain(stored, key=TEST_KEY, key_id=TEST_KEY_ID)
+    eleventh = resumed.append(fixed_entry(11))
+
+    advanced = resumed.anchor()
+    assert advanced.length == 5
+    assert advanced.total_length == 11, "the total must count the archived entries"
+    assert advanced.pruned_head == entries[5].entry_hash, "the boundary must be carried"
+
+    # And the advanced anchor is a legitimate write, not a regression.
+    write_anchor(str(tmp_path), advanced, TEST_KEY)
+
+    active = [*entries[6:], eleventh]
+    verdict = verify_log(active, KEYS, advanced)
+    assert verdict.ok, verdict.summary()
+    assert not verdict.tampered
+
+
+def test_a_pruned_active_log_verifies_rather_than_reading_as_tampered() -> None:
+    """verify_log walked from genesis, so every legitimately pruned log read as tampered.
+
+    That is the false tamper alarm on assessor evidence this whole module exists to
+    avoid, and it left verify_sample as the only usable verifier, which by construction
+    cannot detect a truncation.
+    """
+    chain, entries = build(8)
+    pruned = chain.anchor().after_prune(kept=3, pruned_head=entries[4].entry_hash)
+
+    verdict = verify_log(entries[5:], KEYS, pruned)
+    assert verdict.ok, verdict.summary()
+    assert not verdict.tampered
+
+
+def test_a_truncated_active_log_is_still_caught_after_a_prune() -> None:
+    """The boundary must not become a way to bless a shorter log."""
+    chain, entries = build(8)
+    pruned = chain.anchor().after_prune(kept=3, pruned_head=entries[4].entry_hash)
+
+    assert not verify_log(entries[5:7], KEYS, pruned).ok
+    assert not verify_log(entries[6:], KEYS, pruned).ok
+
+
+def test_verifying_the_active_log_says_nothing_about_the_archive() -> None:
+    """The scope limit, asserted so nobody reads more into a green verdict.
+
+    verify_log never sees the archived entries, so it cannot speak for them. Lowering the
+    recorded total is caught by the anchor's authentication tag, not here; detecting the
+    deletion of an archived entry needs the exported pack, which is a later slice.
+    """
+    chain, entries = build(8)
+    honest = chain.anchor().after_prune(kept=3, pruned_head=entries[4].entry_hash)
+
+    verdict = verify_log(entries[5:], KEYS, honest)
+    assert verdict.ok
+    assert verdict.checked == 3, "the count is the ACTIVE log, not the whole history"
+    assert honest.archived_length == 5
+
+
+def test_a_fully_pruned_log_verifies_as_empty() -> None:
+    chain, _ = build(5)
+    pruned = chain.anchor().after_prune(kept=0, pruned_head=chain.head)
+    verdict = verify_log([], KEYS, pruned)
+    assert verdict.ok, verdict.summary()
+    assert (pruned.length, pruned.total_length) == (0, 5)

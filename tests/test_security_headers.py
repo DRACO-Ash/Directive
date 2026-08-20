@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from flask import Flask
+from flask import Flask, make_response
 from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -69,18 +69,72 @@ def test_the_referrer_is_never_sent(client: FlaskClient) -> None:
     assert client.get("/").headers["Referrer-Policy"] == "no-referrer"
 
 
-def test_a_stricter_header_already_set_is_not_overwritten() -> None:
-    """Tighten only. A handler that has already narrowed something keeps its value."""
+@pytest.mark.parametrize(
+    ("header", "looser"),
+    [
+        ("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'"),
+        ("X-Frame-Options", "ALLOWALL"),
+        ("Strict-Transport-Security", "max-age=0"),
+        ("Referrer-Policy", "unsafe-url"),
+    ],
+)
+def test_a_route_cannot_loosen_a_header(header: str, looser: str) -> None:
+    """The direction that matters, and the one the previous test did not cover.
+
+    `setdefault` was first-writer-wins, not tighten-only: a route serving
+    `default-src * 'unsafe-inline'` kept it while this module, CLAUDE.md and the
+    deployment notes all promised it could not. The forms and templates slices are exactly
+    where somebody loosens a policy to make a page render, so the guarantee has to be
+    mechanical rather than a convention.
+    """
+    app = Flask(__name__)
+    security_headers.register(app)
+
+    @app.get("/loosen")
+    def loosen() -> tuple[str, int, dict[str, str]]:
+        return "", 204, {header: looser}
+
+    served = app.test_client().get("/loosen").headers[header]
+    assert served == security_headers.SECURITY_HEADERS[header]
+    assert served != looser
+
+
+def test_a_route_can_tighten_a_header_through_the_explicit_door() -> None:
+    """Fail closed, but leave a sanctioned way to be stricter.
+
+    Deliberately awkward: a narrowing override is a visible call in a diff, and there is
+    no equivalent door for a wider policy.
+    """
     app = Flask(__name__)
     security_headers.register(app)
 
     @app.get("/narrower")
-    def narrower() -> tuple[str, int, dict[str, str]]:
-        return "", 204, {"Content-Security-Policy": "default-src 'none'; sandbox"}
+    def narrower():  # noqa: ANN202 - Flask response object
+        response = make_response("", 204)
+        return security_headers.tighten(
+            response, "Content-Security-Policy", "default-src 'none'; sandbox"
+        )
 
     response = app.test_client().get("/narrower")
     assert response.headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
-    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["X-Frame-Options"] == "DENY", "the rest still apply"
+    assert security_headers.TIGHTENED_MARKER not in response.headers, "the marker is internal"
+
+
+def test_tightening_one_header_does_not_release_the_others() -> None:
+    app = Flask(__name__)
+    security_headers.register(app)
+
+    @app.get("/mixed")
+    def mixed():  # noqa: ANN202 - Flask response object
+        response = make_response("", 204)
+        security_headers.tighten(response, "Referrer-Policy", "no-referrer")
+        response.headers["X-Frame-Options"] = "ALLOWALL"
+        return response
+
+    headers = app.test_client().get("/mixed").headers
+    assert headers["Referrer-Policy"] == "no-referrer"
+    assert headers["X-Frame-Options"] == "DENY"
 
 
 def test_the_content_type_is_never_sniffed(client: FlaskClient) -> None:
