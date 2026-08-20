@@ -71,7 +71,8 @@ def test_the_cap_is_enforced_at_the_boundary_in_both_directions(field: str) -> N
         validation.normalise_fields(over)
 
 
-def test_a_multi_byte_field_is_capped_by_bytes_not_characters() -> None:
+def test_the_cap_is_measured_in_bytes() -> None:
+    """The cap is a byte cap, checked before the character rule."""
     fields = fixed_entry()
     fields["actor"] = "é" * validation.FIELD_LIMITS["actor"]
     with pytest.raises(validation.AuditFieldError, match="over its cap"):
@@ -80,27 +81,79 @@ def test_a_multi_byte_field_is_capped_by_bytes_not_characters() -> None:
 
 @pytest.mark.parametrize(
     "hostile",
+    [" =cmd|' /c calc'!A1", "\u00a0=cmd", "=cmd ", " D-01", "D-01 ", "\t D-01"],
+)
+def test_leading_or_trailing_whitespace_is_rejected(hostile: str) -> None:
+    """A leading space lets a formula character hide from the export guard."""
+    fields = fixed_entry()
+    fields["resource_id"] = hostile
+    with pytest.raises(validation.AuditFieldError):
+        validation.normalise_fields(fields)
+
+
+@pytest.mark.parametrize("hostile", ["=cmd|' /c calc'!A1", "+1", "-1+2", "@SUM(A1)"])
+def test_a_leading_formula_character_is_rejected_however_it_is_spelled(hostile: str) -> None:
+    fields = fixed_entry()
+    fields["resource_id"] = hostile
+    with pytest.raises(validation.AuditFieldError):
+        validation.normalise_fields(fields)
+
+
+@pytest.mark.parametrize("hostile", ["=cmd", "k 1", "k:1", "k" * 33, "kéy"])
+def test_a_hostile_key_identifier_is_rejected(hostile: str) -> None:
+    """The identifier reaches the digest and every stored row without the field rules."""
+    with pytest.raises(validation.AuditFieldError, match="signing key identifier"):
+        validation.check_key_id(hostile)
+
+
+@pytest.mark.parametrize("good", ["k1", "test-k1", "K_9", "k" * 32])
+def test_a_conforming_key_identifier_is_accepted(good: str) -> None:
+    assert validation.check_key_id(good) == good
+
+
+def test_the_field_list_and_the_digest_field_order_agree() -> None:
+    """Two lists that must not drift: one is validated, the other is hashed."""
+    from complyops.audit.hashing import FIELD_ORDER  # noqa: PLC0415 - for this assertion
+
+    assert tuple(validation.FIELD_LIMITS) == FIELD_ORDER
+
+
+@pytest.mark.parametrize(
+    ("label", "hostile"),
     [
-        "ash\n2026-08-20 CRITICAL chain verified intact by admin",
-        "ash\rlevel=INFO",
-        "ash\x1b[2Kadmin",
-        "ash\x00admin",
-        "ash\x7fadmin",
+        ("newline", "ash\n2026-08-20 CRITICAL chain verified intact by admin"),
+        ("carriage return", "ash\rlevel=INFO"),
+        ("escape sequence", "ash\x1b[2Kadmin"),
+        ("null", "ash\x00admin"),
+        ("delete", "ash\x7fadmin"),
+        # Categories Zl and Zp. A denylist on category Cc missed both, and each terminates
+        # a line for str.splitlines and for most log and comma-separated-value consumers,
+        # so an actor could forge "CRITICAL chain verified intact by admin".
+        ("line separator", "ash\u2028CRITICAL chain verified intact"),
+        ("paragraph separator", "ash\u2029CRITICAL chain verified intact"),
+        # Category Cf. Each misrepresents the recorded actor without changing what a
+        # reader sees.
+        ("zero width space", "ash\u200badmin"),
+        ("soft hyphen", "ash\u00adadmin"),
+        ("word joiner", "ash\u2060admin"),
+        ("byte order mark", "ash\ufeffadmin"),
+        # Bidirectional overrides, which reverse how the actor renders.
+        ("right to left override", "ash\u202eadmin"),
+        ("left to right override", "ash\u202dadmin"),
+        ("isolate", "ash\u2066admin"),
+        ("right to left mark", "ash\u200fadmin"),
+        # A homoglyph, which no Unicode category can exclude: the first character is
+        # Cyrillic small a, not Latin.
+        ("cyrillic homoglyph", "\u0430sh@bluestaq.uk"),
     ],
 )
-def test_a_control_character_is_rejected_because_it_forges_a_log_line(hostile: str) -> None:
+def test_anything_outside_printable_ascii_is_rejected(label: str, hostile: str) -> None:
+    """An allowlist, because a denylist over Unicode leaked twice in one review."""
     fields = fixed_entry()
     fields["actor"] = hostile
-    with pytest.raises(validation.AuditFieldError, match="control character"):
+    with pytest.raises(validation.AuditFieldError, match="outside printable ASCII"):
         validation.normalise_fields(fields)
-
-
-@pytest.mark.parametrize("override", ["\u202e", "\u202d", "\u2066", "\u200f"])
-def test_a_bidirectional_override_is_rejected(override: str) -> None:
-    fields = fixed_entry()
-    fields["actor"] = f"ash{override}admin"
-    with pytest.raises(validation.AuditFieldError, match="bidirectional"):
-        validation.normalise_fields(fields)
+    assert label
 
 
 @pytest.mark.parametrize("lead", ["=", "+", "-", "@"])

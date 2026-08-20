@@ -38,6 +38,7 @@ import hashlib
 import hmac
 import re
 from collections.abc import Mapping
+from typing import TypeGuard
 
 #: The record fields covered by an entry hash, in the order they are serialised.
 #: Changing this tuple, its order, or the digest below breaks every historical entry, so
@@ -58,8 +59,12 @@ class AuditHashError(ValueError):
     """Raised when an entry cannot be hashed. Always fail closed, never hash a guess."""
 
 
-def is_hash(value: object) -> bool:
-    """Return whether ``value`` is a full lowercase hexadecimal digest."""
+def is_hash(value: object) -> TypeGuard[str]:
+    """Return whether ``value`` is a full lowercase hexadecimal digest.
+
+    A type guard, so a caller validating an untrusted document narrows the value at the
+    same time as checking it, rather than checking and then asserting the type again.
+    """
     return isinstance(value, str) and bool(_HEX_HASH.match(value))
 
 

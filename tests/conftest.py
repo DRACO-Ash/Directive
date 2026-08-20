@@ -29,17 +29,24 @@ MANAGED_VARIABLES = (
     "AUDIT_RETIRED_KEYS",
 )
 
-#: A test signing key. Not a credential: it never leaves the suite and is not the shape
-#: of any real key, so the secret scanner has nothing to flag.
-TEST_KEY = b"test-audit-key-for-the-suite-only-0123456789"
+#: A test signing key, as the application requires it: real key material decoding to at
+#: least 32 bytes. Deterministic and published in this file on purpose, so it is not a
+#: credential and the secret scanner has nothing to flag.
+TEST_KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+TEST_KEY = bytes.fromhex(TEST_KEY_HEX)
 TEST_KEY_ID = "test-k1"
 
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Remove every managed variable before each test."""
+    """Remove every managed variable and clear process state before each test."""
+    from complyops.audit import anchor  # noqa: PLC0415 - after the sys.path insert
+    from complyops.views import health  # noqa: PLC0415 - after the sys.path insert
+
     for name in MANAGED_VARIABLES:
         monkeypatch.delenv(name, raising=False)
+    anchor.reset_high_water_mark()
+    health.reset_diagnostics_cache()
     yield
 
 
@@ -80,6 +87,11 @@ def new_chain(anchor: object = None) -> object:
     from complyops.audit import AuditChain  # noqa: PLC0415 - after the sys.path insert
 
     return AuditChain(key=TEST_KEY, key_id=TEST_KEY_ID, anchor=anchor)
+
+
+def anchored(chain: object) -> object:
+    """Return the chain's current anchor."""
+    return chain.anchor()
 
 
 def keys_for_verification() -> dict[str, bytes]:

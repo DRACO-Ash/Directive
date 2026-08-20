@@ -49,12 +49,18 @@ CRITICAL_INPUTS: tuple[str, ...] = (
     "SESSION_KEY",
     "SHAREPOINT_SITE_ID",
     "REDIRECT_URI",
+    "AUDIT_HMAC_KEY",
 )
 
 health_bp = Blueprint("health", __name__)
 
 _cache_lock = threading.Lock()
 _cached: tuple[float, StorageVerdict] | None = None
+
+#: At most one write probe in flight per path. Concurrent callers join it rather than
+#: each abandoning a thread of their own.
+_probe_lock = threading.Lock()
+_in_flight: dict[str, _Probe] = {}
 
 
 #: The band boundaries the diagnostics read-out reports a configured value's length in.
@@ -95,8 +101,12 @@ def cached_storage_verdict(path: str, now: float | None = None) -> StorageVerdic
             if verdict.path == path and moment - cached_at < DIAGNOSTICS_CACHE_SECONDS:
                 return verdict
     fresh = probe_storage(path)
+    # Stamped after the probe, not before: stamping first makes a served verdict as old
+    # as the window plus the probe's own duration.
+    stamped = time.monotonic() if now is None else now
     with _cache_lock:
-        _cached = (moment, fresh)
+        if _cached is None or _cached[0] <= stamped:
+            _cached = (stamped, fresh)
     return fresh
 
 
@@ -142,50 +152,92 @@ def _write_probe(path: str) -> StorageVerdict:
     return StorageVerdict(writable=True, path=path)
 
 
+class _Probe:
+    """One in-flight write probe, shared by every caller waiting on the same path."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.done = threading.Event()
+        self.verdict: StorageVerdict | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        """Start the worker. Raises if the runtime cannot create a thread."""
+        self._thread.start()
+
+    def _run(self) -> None:
+        """Run the probe, converting ANY failure into a verdict.
+
+        Containment sits at the thread boundary, not only inside the write. An exception
+        escaping here would leave the verdict unset and the caller would report a timeout
+        it never waited for.
+        """
+        try:
+            self.verdict = _write_probe(self.path)
+        except BaseException as error:
+            self.verdict = StorageVerdict(
+                writable=False, path=self.path, errno=None, detail=type(error).__name__
+            )
+        finally:
+            with _probe_lock:
+                if _in_flight.get(self.path) is self:
+                    del _in_flight[self.path]
+            self.done.set()
+
+
 def probe_storage(path: str, timeout_seconds: float = PROBE_TIMEOUT_SECONDS) -> StorageVerdict:
     """Prove the data directory accepts a write, within a bounded wall-clock time.
 
-    Every failure becomes a value rather than an exception, so the probe cannot raise
-    into a handler, and the timeout is a real bound rather than a nominal one. The
-    abandoned thread is the deliberate price: a pool that is joined on exit, or any
-    construction that waits for the stalled write, returns the right verdict only after
-    the stall has finished, which is the hang this control exists to prevent.
+    Single-flight, and bounded. Three properties matter, and each closes a failure the
+    obvious implementation has.
+
+    Bounded: the caller waits at most ``timeout_seconds``. A construction that joins the
+    stalled write returns the right verdict only after the stall finishes, which is the
+    hang this control exists to prevent.
+
+    Single-flight: at most one probe is in flight per path. Without it, an unauthenticated
+    readiness path abandoned one operating-system thread per request for as long as the
+    mount was stalled, measured at 300 threads for 300 requests, while liveness stayed 200
+    so the platform never restarted the pod. That is an amplifier inside the endpoint, not
+    a missing rate limiter, and at the container's thread ceiling the process can no longer
+    create threads at all. Concurrent callers now join the in-flight probe and share its
+    outcome.
+
+    Never raising: every failure becomes a verdict, including a refusal to create the
+    thread. The diagnostics read-out is the recovery channel for a bad configuration
+    value, so nothing here may raise into a handler.
     """
     reason = config.validate_data_dir(path)
     if reason is not None:
         return StorageVerdict(writable=False, path=path, errno=None, detail=reason)
 
-    def run() -> None:
-        """Run the probe, converting ANY failure into a verdict.
-
-        Containment sits at the thread boundary, not only inside the write. An exception
-        escaping the worker would leave the result empty, and the caller would then
-        report a timeout it never waited for, or wait the full timeout for a fault that
-        had already happened.
-        """
-        try:
-            result.append(_write_probe(path))
-        except BaseException as error:
-            result.append(
-                StorageVerdict(writable=False, path=path, errno=None, detail=type(error).__name__)
-            )
-
-    result: list[StorageVerdict] = []
-    worker = threading.Thread(target=run, daemon=True)
-    started = time.monotonic()
-    worker.start()
-    worker.join(timeout=timeout_seconds)
-    if result:
-        return result[0]
-    return StorageVerdict(
+    timed_out = StorageVerdict(
         writable=False,
         path=path,
         errno=errno_module.ETIMEDOUT,
-        detail=(
-            f"write did not complete within {timeout_seconds} seconds "
-            f"(abandoned after {time.monotonic() - started:.2f})"
-        ),
+        detail=f"write did not complete within {timeout_seconds} seconds",
     )
+
+    with _probe_lock:
+        in_flight = _in_flight.get(path)
+        if in_flight is None:
+            in_flight = _Probe(path)
+            try:
+                in_flight.start()
+            except (RuntimeError, OSError) as error:
+                # The thread ceiling, or the operating system refusing. Report it as a
+                # verdict: raising here would take out readiness and diagnostics at the
+                # exact moment an operator needs them.
+                return StorageVerdict(
+                    writable=False,
+                    path=path,
+                    errno=None,
+                    detail=f"the probe could not start: {type(error).__name__}",
+                )
+            _in_flight[path] = in_flight
+
+    in_flight.done.wait(timeout=timeout_seconds)
+    return in_flight.verdict or timed_out
 
 
 @health_bp.get("/")

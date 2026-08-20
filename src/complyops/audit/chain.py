@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from .anchor import Anchor
 from .hashing import GENESIS_HASH, AuditHashError, entry_hash, hashes_equal, is_hash
-from .validation import AuditFieldError, normalise_fields
+from .validation import AuditFieldError, check_key_id, normalise_fields
 
 
 @dataclass(frozen=True)
@@ -64,11 +64,24 @@ class ChainVerdict:
     break_index: int | None = None
     reason: str | None = None
     broken_entry_hash: str | None = None
+    invalid_under_current_rules: bool = False
 
     def summary(self) -> str:
-        """Return a one-line summary fit for an audit record or an operator banner."""
+        """Return a one-line summary fit for an audit record or an operator banner.
+
+        An entry that no longer satisfies today's boundary rules is reported separately
+        from a tampered one. Field caps and character rules can only ever tighten, so a
+        historical entry written legitimately under looser rules would otherwise read as
+        "chain broken" in an assessor pack, which is the one thing this control must not
+        say when nothing was tampered with.
+        """
         if self.ok:
             return f"chain intact across {self.checked} entries"
+        if self.invalid_under_current_rules:
+            return (
+                f"entry {self.break_index} does not satisfy the current field rules; "
+                f"its digest is unbroken: {self.reason}"
+            )
         return f"chain broken at index {self.break_index}: {self.reason}"
 
 
@@ -82,7 +95,7 @@ class AuditChain:
     def __init__(self, key: bytes, key_id: str, anchor: Anchor | None = None) -> None:
         """Start from an anchor where one exists, else from genesis."""
         self._key = key
-        self._key_id = key_id
+        self._key_id = check_key_id(key_id)
         self._lock = threading.Lock()
         self.head = anchor.head if anchor else GENESIS_HASH
         self.length = anchor.length if anchor else 0
@@ -131,10 +144,17 @@ def _break(index: int, reason: str, entry: AuditEntry | None = None) -> ChainVer
     )
 
 
-def _verify_one(
-    index: int, entry: AuditEntry, expected_previous: str, keys: Mapping[str, bytes]
-) -> ChainVerdict | None:
-    """Return a failing verdict for this entry, or ``None`` when it verifies."""
+def _check_link(index: int, entry: AuditEntry, expected_previous: str) -> ChainVerdict | None:
+    """Check the entry's shape and its link to the preceding entry."""
+    if not is_hash(entry.previous_hash) or not is_hash(entry.entry_hash):
+        # The two hash columns are exactly what an actor with item-edit rights on the list
+        # can type into, so a non-digest value must produce a verdict, never an exception.
+        return _break(
+            index,
+            "a stored hash field is not a 64-character lowercase digest, so the row was "
+            "written or altered by something other than this application",
+            None,
+        )
     if not hashes_equal(entry.previous_hash, expected_previous):
         return _break(
             index,
@@ -142,16 +162,26 @@ def _verify_one(
             "edited, reordered, or removed",
             entry,
         )
+    return None
+
+
+def _verify_one(
+    index: int, entry: AuditEntry, expected_previous: str, keys: Mapping[str, bytes]
+) -> ChainVerdict | None:
+    """Return a failing verdict for this entry, or ``None`` when it verifies."""
+    linked = _check_link(index, entry, expected_previous)
+    if linked is not None:
+        return linked
     key = keys.get(entry.key_id)
     if not key:
         return _break(index, f"no verification key is available for key id {entry.key_id!r}", entry)
+    # Recompute from the STORED fields, never from a re-validated snapshot, so a later
+    # tightening of a field rule cannot change what is hashed.
     try:
-        # Re-validate as well as re-hash: a stored row that breaks a boundary rule could
-        # never have been written by this application, so name it as invalid rather than
-        # reporting only that its digest does not match.
-        fields = normalise_fields(entry.covered_fields())
-        recomputed = entry_hash(entry.previous_hash, fields, key=key, key_id=entry.key_id)
-    except (AuditHashError, AuditFieldError) as error:
+        recomputed = entry_hash(
+            entry.previous_hash, entry.covered_fields(), key=key, key_id=entry.key_id
+        )
+    except AuditHashError as error:
         return _break(index, f"entry could not be re-hashed: {error}", entry)
     if not hashes_equal(recomputed, entry.entry_hash):
         return _break(
@@ -160,45 +190,92 @@ def _verify_one(
             "the entry was signed with a different key",
             entry,
         )
+    # The digest is sound, so nothing was tampered with. Separately, report an entry that
+    # would not be accepted under today's boundary rules, because the caps and character
+    # rules can only tighten and a historical entry written legitimately under looser
+    # rules must never be reported as tampering.
+    try:
+        normalise_fields(entry.covered_fields())
+    except AuditFieldError as error:
+        return ChainVerdict(
+            ok=False,
+            checked=index,
+            break_index=index,
+            reason=str(error),
+            broken_entry_hash=entry.entry_hash,
+            invalid_under_current_rules=True,
+        )
     return None
 
 
-def verify_chain(
-    entries: Sequence[AuditEntry],
-    keys: Mapping[str, bytes],
-    *,
-    expected_first_previous_hash: str = GENESIS_HASH,
-    expected_last_hash: str | None = None,
-    expected_length: int | None = None,
+def _walk(
+    entries: Sequence[AuditEntry], keys: Mapping[str, bytes], first_previous_hash: str
 ) -> ChainVerdict:
-    """Verify a contiguous run of entries, oldest first, against the trusted anchor.
-
-    Pass ``expected_first_previous_hash`` when verifying a sample from the middle of the
-    log rather than from the beginning. Pass ``expected_last_hash`` and
-    ``expected_length`` from the anchor whenever verifying the whole log: without them a
-    run that has been truncated, or replaced wholesale from genesis, is internally
-    perfect and would otherwise be reported intact.
-    """
-    if not is_hash(expected_first_previous_hash):
+    """Walk the run, returning the first break or an intact verdict."""
+    if not is_hash(first_previous_hash):
         return _break(0, "the expected starting hash is not a digest")
 
-    expected_previous = expected_first_previous_hash
+    expected_previous = first_previous_hash
     for index, entry in enumerate(entries):
         verdict = _verify_one(index, entry, expected_previous, keys)
         if verdict is not None:
             return verdict
         expected_previous = entry.entry_hash
+    return ChainVerdict(ok=True, checked=len(entries))
 
-    if expected_length is not None and len(entries) != expected_length:
+
+def verify_log(
+    entries: Sequence[AuditEntry], keys: Mapping[str, bytes], anchor: Anchor
+) -> ChainVerdict:
+    """Verify the WHOLE log against its trusted anchor.
+
+    The anchor is positional and required, deliberately. It was previously an optional
+    keyword defaulting to off, which meant the ordinary call verified a log fabricated
+    from genesis, or truncated to any length, as intact: the control existed only for a
+    caller who remembered to opt in, and the first caller to forget would have shipped
+    the hole. If you are verifying a sample rather than the whole log, use
+    :func:`verify_sample`, which is named so the difference cannot be accidental.
+    """
+    verdict = _walk(entries, keys, GENESIS_HASH)
+    if not verdict.ok:
+        return verdict
+
+    if len(entries) != anchor.length:
         return _break(
             len(entries),
             f"the log holds {len(entries)} entries but the trusted anchor records "
-            f"{expected_length}, so entries were added or removed",
+            f"{anchor.length}, so entries were added or removed",
         )
-    if expected_last_hash is not None and not hashes_equal(expected_previous, expected_last_hash):
+    ending = entries[-1].entry_hash if entries else GENESIS_HASH
+    if not hashes_equal(ending, anchor.head):
         return _break(
             len(entries),
-            "the log does not end on the digest the trusted anchor records, so the end "
-            "of the log was rewritten or truncated",
+            "the log does not end on the digest the trusted anchor records, so the end of "
+            "the log was rewritten or truncated",
         )
-    return ChainVerdict(ok=True, checked=len(entries))
+    if entries and entries[-1].key_id != anchor.key_id:
+        # A retired key stays a valid signer so history survives a rotation, but a key is
+        # retired because it may have leaked. Requiring the log to END under the anchor's
+        # key stops a leaked retired key being used to re-sign the whole log.
+        return _break(
+            len(entries),
+            f"the log ends on an entry signed by key {entries[-1].key_id!r} but the "
+            f"trusted anchor records {anchor.key_id!r}, so the tail was re-signed",
+            entries[-1],
+        )
+    return verdict
+
+
+def verify_sample(
+    entries: Sequence[AuditEntry],
+    keys: Mapping[str, bytes],
+    *,
+    expected_first_previous_hash: str,
+) -> ChainVerdict:
+    """Verify a contiguous SAMPLE from the middle of the log, oldest first.
+
+    This cannot detect a truncation or a wholesale rewrite, because a sample has no end
+    to check against; only :func:`verify_log` can. Pass the digest of the entry
+    immediately before the sample.
+    """
+    return _walk(entries, keys, expected_first_previous_hash)
