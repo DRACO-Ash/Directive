@@ -1,0 +1,69 @@
+[project]
+name = "comply-ops"
+version = "2.0.0"
+description = "Bluestaq Compliance Operations Console"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+# Explicit discovery, so a helper file is never auto-run as a suite.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# The src layout: the platform forces sonar.sources=src on some readings, and a
+# committed sonar-project.properties is respected on others. Living under src/
+# satisfies both without a wager.
+pythonpath = ["src", "tests"]
+addopts = "-q --strict-markers --strict-config"
+
+[tool.coverage.run]
+branch = true
+source = ["src/complyops"]
+
+[tool.coverage.report]
+# The App Store SonarQube gate needs at least 80% line coverage. This is the local
+# mirror of that bar, so the loop fails here rather than on upload.
+fail_under = 80
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.coverage.xml]
+# Cobertura XML at the exact path the platform's Code Quality stage reads.
+output = "coverage.xml"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# The platform's analyser profile, not a looser local default. Where the local mirror
+# cannot enforce a SonarQube rule, the gap is recorded rather than papered over.
+select = [
+  "E", "W", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "T20", "SIM",
+  "ARG", "PTH", "RUF", "S", "ANN", "D", "PL", "TRY", "EM", "LOG", "G",
+]
+ignore = [
+  "D203",  # incompatible with D211, which is the convention used here
+  "D213",  # incompatible with D212, which is the convention used here
+  "EM101", "EM102",  # a message built at the raise site reads better in a log
+  "TRY003",  # the same: an explicit message beats an opaque exception class
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert against private helpers and use bare asserts by design.
+"tests/*" = ["S101", "ANN001", "ANN201", "D103", "PLR2004", "SLF001", "ARG001"]
+
+[tool.ruff.lint.pylint]
+# SonarQube rule S3776 caps cognitive complexity at 15. The local default measures
+# cyclomatic complexity at a looser 20, which is how a function passes here and fails
+# on upload.
+max-args = 6
+max-branches = 12
+max-statements = 40
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["complyops"]
+strict = true
+warn_unreachable = true

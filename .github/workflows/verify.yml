@@ -1,0 +1,63 @@
+name: verify
+
+on:
+  push: {}
+  pull_request:
+    branches: [main]
+
+# Least privilege. This workflow reads the repository and nothing else, and holds no
+# deploy credential, because it performs no deploy.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install from the hash-locked lockfiles
+        run: |
+          python -m pip install --require-hashes -r requirements.txt
+          python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Confirm the lockfiles are unchanged by the install
+        run: git diff --exit-code -- requirements.txt requirements-dev.txt
+
+      - name: Format
+        run: python -m ruff format --check .
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Types
+        run: python -m mypy
+
+      - name: Tests with coverage
+        run: python -m pytest --cov --cov-report=xml --cov-report=term
+
+      - name: Confirm the coverage artefact the quality gate reads exists
+        run: test -s coverage.xml
+
+      # This runner has network access, so an unreachable advisory service is a hard
+      # failure here, never an honest skip. This job is the binding source of truth for
+      # the dependency scan.
+      - name: Dependency vulnerabilities (runtime)
+        run: python -m pip_audit -r requirements.txt
+
+      - name: Dependency vulnerabilities (tooling)
+        run: python -m pip_audit -r requirements-dev.txt
+
+      # The permission-denied readiness assertions are skipped when the suite runs as
+      # root. This job runs as a non-root user, so they must actually execute here.
+      - name: Confirm the non-root readiness assertions ran
+        run: |
+          python -m pytest tests/test_health.py -q -rs 2>&1 | tee /tmp/health.txt
+          if grep -q "does not deny the root user" /tmp/health.txt; then
+            echo "FAIL: the permission-denied assertions were skipped on the CI runner"
+            exit 1
+          fi
