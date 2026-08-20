@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from complyops.version import __version__
 from complyops.views import health
 
 #: A read-only directory does not stop the root user, so the two permission-denied
@@ -27,7 +28,7 @@ def test_root_returns_200_and_never_redirects(client) -> None:
     assert "Location" not in response.headers
 
 
-@pytest.mark.parametrize("path", ["/livez", "/ping", "/health"])
+@pytest.mark.parametrize("path", ["/healthz", "/livez", "/ping", "/health"])
 def test_liveness_paths_return_200_unauthenticated(client, path: str) -> None:
     response = client.get(path)
     assert response.status_code == 200
@@ -106,17 +107,80 @@ def test_the_storage_probe_leaves_no_file_behind(tmp_path: Path) -> None:
 def test_the_storage_probe_races_a_hard_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stalled mount must fail the probe with a diagnosis, never hang it."""
+    """A stalled mount must fail the probe with a diagnosis, never hang it.
+
+    The elapsed time is the assertion. Returning the right verdict only after the stall
+    has finished is exactly the hang this control exists to prevent, and asserting the
+    verdict alone cannot tell the two apart.
+    """
+    stall_seconds = 3.0
+    timeout = 0.05
 
     def stall(_path: str) -> health.StorageVerdict:
-        time.sleep(5)
-        raise AssertionError("the probe should have timed out before this line")
+        time.sleep(stall_seconds)
+        raise AssertionError("the probe should have been abandoned before this line")
 
     monkeypatch.setattr(health, "_write_probe", stall)
-    verdict = health.probe_storage(str(tmp_path), timeout_seconds=0.05)
+    started = time.monotonic()
+    verdict = health.probe_storage(str(tmp_path), timeout_seconds=timeout)
+    elapsed = time.monotonic() - started
+
     assert verdict.writable is False
     assert verdict.errno == errno.ETIMEDOUT
-    assert "0.05 seconds" in (verdict.detail or "")
+    assert f"{timeout} seconds" in (verdict.detail or "")
+    assert elapsed < timeout * 10, f"the probe took {elapsed:.2f}s against a {timeout}s timeout"
+    assert elapsed < stall_seconds / 2, "the probe waited for the stalled write to finish"
+
+
+def test_the_probe_contains_a_failure_that_is_not_an_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recovery channel must survive any configuration value.
+
+    A deeply nested path raises RecursionError out of pathlib. Uncaught it takes down
+    readiness, diagnostics, and boot: the whole channel that would explain the fault.
+    """
+
+    def explode(_path: str) -> health.StorageVerdict:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(health, "_write_probe", explode)
+    verdict = health.probe_storage(str(tmp_path))
+    assert verdict.writable is False
+    assert verdict.detail == "RecursionError"
+
+
+def test_a_deeply_nested_path_does_not_break_readiness_or_diagnostics(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATA_DIR", "/" + "/".join("x" * 4000))
+    health.reset_diagnostics_cache()
+    assert client.get("/readyz").status_code == 503
+    assert client.get("/api/diagnostics").status_code == 200
+
+
+def test_the_permission_denied_branch_is_reachable_without_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cover the EACCES path deterministically, whoever the suite runs as.
+
+    The real-permission tests below are skipped as root, which left the write-proof
+    control provable only on the CI runner. This asserts the same branch by making the
+    write itself refuse, so it holds everywhere.
+    """
+    real_open = Path.open
+
+    def refuse(self: Path, *args: object, **kwargs: object):  # noqa: ANN202
+        if self.name.startswith(".readyz-"):
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", refuse)
+    verdict = health.probe_storage(str(tmp_path))
+    assert verdict.writable is False
+    assert verdict.errno == errno.EACCES
+    assert verdict.detail == "EACCES"
 
 
 def test_the_probe_creates_the_directory_when_it_is_absent(tmp_path: Path) -> None:
@@ -144,11 +208,60 @@ def test_diagnostics_reports_presence_and_length_never_the_value(
     body = response.get_json()
 
     assert response.status_code == 200
-    assert body["inputs"]["CLIENT_SECRET"] == {"present": True, "length": len(injected)}
-    assert body["inputs"]["TENANT_ID"] == {"present": False, "length": 0}
+    assert body["inputs"]["CLIENT_SECRET"] == {"present": True, "lengthBucket": "32+"}
+    assert body["inputs"]["TENANT_ID"] == {"present": False, "lengthBucket": "0"}
     assert body["buildId"] == "sha-abc123"
+    assert body["version"] == __version__
     assert body["storageWritable"] is True
     assert injected not in response.get_data(as_text=True)
+    assert str(len(injected)) not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(
+    ("length", "expected"),
+    [(0, "0"), (1, "1-15"), (15, "1-15"), (16, "16-31"), (31, "16-31"), (32, "32+"), (99, "32+")],
+)
+def test_the_length_bucket_bands_rather_than_reveals(length: int, expected: str) -> None:
+    """A band distinguishes a stale value from a correct one without an exact oracle."""
+    assert health.length_bucket(length) == expected
+
+
+def test_diagnostics_reuses_a_cached_verdict_rather_than_writing_per_request(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unauthenticated route must not do real filesystem work on every request."""
+    health.reset_diagnostics_cache()
+    probes = []
+    real = health.probe_storage
+
+    def counting(path: str, *args: object, **kwargs: object) -> health.StorageVerdict:
+        probes.append(path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(health, "probe_storage", counting)
+    for _ in range(5):
+        assert client.get("/api/diagnostics").status_code == 200
+    assert len(probes) == 1
+
+
+def test_the_cached_verdict_expires(tmp_path: Path) -> None:
+    health.reset_diagnostics_cache()
+    first = health.cached_storage_verdict(str(tmp_path), now=1000.0)
+    again = health.cached_storage_verdict(str(tmp_path), now=1000.0 + 1)
+    later = health.cached_storage_verdict(
+        str(tmp_path), now=1000.0 + health.DIAGNOSTICS_CACHE_SECONDS + 1
+    )
+    assert first is again
+    assert later is not first
+
+
+def test_the_cache_does_not_serve_a_verdict_for_a_different_path(tmp_path: Path) -> None:
+    health.reset_diagnostics_cache()
+    first = health.cached_storage_verdict(str(tmp_path), now=1000.0)
+    other = health.cached_storage_verdict(str(tmp_path / "elsewhere"), now=1000.0)
+    assert other is not first
+    assert other.path != first.path
 
 
 def test_diagnostics_covers_every_critical_input(client) -> None:

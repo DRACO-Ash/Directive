@@ -29,6 +29,14 @@ FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa70
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* || true
 # Remove the package manager and build toolchain. The scanner judges what ships, not
 # what runs, and pip carries advisories the running service never needs.
+# The base is Debian, so the OS package manager comes out too: leaving apt, apt-get and
+# dpkg in the shipped image hands an attacker with code execution a working installer,
+# and contradicts the no-package-manager rule the comment above claims.
+RUN rm -rf /usr/bin/apt /usr/bin/apt-get /usr/bin/apt-cache /usr/bin/apt-config \
+           /usr/bin/apt-key /usr/bin/apt-mark /usr/bin/dpkg /usr/bin/dpkg-deb \
+           /usr/bin/dpkg-divert /usr/bin/dpkg-query /usr/bin/dpkg-split \
+           /usr/bin/dpkg-statoverride /usr/bin/dpkg-trigger /usr/sbin/dpkg-reconfigure \
+           /usr/lib/apt /usr/lib/dpkg /var/lib/apt /var/lib/dpkg /etc/apt
 RUN python -m pip uninstall -y pip setuptools wheel 2>/dev/null || true \
  && rm -rf /usr/local/lib/python3.12/ensurepip \
            /usr/local/lib/python3.12/site-packages/pip \
@@ -52,8 +60,10 @@ COPY wsgi.py ./
 COPY src ./src
 # Create the runtime user, then take ownership. Nothing that could set a setgid bit may
 # run after the sweep below.
+# The source tree stays root-owned and world-readable, so the runtime user cannot
+# rewrite its own code: a write primitive then buys no persistence across a restart.
 RUN useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin appuser \
- && chown -R 10001:10001 /app
+ && chmod -R a+rX /app
 # THE LAST MUTATION IN THIS STAGE. Files and directories both: a file-only sweep misses
 # the setgid directories the policy scan stops on. Fails closed.
 RUN find / -xdev -perm /6000 \( -type f -o -type d \) -exec chmod a-s {} +

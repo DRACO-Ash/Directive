@@ -24,7 +24,15 @@ MANAGED_VARIABLES = (
     "SESSION_KEY",
     "SHAREPOINT_SITE_ID",
     "REDIRECT_URI",
+    "AUDIT_HMAC_KEY",
+    "AUDIT_KEY_ID",
+    "AUDIT_RETIRED_KEYS",
 )
+
+#: A test signing key. Not a credential: it never leaves the suite and is not the shape
+#: of any real key, so the secret scanner has nothing to flag.
+TEST_KEY = b"test-audit-key-for-the-suite-only-0123456789"
+TEST_KEY_ID = "test-k1"
 
 
 @pytest.fixture(autouse=True)
@@ -59,9 +67,24 @@ def client(writable_data_dir: Path):
 def fixed_entry(index: int = 1) -> dict[str, str]:
     """Return a deterministic set of covered fields. Time is passed in, never read."""
     return {
-        "timestamp": f"2026-08-20T09:0{index}:00Z",
+        "timestamp": f"2026-08-20T09:{index:02d}:00Z",
         "actor": "ash.higgins@bluestaq.uk",
         "action": "TASK_COMPLETE",
         "resource": "lst-Tasks",
-        "resource_id": f"D-0{index}",
+        "resource_id": f"D-{index:02d}",
     }
+
+
+def new_chain(anchor: object = None) -> object:
+    """Return a chain signed with the suite's test key."""
+    from complyops.audit import AuditChain  # noqa: PLC0415 - after the sys.path insert
+
+    return AuditChain(key=TEST_KEY, key_id=TEST_KEY_ID, anchor=anchor)
+
+
+def keys_for_verification() -> dict[str, bytes]:
+    """Return the verification key mapping for the suite's test key.
+
+    Deliberately not named with a ``test_`` prefix: pytest would collect it as a test.
+    """
+    return {TEST_KEY_ID: TEST_KEY}
