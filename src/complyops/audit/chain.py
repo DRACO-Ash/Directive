@@ -138,6 +138,13 @@ class AuditChain:
         self._lock = threading.Lock()
         self.head = anchor.head if anchor else GENESIS_HASH
         self.length = anchor.length if anchor else 0
+        # The archive boundary. Carried, not recomputed: rebuilding it from `length` on
+        # every append discarded it, so the first append after a prune tried to write an
+        # anchor recording fewer entries ever than the stored one, `write_anchor` refused
+        # it, and the audit path wedged. The escape hatch then wrote the regressed anchor
+        # and a restart read it back clean, losing the archived entries with no alarm.
+        self._total_length: int = anchor.total_length if anchor else 0
+        self._pruned_head = anchor.pruned_head if anchor else GENESIS_HASH
         # The key that signed the LAST entry, which is not the current key between a
         # rotation and the next append. Stamping the current key into the anchor during
         # that window made verify_log report untampered evidence as re-signed.
@@ -168,6 +175,7 @@ class AuditChain:
             )
             self.head = digest
             self.length += 1
+            self._total_length += 1
             self._tail_key_id = self._key_id
         return entry
 
@@ -177,7 +185,13 @@ class AuditChain:
         Stamps the key that signed the TAIL, not the key this chain would sign with next.
         """
         with self._lock:
-            return Anchor(head=self.head, length=self.length, key_id=self._tail_key_id)
+            return Anchor(
+                head=self.head,
+                length=self.length,
+                key_id=self._tail_key_id,
+                total_length=self._total_length,
+                pruned_head=self._pruned_head,
+            )
 
 
 def _break(index: int, reason: str, entry: AuditEntry | None = None) -> ChainVerdict:
@@ -286,26 +300,41 @@ def _walk(
 def verify_log(
     entries: Sequence[AuditEntry], keys: Mapping[str, bytes], anchor: Anchor
 ) -> ChainVerdict:
-    """Verify the WHOLE log against its trusted anchor.
+    """Verify the ACTIVE log against its trusted anchor.
+
+    ``entries`` is the whole ACTIVE log, oldest first. It may legitimately begin mid-chain,
+    because AUD-001 prunes the active log annually and archives what it removes, so the
+    walk starts from the anchor's archive boundary rather than from genesis. Starting from
+    genesis reported every pruned log as tampered, which is the one thing this control must
+    never say about clean evidence.
+
+    Scope, stated because it is easy to over-read: this verifies the ACTIVE log. It proves
+    the active entries are unbroken, that they chain from the recorded boundary, that
+    there are as many as the anchor records, and that they end on the anchor's head. It
+    proves NOTHING about the archived entries, because they are not passed in and this
+    function never sees them. Verifying the archive means walking the exported pack from
+    genesis to the boundary digest, which is the export module's job and does not exist
+    yet. A tautological count check was briefly here and removed: ``archived_length`` is
+    derived from the anchor, so summing it back could never disagree with the anchor.
 
     The anchor is positional and required, deliberately. It was previously an optional
     keyword defaulting to off, which meant the ordinary call verified a log fabricated
     from genesis, or truncated to any length, as intact: the control existed only for a
     caller who remembered to opt in, and the first caller to forget would have shipped
-    the hole. If you are verifying a sample rather than the whole log, use
+    the hole. If you are verifying a sample rather than the whole active log, use
     :func:`verify_sample`, which is named so the difference cannot be accidental.
     """
-    verdict = _walk(entries, keys, GENESIS_HASH)
+    verdict = _walk(entries, keys, anchor.pruned_head)
     if not verdict.ok:
         return verdict
 
     if len(entries) != anchor.length:
         return _anchor_break(
             len(entries),
-            f"the log holds {len(entries)} entries but the trusted anchor records "
+            f"the active log holds {len(entries)} entries but the trusted anchor records "
             f"{anchor.length}, so entries were added or removed",
         )
-    ending = entries[-1].entry_hash if entries else GENESIS_HASH
+    ending = entries[-1].entry_hash if entries else anchor.pruned_head
     if not hashes_equal(ending, anchor.head):
         return _anchor_break(
             len(entries),

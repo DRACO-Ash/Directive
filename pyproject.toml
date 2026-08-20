@@ -74,8 +74,8 @@ warn_unreachable = true
 # a forged anchor, refusing a thread) that read as findings out of context.
 exclude_dirs = ["tests", ".venv"]
 
-# Fail the loop on medium and high only. Every low-severity finding in this codebase is
-# B101 (assert) or B404-class noise, and a check that always prints something a reader is
-# told to ignore is a check that trains the reader to ignore the output.
-[tool.bandit.assert_used]
-skips = ["*/tests/*"]
+# No severity floor is set, so the loop fails on a finding at ANY severity, including
+# low. That is stricter than a medium-and-above gate and it is deliberate: with the suite
+# excluded above there is no assert noise to train a reader to ignore the output, so every
+# finding is worth reading. If low-severity noise ever appears, raise the floor explicitly
+# with --severity-level rather than letting the comment drift from the behaviour.

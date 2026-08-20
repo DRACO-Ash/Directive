@@ -7,9 +7,13 @@ applied selectively is a header an attacker reaches the exception to.
 
 Defence in depth, not a boundary. The real boundaries are authentication against Entra
 ID, the server-side authorisation check, and the Cross-Site Request Forgery token. These
-headers reduce what a successful injection can do; they do not stop one. Treat a change
-here as tightening only: loosening a directive to make something render is how a policy
-becomes decoration.
+headers reduce what a successful injection can do; they do not stop one.
+
+Tighten only, and mechanically so. The values below are applied over anything a route
+set, because the earlier `setdefault` implementation was first-writer-wins: a route could
+serve `default-src * 'unsafe-inline'` and keep it, while three documents promised it
+could not. A route that needs a genuinely NARROWER policy calls :func:`tighten`; there is
+no door for a wider one.
 
 The Content-Security-Policy is deliberately strict for an application that serves its own
 interface and calls nothing outbound from the browser: no remote script, no remote style,
@@ -59,10 +63,42 @@ SECURITY_HEADERS: dict[str, str] = {
 }
 
 
+#: Marks a response whose narrower policy must survive the blanket application below.
+#: An explicit door, so a narrowing override is a visible decision in a diff rather than
+#: a side effect of setting a header.
+TIGHTENED_MARKER = "_complyops_tightened"
+
+
+def tighten(response: Response, name: str, value: str) -> Response:
+    """Set a NARROWER value for one header on this response, and protect it.
+
+    The only sanctioned way to depart from :data:`SECURITY_HEADERS`. It is deliberately
+    awkward: a route that needs a wider policy has no door at all, which is the point.
+    """
+    response.headers[name] = value
+    tightened = set(response.headers.get(TIGHTENED_MARKER, "").split(",")) - {""}
+    tightened.add(name)
+    response.headers[TIGHTENED_MARKER] = ",".join(sorted(tightened))
+    return response
+
+
 def apply_security_headers(response: Response) -> Response:
-    """Set every security header on one response, without overwriting a stricter value."""
+    """Set every security header on one response, overwriting anything a route set.
+
+    Overwriting, not `setdefault`. `setdefault` is first-writer-wins, which meant a route
+    returning `default-src * 'unsafe-inline'`, `X-Frame-Options: ALLOWALL` or
+    `max-age=0` kept all three, while this module, CLAUDE.md and the deployment notes all
+    promised tighten-only. The forms and templates slices are exactly where somebody
+    loosens a policy to make a page render, so the guarantee has to be mechanical.
+
+    A genuinely narrower per-route value goes through :func:`tighten`, which records
+    itself so this pass leaves it alone.
+    """
+    tightened = set(response.headers.get(TIGHTENED_MARKER, "").split(",")) - {""}
     for name, value in SECURITY_HEADERS.items():
-        response.headers.setdefault(name, value)
+        if name not in tightened:
+            response.headers[name] = value
+    response.headers.pop(TIGHTENED_MARKER, None)
     return response
 
 
