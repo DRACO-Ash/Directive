@@ -52,12 +52,31 @@ jobs:
       - name: Dependency vulnerabilities (tooling)
         run: python -m pip_audit -r requirements-dev.txt
 
-      # The permission-denied readiness assertions are skipped when the suite runs as
-      # root. This job runs as a non-root user, so they must actually execute here.
-      - name: Confirm the non-root readiness assertions ran
+      # The two real-permission readiness assertions are skipped when the suite runs as
+      # root. This job runs as a non-root user, so they must actually execute here. The
+      # check reads the JUnit report rather than matching the human-readable skip
+      # reason, so rewording that reason cannot silently disarm the guard.
+      - name: Confirm the real-permission readiness assertions ran
+        shell: bash
         run: |
-          python -m pytest tests/test_health.py -q -rs 2>&1 | tee /tmp/health.txt
-          if grep -q "does not deny the root user" /tmp/health.txt; then
-            echo "FAIL: the permission-denied assertions were skipped on the CI runner"
-            exit 1
-          fi
+          set -euo pipefail
+          python -m pytest tests/test_health.py -q --junitxml=/tmp/health.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          required = {
+              "test_readiness_returns_503_with_the_path_and_errno_when_storage_refuses",
+              "test_the_storage_probe_proves_a_write_rather_than_existence",
+          }
+          tree = ET.parse("/tmp/health.xml")
+          seen = {}
+          for case in tree.iter("testcase"):
+              seen[case.get("name")] = [child.tag for child in case]
+          missing = required - set(seen)
+          skipped = {name for name in required & set(seen) if "skipped" in seen[name]}
+          if missing or skipped:
+              print(f"FAIL: missing={sorted(missing)} skipped={sorted(skipped)}")
+              sys.exit(1)
+          print(f"both real-permission assertions executed: {sorted(required)}")
+          PY
