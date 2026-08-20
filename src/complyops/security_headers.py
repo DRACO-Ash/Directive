@@ -25,7 +25,7 @@ is asking for the policy to be weakened and the answer is to change the interfac
 
 from __future__ import annotations
 
-from flask import Flask, Response
+from flask import Flask, Response, g, has_request_context
 
 #: One year, which is the floor for a host to be eligible for browser preloading.
 HSTS_MAX_AGE_SECONDS = 31_536_000
@@ -63,42 +63,82 @@ SECURITY_HEADERS: dict[str, str] = {
 }
 
 
-#: Marks a response whose narrower policy must survive the blanket application below.
-#: An explicit door, so a narrowing override is a visible decision in a diff rather than
-#: a side effect of setting a header.
-TIGHTENED_MARKER = "_complyops_tightened"
+#: The narrower values a route is permitted to set, per header. An ALLOWLIST of exact
+#: values, because "is this Content-Security-Policy narrower than that one?" is not
+#: decidable in general, and a check that cannot decide is a check that waves things
+#: through. Adding a permitted narrowing is a reviewed change to this table.
+#:
+#: A header absent from this table has no narrower value and cannot be overridden at all:
+#: there is nothing stricter than `nosniff`, `DENY`, or `no-referrer`.
+PERMITTED_TIGHTENINGS: dict[str, frozenset[str]] = {
+    "Content-Security-Policy": frozenset(
+        {
+            f"{CONTENT_SECURITY_POLICY}; sandbox",
+            "default-src 'none'; sandbox",
+        }
+    ),
+}
+
+
+class HeaderNotNarrowerError(ValueError):
+    """Raised when a route tries to set a value that is not a sanctioned narrowing."""
 
 
 def tighten(response: Response, name: str, value: str) -> Response:
     """Set a NARROWER value for one header on this response, and protect it.
 
-    The only sanctioned way to depart from :data:`SECURITY_HEADERS`. It is deliberately
-    awkward: a route that needs a wider policy has no door at all, which is the point.
+    The only sanctioned way to depart from :data:`SECURITY_HEADERS`, and it refuses
+    anything not in :data:`PERMITTED_TIGHTENINGS`.
+
+    The first version of this function performed no comparison at all, which made it the
+    door for a WIDER policy while three documents said no such door existed: a route could
+    call it with `default-src * 'unsafe-inline'` and reach the client. Two further holes
+    came from keeping the bookkeeping in the response headers: marking a header tightened
+    without setting it deleted the header entirely, and a route that reflects a request
+    header handed the choice to the client, who could remove any header by naming it. The
+    bookkeeping is now request-scoped state that never touches the wire, and this function
+    always sets the value itself, so neither is reachable.
     """
+    permitted = PERMITTED_TIGHTENINGS.get(name, frozenset())
+    if value not in permitted:
+        raise HeaderNotNarrowerError(
+            f"{value!r} is not a sanctioned narrower value for {name!r}. Permitted: "
+            f"{sorted(permitted) or 'none, this header has no narrower value'}. A WIDER "
+            f"value is never permitted."
+        )
     response.headers[name] = value
-    tightened = set(response.headers.get(TIGHTENED_MARKER, "").split(",")) - {""}
-    tightened.add(name)
-    response.headers[TIGHTENED_MARKER] = ",".join(sorted(tightened))
+    _tightened().add(name)
     return response
+
+
+def _tightened() -> set[str]:
+    """Return the set of headers this request has legitimately narrowed.
+
+    Held on the request context, not on the response, so it cannot be set by a client, sent
+    to one, or confused with a header a route echoes.
+    """
+    if not hasattr(g, "_complyops_tightened"):
+        g._complyops_tightened = set()
+    tightened: set[str] = g._complyops_tightened
+    return tightened
 
 
 def apply_security_headers(response: Response) -> Response:
     """Set every security header on one response, overwriting anything a route set.
 
     Overwriting, not `setdefault`. `setdefault` is first-writer-wins, which meant a route
-    returning `default-src * 'unsafe-inline'`, `X-Frame-Options: ALLOWALL` or
-    `max-age=0` kept all three, while this module, CLAUDE.md and the deployment notes all
-    promised tighten-only. The forms and templates slices are exactly where somebody
-    loosens a policy to make a page render, so the guarantee has to be mechanical.
+    returning `default-src * 'unsafe-inline'`, `X-Frame-Options: ALLOWALL` or `max-age=0`
+    kept all three, while this module and the deployment notes promised tighten-only. The
+    forms and templates slices are exactly where somebody loosens a policy to make a page
+    render, so the guarantee has to be mechanical.
 
-    A genuinely narrower per-route value goes through :func:`tighten`, which records
-    itself so this pass leaves it alone.
+    A header is left alone only when :func:`tighten` set it during this request, which
+    means it passed the allowlist. A route cannot reach that state by setting a header.
     """
-    tightened = set(response.headers.get(TIGHTENED_MARKER, "").split(",")) - {""}
+    tightened = _tightened() if has_request_context() else set()
     for name, value in SECURITY_HEADERS.items():
         if name not in tightened:
             response.headers[name] = value
-    response.headers.pop(TIGHTENED_MARKER, None)
     return response
 
 

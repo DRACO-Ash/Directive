@@ -9,8 +9,8 @@ deletion breaks every hash after it.
 
 Keying answers the re-stamp. Chaining alone is only evidence against an attacker who
 cannot recompute the chain, and the attacker named in the threat model can: somebody
-with item-edit rights on the list, using this documented algorithm. HMAC-SHA256 under a
-key held by the server and never written to the list means edit rights are no longer
+with write access to the stored log, using this documented algorithm. HMAC-SHA256 under a
+key held by the server and never written alongside the log means write access is no longer
 enough (`keys`).
 
 Neither half answers a wholesale rewrite from the genesis anchor, and nor can they: a
@@ -64,9 +64,11 @@ from typing import TypeGuard
 #:   deliberately under legitimate interest per POL-002 section 03.
 #: ● `fields_changed`: the NAMES of the fields a change touched, never their values.
 #: ● `old_state`, `new_state`: the before and after of an enumerated workflow state,
-#:   such as a task status or an incident phase. The character rule on these two is what
-#:   keeps record content out of an immutable log, so it is a structural guarantee and
-#:   not a promise about how a caller uses them.
+#:   such as a task status or an incident phase, under a character rule that rejects the
+#:   common SHAPES of record content. Read `validation._STATE` before relying on that: it
+#:   is a large reduction in surface, NOT an impossibility, and `HIGGINS` satisfies it.
+#:   Caller discipline is load-bearing for every free-form field here, which is all of
+#:   them except `outcome`.
 FIELD_ORDER: tuple[str, ...] = (
     "timestamp",
     "actor",
@@ -89,8 +91,9 @@ HASH_LENGTH = 64
 
 _HEX_HASH = re.compile(r"\A[0-9a-f]{64}\Z")
 
-#: The fields that must carry a value on every entry, whatever the event category. The
-#: rest may be empty, and the key identifier is always supplied by the caller.
+#: The fields that must carry a value on every entry, whatever the event category, kept
+#: here only so the parity test can hold it against `validation.REQUIRED_FIELDS`. The hash
+#: path does NOT enforce it: see the note in `canonical_payload`.
 _REQUIRED_NON_EMPTY = frozenset(
     {"timestamp", "actor", "action", "resource", "resource_id", "\x00key_id"}
 )
@@ -121,10 +124,20 @@ def canonical_payload(fields: Mapping[str, str], key_id: str) -> bytes:
     parts: list[bytes] = []
     for name in (*FIELD_ORDER, "\x00key_id"):
         value = key_id if name == "\x00key_id" else fields.get(name)
-        # Present but empty is legitimate: a field that does not apply to an event is
-        # recorded empty, and the length prefix renders that unambiguously as `0:`. A
-        # MISSING field is not, because it would silently shift the payload.
-        if not isinstance(value, str) or (not value and name in _REQUIRED_NON_EMPTY):
+        # Type is the ONE rule the hash path enforces, and it covers absence too, because
+        # `fields.get` yields None for a missing key. Two things it deliberately does NOT
+        # enforce:
+        #
+        # The required-field rule. Enforcing it here made `entry_hash` raise on legitimately
+        # written history the moment the required set was tightened, and the verifier
+        # reported that as "chain broken", against the rule that history written under
+        # looser rules must never read as tampering. A tightening now falls through to the
+        # boundary rule check, which reports `invalid_under_current_rules` truthfully.
+        #
+        # Emptiness. A field that does not apply to an event is recorded empty and the
+        # length prefix renders that unambiguously as `0:`, so an empty value is legitimate
+        # while an absent one is not: absence would silently shift every later field.
+        if not isinstance(value, str):
             raise AuditHashError(f"audit entry is missing the {name.lstrip(chr(0))!r} field")
         encoded = value.encode("utf-8")
         parts.append(f"{len(encoded)}:".encode("ascii"))
