@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -214,7 +216,9 @@ def test_diagnostics_reports_presence_and_length_never_the_value(
     assert body["version"] == __version__
     assert body["storageWritable"] is True
     assert injected not in response.get_data(as_text=True)
-    assert str(len(injected)) not in response.get_data(as_text=True)
+    # Scoped to the inputs block. Matching the exact length against the WHOLE body caught
+    # the pytest temp directory ("/tmp/bt44/..."), which is a flake, not a leak.
+    assert str(len(injected)) not in json.dumps(body["inputs"])
 
 
 @pytest.mark.parametrize(
@@ -282,3 +286,76 @@ def test_the_probe_reports_the_errno_when_a_path_component_is_a_file(tmp_path: P
     assert verdict.writable is False
     assert verdict.errno == errno.ENOTDIR
     assert verdict.detail == "ENOTDIR"
+
+
+def test_the_audit_signing_key_is_among_the_reported_inputs(client) -> None:
+    """The deployment notes rest the recovery path for that secret on this read-out."""
+    assert "AUDIT_HMAC_KEY" in health.CRITICAL_INPUTS
+    assert "AUDIT_HMAC_KEY" in client.get("/api/diagnostics").get_json()["inputs"]
+
+
+def test_the_probe_is_single_flight_so_one_thread_serves_every_waiting_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unauthenticated path must not abandon one thread per request.
+
+    Measured before this control existed: 300 requests against a stalled mount left 300
+    live threads, while liveness stayed 200 so the platform never restarted the pod. At
+    the container thread ceiling the process could no longer create threads at all.
+    """
+    started: list[str] = []
+    release = threading.Event()
+
+    def stall(path: str) -> health.StorageVerdict:
+        started.append(path)
+        release.wait(timeout=5)
+        return health.StorageVerdict(writable=True, path=path)
+
+    monkeypatch.setattr(health, "_write_probe", stall)
+    before = threading.active_count()
+    callers = [
+        threading.Thread(target=lambda: health.probe_storage(str(tmp_path), timeout_seconds=0.05))
+        for _ in range(25)
+    ]
+    for thread in callers:
+        thread.start()
+    peak = threading.active_count()
+    for thread in callers:
+        thread.join()
+    release.set()
+
+    assert len(started) == 1, f"{len(started)} probes started for 25 callers"
+    assert peak - before <= 27, "the callers themselves are threads; the probe must add one"
+    assert threading.active_count() - before <= 2
+
+
+def test_the_probe_reports_a_refusal_to_start_rather_than_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At the thread ceiling the probe must still return a verdict.
+
+    Raising here destroys readiness and diagnostics at exactly the moment an operator
+    needs them, which is the recovery channel the read-out exists to be.
+    """
+
+    def refuse(_self: object) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(health._Probe, "start", refuse)
+    verdict = health.probe_storage(str(tmp_path))
+    assert verdict.writable is False
+    assert "could not start" in (verdict.detail or "")
+
+
+def test_readiness_and_diagnostics_survive_a_refusal_to_start_a_thread(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(_self: object) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(health._Probe, "start", refuse)
+    health.reset_diagnostics_cache()
+    assert client.get("/readyz").status_code == 503
+    assert client.get("/api/diagnostics").status_code == 200
+    assert client.get("/livez").status_code == 200
