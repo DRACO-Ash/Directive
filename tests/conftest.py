@@ -32,7 +32,7 @@ MANAGED_VARIABLES = (
 #: A test signing key, as the application requires it: real key material decoding to at
 #: least 32 bytes. Deterministic and published in this file on purpose, so it is not a
 #: credential and the secret scanner has nothing to flag.
-TEST_KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+TEST_KEY_HEX = bytes(range(32)).hex()
 TEST_KEY = bytes.fromhex(TEST_KEY_HEX)
 TEST_KEY_ID = "test-k1"
 
@@ -47,6 +47,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         monkeypatch.delenv(name, raising=False)
     anchor.reset_high_water_mark()
     health.reset_diagnostics_cache()
+    health.reset_probe_registry()
     yield
 
 
@@ -86,7 +87,7 @@ def new_chain(anchor: object = None) -> object:
     """Return a chain signed with the suite's test key."""
     from complyops.audit import AuditChain  # noqa: PLC0415 - after the sys.path insert
 
-    return AuditChain(key=TEST_KEY, key_id=TEST_KEY_ID, anchor=anchor)
+    return AuditChain(anchor, key=TEST_KEY, key_id=TEST_KEY_ID)
 
 
 def anchored(chain: object) -> object:

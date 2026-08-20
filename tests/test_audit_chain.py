@@ -44,7 +44,7 @@ def test_every_entry_records_the_key_that_signed_it() -> None:
 def test_a_chain_refuses_a_key_identifier_that_never_passed_the_field_rules() -> None:
     """The key id reaches the digest and every stored row without the field rules."""
     with pytest.raises(AuditFieldError, match="signing key identifier"):
-        AuditChain(key=TEST_KEY, key_id="=cmd|' /c calc'!A1")
+        AuditChain(None, key=TEST_KEY, key_id="=cmd|' /c calc'!A1")
 
 
 def test_an_intact_log_verifies_against_its_anchor() -> None:
@@ -177,7 +177,7 @@ def test_a_log_re_signed_with_a_leaked_retired_key_is_caught() -> None:
     current_chain, _ = build(3)
     anchor = current_chain.anchor()
 
-    forged_chain = AuditChain(key=retired_key, key_id=retired_id)
+    forged_chain = AuditChain(None, key=retired_key, key_id=retired_id)
     forged = [forged_chain.append(fixed_entry(index)) for index in (1, 2, 3)]
     verdict = verify_log(forged, keys, anchor)
     assert not verdict.ok
@@ -291,20 +291,27 @@ def test_concurrent_appends_do_not_fork_the_chain() -> None:
     chain = new_chain()
     collected: list[object] = []
     collect_lock = threading.Lock()
-    count = 64
+    workers, per_worker = 16, 8
+    count = workers * per_worker
+    # A barrier, several appends per worker, and the finest switch interval. With one
+    # append per thread and no barrier the same mutation survived a lucky run, so the
+    # control could be deleted without the suite noticing.
+    ready = threading.Barrier(workers)
 
     def worker(index: int) -> None:
-        entry = chain.append(fixed_entry(index % 60))
-        with collect_lock:
-            collected.append(entry)
+        ready.wait()
+        for step in range(per_worker):
+            entry = chain.append(fixed_entry((index * per_worker + step) % 60))
+            with collect_lock:
+                collected.append(entry)
 
     previous_interval = sys.getswitchinterval()
     sys.setswitchinterval(1e-9)
     try:
-        workers = [threading.Thread(target=worker, args=(index,)) for index in range(count)]
-        for thread in workers:
+        threads = [threading.Thread(target=worker, args=(index,)) for index in range(workers)]
+        for thread in threads:
             thread.start()
-        for thread in workers:
+        for thread in threads:
             thread.join()
     finally:
         sys.setswitchinterval(previous_interval)
@@ -336,3 +343,65 @@ def test_an_entry_that_cannot_be_re_hashed_reports_a_break_rather_than_raising()
     verdict = verify_log(entries, KEYS, chain.anchor())
     assert not verdict.ok
     assert "could not be re-hashed" in (verdict.reason or "")
+
+
+def test_a_key_rotation_does_not_make_untampered_evidence_read_as_tampered() -> None:
+    """The window between a rotation and the next append is days on a compliance console.
+
+    The chain used to stamp the CURRENT key into the anchor while the tail was still
+    signed by the previous one, so verify_log reported clean evidence as re-signed.
+    """
+    rotated_key = bytes(range(16)) + bytes(range(240, 256))
+    keys = {**KEYS, "k2": rotated_key}
+
+    old_chain, entries = build(3)
+    rotated = AuditChain(old_chain.anchor(), key=rotated_key, key_id="k2")
+
+    assert rotated.anchor().key_id == TEST_KEY_ID, "the anchor must name the tail's signer"
+    verdict = verify_log(entries, keys, rotated.anchor())
+    assert verdict.ok, verdict.summary()
+    assert not verdict.tampered
+
+    fourth = rotated.append(fixed_entry(4))
+    assert rotated.anchor().key_id == "k2"
+    assert verify_log([*entries, fourth], keys, rotated.anchor()).ok
+
+
+def test_a_configuration_fault_is_not_reported_as_tampering() -> None:
+    """A mistyped retired key used to produce a verdict indistinguishable from an attack."""
+    chain, entries = build(1)
+    entries[0] = dataclasses.replace(entries[0], key_id="k-not-configured")
+    verdict = verify_log(entries, KEYS, chain.anchor())
+    assert not verdict.ok
+    assert verdict.key_unavailable
+    assert not verdict.tampered
+    assert "configuration fault" in verdict.summary()
+
+
+def test_a_real_break_reports_as_tampering() -> None:
+    """The boundary in the other direction: the flag must not swallow a real attack."""
+    chain, entries = build(2)
+    entries[0] = dataclasses.replace(entries[0], actor="TAMPERED")
+    verdict = verify_log(entries, KEYS, chain.anchor())
+    assert verdict.tampered
+    assert not verdict.key_unavailable
+    assert not verdict.invalid_under_current_rules
+
+
+def test_an_anchor_level_break_reports_no_entry_index() -> None:
+    """A three-entry log used to report "chain broken at index 3", which no entry occupies."""
+    chain, entries = build(3)
+    verdict = verify_log(entries[:2], KEYS, chain.anchor())
+    assert verdict.break_index is None
+    assert "does not match its trusted anchor" in verdict.summary()
+
+
+def test_a_chain_requires_its_anchor_to_be_passed_explicitly() -> None:
+    """A fresh install must be an explicit None, never a forgotten argument.
+
+    Defaulting it meant the shortest call produced a genesis chain, and writing that
+    anchor destroyed the trusted head. That is the same fail-open shape verify_log's
+    required positional anchor exists to prevent.
+    """
+    with pytest.raises(TypeError):
+        AuditChain(key=TEST_KEY, key_id=TEST_KEY_ID)  # type: ignore[call-arg]

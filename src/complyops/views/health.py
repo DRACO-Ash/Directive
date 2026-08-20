@@ -24,6 +24,7 @@ from pathlib import Path
 from flask import Blueprint, Response, current_app, jsonify
 
 from .. import config
+from ..audit.keys import key_is_usable
 from ..version import __version__
 
 #: Strictly shorter than the platform's readiness probe timeout, so a stalled mount
@@ -82,6 +83,12 @@ def length_bucket(length: int) -> str:
     if length < FULL_VALUE_LENGTH:
         return "16-31"
     return "32+"
+
+
+def reset_probe_registry() -> None:
+    """Drop any in-flight probe registration. For tests only."""
+    with _probe_lock:
+        _in_flight.clear()
 
 
 def reset_diagnostics_cache() -> None:
@@ -280,6 +287,25 @@ def readiness() -> tuple[Response, int]:
     )
 
 
+def _input_report(name: str) -> dict[str, object]:
+    """Report one configured input: present, banded length, and usable where knowable.
+
+    Presence and a length band cannot tell a usable value from one its consumer refuses.
+    A quoted key, a padded key and a passphrase all render as present at the same band as
+    a correct key, so an operator who made the exact mistake the deployment notes warn
+    against saw a read-out saying all was well and a dead audit path. Where a consumer has
+    a validator, its verdict is reported as a boolean, which leaks nothing further.
+    """
+    value = config.env(name)
+    report: dict[str, object] = {
+        "present": bool(value),
+        "lengthBucket": length_bucket(len(value)),
+    }
+    if name == "AUDIT_HMAC_KEY":
+        report["usable"] = key_is_usable()
+    return report
+
+
 @health_bp.get("/api/diagnostics")
 def diagnostics() -> Response:
     """Report booleans, counts, and lengths. Never a configured value.
@@ -299,12 +325,6 @@ def diagnostics() -> Response:
             "storageWritable": verdict.writable,
             "storageErrno": verdict.errno,
             "logViewEvents": settings.log_view_events,
-            "inputs": {
-                name: {
-                    "present": bool(config.env(name)),
-                    "lengthBucket": length_bucket(len(config.env(name))),
-                }
-                for name in CRITICAL_INPUTS
-            },
+            "inputs": {name: _input_report(name) for name in CRITICAL_INPUTS},
         }
     )
