@@ -2,18 +2,19 @@
 
 The chain is keyed rather than plain. An unkeyed SHA-256 chain over a documented
 construction is only tamper-evident against an attacker who cannot recompute it, and the
-attacker this log defends against is named in the threat model: somebody with item-edit
-rights on the SharePoint list. That actor can edit a row and recompute every hash after
-it, and an unkeyed verifier would report the result as intact.
+attacker this log defends against is named in the threat model: somebody with write
+access to the stored log. That actor can edit a row and recompute every hash after it,
+and an unkeyed verifier would report the result as intact.
 
-Keying with HMAC-SHA256 under a key the list editor does not hold removes that, because
-re-stamping needs the key as well as edit rights. The key is delivered on the same
-channel as the session key, never written to the list, and never logged.
+Keying with HMAC-SHA256 under a key that actor does not hold removes that, because
+re-stamping needs the key as well as write access. The key is delivered on the same
+channel as the session key, never written alongside the log, and never logged.
 
 The key must be real key material, and "real" is an entropy claim, not a length claim.
-Every stored row is a message and its tag, and the list is readable by more people than
-hold the key, so a low-entropy value falls to an offline attack and hands back full
-re-stamping power over the primary asset. A character floor cannot express that: a
+Every stored row is a message and its tag, and the log is readable by more people than
+hold the key, because an exported evidence pack reaches an assessor, so a low-entropy
+value falls to an offline attack and hands back full re-stamping power over the primary
+asset. A character floor cannot express that: a
 32-character passphrase was refused while the same passphrase re-spelt in the base64
 alphabet at 44 characters was accepted, and `"deadbeef" * 8` decodes to 32 perfectly
 shaped bytes drawn from four distinct values. So the decoded material is required to

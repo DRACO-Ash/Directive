@@ -12,7 +12,7 @@ import logging
 from flask import Flask
 from flask.json.provider import DefaultJSONProvider
 
-from . import config
+from . import config, security_headers
 from .version import __version__
 from .views import health_bp
 from .views.health import probe_storage
@@ -30,6 +30,9 @@ def create_app() -> Flask:
     # test asserts the result, so a provider change cannot make this a silent no-op.
     if isinstance(app.json, DefaultJSONProvider):
         app.json.sort_keys = False
+    # AMD-001 section 10.6: every response, including a probe and an error page.
+    security_headers.register(app)
+
     app.register_blueprint(health_bp)
 
     _log_boot_verdict(app)

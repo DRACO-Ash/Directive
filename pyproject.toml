@@ -67,3 +67,15 @@ mypy_path = "src"
 packages = ["complyops"]
 strict = true
 warn_unreachable = true
+
+[tool.bandit]
+# Static application security testing, required by AMD-001 section 10.6 on every code
+# change. Scoped to the shipped code: the suite deliberately does hostile things (planting
+# a forged anchor, refusing a thread) that read as findings out of context.
+exclude_dirs = ["tests", ".venv"]
+
+# Fail the loop on medium and high only. Every low-severity finding in this codebase is
+# B101 (assert) or B404-class noise, and a check that always prints something a reader is
+# told to ignore is a check that trains the reader to ignore the output.
+[tool.bandit.assert_used]
+skips = ["*/tests/*"]

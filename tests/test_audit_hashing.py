@@ -30,13 +30,33 @@ def test_the_construction_is_pinned_by_a_golden_vector() -> None:
     breaks every historical entry, and a test that derives its expectation from the
     code it checks cannot see any of them.
     """
-    assert hashing.FIELD_ORDER == ("timestamp", "actor", "action", "resource", "resource_id")
+    assert hashing.FIELD_ORDER == (
+        "timestamp",
+        "actor",
+        "action",
+        "resource",
+        "resource_id",
+        "outcome",
+        "source_ip",
+        "user_agent",
+        "fields_changed",
+        "old_state",
+        "new_state",
+    )
+    # An empty optional field is `0:`, which is what makes a fixed field set safe: the
+    # payload cannot shift when a field does not apply to an event.
     payload = (
         b"20:2026-08-20T09:01:00Z"
         b"23:ash.higgins@bluestaq.uk"
         b"13:TASK_COMPLETE"
         b"9:lst-Tasks"
         b"4:D-01"
+        b"0:"
+        b"0:"
+        b"0:"
+        b"0:"
+        b"0:"
+        b"0:"
         b"7:test-k1"
     )
     expected = hmac.new(
@@ -51,7 +71,7 @@ def test_the_digest_is_keyed_so_edit_rights_alone_cannot_re_stamp() -> None:
     other = hashing.entry_hash(
         hashing.GENESIS_HASH,
         fixed_entry(),
-        key=b"a-different-key-of-sufficient-length!",
+        key=bytes(range(100, 132)),
         key_id=TEST_KEY_ID,
     )
     assert other != digest()

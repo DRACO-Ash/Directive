@@ -53,7 +53,7 @@ The correct console state for a code-defaults app is an EMPTY environment tab fo
 | Add-on | Needed | Why |
 |---|---|---|
 | FILE_STORAGE | Yes | The server-side session store and the audit anchor must survive a restart. The anchor records where the audit log should end. It is written atomically and durably, authenticated under the signing key so an actor with volume access but no key can neither forge nor alter one, and it will not accept a write that shortens the record. Read the limits below before relying on it. Injects `STORAGE_MOUNT_PATH=/data`. |
-| POSTGRESQL | No | All records of authority live in SharePoint Lists. |
+| POSTGRESQL | No | Records live in local files on the FILE_STORAGE volume, exported for upload to SharePoint by hand. A database is not needed for the record volumes involved, and adding one would put the system of record somewhere the export cannot reach atomically. |
 | REDIS | No | Considered as a session store instead of FILE_STORAGE. `TBC, re-verify` if session contention appears. |
 | CLAMAV | No | The app accepts no file uploads in this release. |
 
@@ -89,15 +89,66 @@ There is no separate rollback on this platform. Roll back by resubmitting the pr
 
 ● The image has not been built or probed. The Docker daemon is unavailable in the build environment, so the non-root user, the port binding, the absence of a package manager, the absence of setuid bits, and the flattened single layer are verified by construction against the Dockerfile, not by running the container. Before the deploy gate, build it and run: `docker run --rm --entrypoint sh comply-ops -c 'command -v apt-get dpkg apt pip pip3; find / -xdev -perm /6000; id'` and expect no command found, no path listed, and `uid=10001`.
 ● Request-time fail-closed handling of a missing or stale credential is not implemented. Nothing yet consumes `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `SESSION_KEY`, `SHAREPOINT_SITE_ID` or `REDIRECT_URI` outside the diagnostics read-out. It lands with the authentication module.
-● The audit anchor is not yet written by any code path, because no entry is yet persisted. The store and its verification are in place and tested; wiring them to the SharePoint write path lands with the Graph module, and that is also where the cross-process append lock has to become a conditional write against the list.
+● The audit anchor is not yet written by any code path, because no entry is yet persisted. The store and its verification are in place and tested; wiring them to the record write path lands with the records module, and that is also where the in-process append lock has to become an inter-process lock on the storage volume, since the container serves two gunicorn workers.
 ● Rate limiting is not implemented. When it lands, `/readyz` and `/api/diagnostics` both belong behind the broad limiter. The per-request amplification is already closed: the storage probe is single-flight, so concurrent callers join one probe rather than each starting a thread.
 ● **What the anchor does not do, stated plainly because it was over-claimed twice.** The anchor is a file on the persistent volume, so an actor who can write that volume can delete it, and can delete anything else placed there to notice the deletion. Two controls were added in successive review rounds to close that: an authentication tag, and a first-use marker so that an absent anchor reads as a tamper alarm rather than a fresh install. The tag holds and is worth having. The marker only raised the cost from one deletion to two, in the same directory, which is no cost at all to an actor who already holds write access to it. It is kept, and it is now authenticated so an unkeyed actor can neither forge nor plant one, but it does not close the attack.
 
-  Against the attacker the threat model actually names, somebody with item-edit rights on the SharePoint list but no volume access and no key, the anchor works: an edit, a re-stamp, a reorder, a deletion, a truncation and a wholesale replacement are all caught.
+  Against the attacker the threat model actually names, somebody with write access to the stored log but no volume access and no key, the anchor works: an edit, a re-stamp, a reorder, a deletion, a truncation and a wholesale replacement are all caught.
 
   Against an actor with write access to the volume, deleting both files leaves a state indistinguishable from a fresh install. What closes that is corroboration against a store the volume attacker does not control. In this application that is the list itself: "the list holds audit rows but the volume holds no anchor" is the tamper alarm, and "neither holds anything" is the only honest fresh install. That comparison needs the Graph read path, so it lands with that module, and `read_anchor` returning nothing means only "this volume holds no anchor", never "the log is empty". **Do not treat this control as complete until that corroboration exists.** `TBC, re-verify` the design with the ISM.
 
-  Compensating controls in the meantime: SharePoint list versioning and retention on the list itself, restricting write access to the FILE_STORAGE volume as tightly as the platform allows, and the operator exporting the anchor into the evidence library on a schedule so an offline copy exists.
+  Compensating controls in the meantime: restricting write access to the FILE_STORAGE volume as tightly as the platform allows, SharePoint versioning and retention on the exported packs once uploaded, and exporting on a defined cadence so an off-volume copy always exists. See "The export cadence is a security control" below.
 ● The base image is patched by rebasing to a newer pinned digest, not by `apt-get upgrade` at build time, so the image stays reproducible from its pinned inputs. Check for a newer `python:3.12-slim` digest before each release.
 ● The platform pipeline simulation has not been run against a package artefact, because no package script exists yet. It must be green before any upload.
 ● Deployment to the App Store rather than Azure App Service is not yet signed off by the Managing Director.
+
+## AUD-001 and AMD-001 conformance
+
+Where this build satisfies the policy, where it exceeds it, and where it does not. An
+assessor reading this table should not have to take anything on trust, so each row says
+what to look at.
+
+| Policy requirement | This build | Evidence |
+| --- | --- | --- |
+| AUD-001, SHA-256 hash over timestamp, user, action, resource | **Exceeded.** HMAC-SHA256 under a server-held key, over the full AUD-001 event field set, chained to the previous entry. Deviation recorded for the Managing Director's sign-off. | `src/complyops/audit/hashing.py`, golden vector in `tests/test_audit_hashing.py` |
+| AUD-001, write-once from the application's perspective | **Met.** The application appends and never updates or deletes. | `AuditChain.append` is the only write path |
+| AUD-001, event field set (all seven categories) | **Met**, in one fixed shape rather than one per category, because a digest over a varying field set cannot be verified without knowing the variant. | `FIELD_ORDER`, `tests/test_audit_validation.py` |
+| AUD-001, old and new value of a changed field | **Deviated, deliberately.** Field NAMES only in `fields_changed`; an enumerated workflow state in `old_state` and `new_state` under a character rule that structurally cannot hold record content. Ash's decision, recorded for sign-off. | `src/complyops/audit/validation.py` |
+| AUD-001, 24-month active retention, annual CSV export, annual pruning | **Met by design, not yet implemented.** The anchor records the archive boundary so pruning never breaks the chain. The export and prune procedure itself lands with the export module. | `Anchor.after_prune`, `tests/test_audit_anchor.py` |
+| AUD-001, Q-06 quarterly hash verification on a sample | **Met.** `verify_sample` is the sampling entry point and cannot report a truncation, by construction. Whole-log verification is `verify_log`, which requires the anchor. | `src/complyops/audit/chain.py` |
+| AUD-001, SharePoint list versioning and ISC-Owners permission as the delete control | **Not in the live path.** The application no longer writes to SharePoint, so this control applies to the exported evidence pack once uploaded, and not before. See the export cadence note below. | This document |
+| AUD-001, Monitoring and Alerting (five Application Insights alerts) | **Not applicable as written.** The App Store does not provide Application Insights. `TBC, re-verify`: AUD-001 needs an amendment naming the platform equivalent. The gap is open, not covered. | Adam Field owns the amendment |
+| AUD-001, timestamps in UTC (IASME 12.3) | **Met.** RFC 3339 in UTC is the only accepted form; a local offset is rejected at the boundary. | `validation._check_timestamp` |
+| AMD-001 10.6, static application security testing on every change | **Met.** `bandit` in the local loop and in Continuous Integration. `ruff` and `mypy` are a linter and a type checker and do not satisfy this clause. | `scripts/verify.sh`, `.github/workflows/verify.yml` |
+| AMD-001 10.6, dependencies pinned with integrity verification | **Met.** Exact pins, hash-locked, installed with `--require-hashes`. | `requirements.txt`, `Dockerfile` |
+| AMD-001 10.6, security headers on all responses | **Met.** All four named headers, plus three more, on every response including probes and error pages. | `src/complyops/security_headers.py`, `tests/test_security_headers.py` |
+| AMD-001 10.6, SECURITY.md linking POL-006 | **Met.** | `SECURITY.md` |
+| AMD-001 10.6, secrets never in source, environment variables, or configuration | **Partially deviated.** No secret is in source or in history. Secrets DO arrive as environment variables, because that is the App Store's only injection mechanism; Azure Key Vault is not available on this platform. `TBC, re-verify` the wording with the ISM. | `.env.example`, App Store environment configuration |
+| AMD-001 10.6, input validation, output encoding, CSRF tokens | **Not yet.** No request-handling route exists beyond the health and diagnostics paths. Lands with the forms module. | Open |
+| AMD-001 10.6, OWASP Top 10 testing before deployment | **Not yet.** Named for the September 2026 penetration test per AMD-001 11.5. | Open |
+| AMD-001 10.4, accreditation review before production deployment | **Not yet.** Required before the first deploy, and it is the Managing Director's sign-off. | Open |
+
+## The export cadence is a security control
+
+This needs stating plainly because it is a consequence of the standalone-files decision
+that is easy to miss.
+
+The application is the system of record on its own volume. AUD-001 rests its
+delete-and-modify control on SharePoint list versioning and ISC-Owners permission, and
+with no SharePoint integration that control does not sit in the live path any more. It
+applies to the evidence pack once uploaded, and to nothing before.
+
+So between exports, the volume holds the only copy of the audit log and its anchor, and
+an actor with write access to that volume can delete both. That is the open blind spot
+recorded above, and the export is what closes it: an uploaded pack is a copy held
+somewhere that actor does not control, and it carries the anchor, so a later deletion
+becomes detectable by comparison.
+
+Two things follow. **Export on a defined cadence, not when convenient**, and record the
+cadence in the operating rhythm so a missed export is visible as a missed task rather
+than as nothing at all. And **keep the anchor with the pack**, because a pack without it
+proves the entries were internally consistent and nothing about whether any were removed.
+
+`TBC, re-verify` the cadence with the ISM. The audit log review rhythm in AUD-001 is
+weekly, monthly and quarterly, so a weekly export aligned to task W-01 is the obvious
+candidate and is not yet agreed.

@@ -34,16 +34,32 @@ def test_the_snapshot_is_independent_of_the_caller_mapping() -> None:
     assert len(reads) == 1
 
 
-@pytest.mark.parametrize("field", sorted(validation.FIELD_LIMITS))
-def test_a_missing_field_is_rejected(field: str) -> None:
+@pytest.mark.parametrize("field", validation.REQUIRED_FIELDS)
+def test_a_missing_required_field_is_rejected(field: str) -> None:
     fields = fixed_entry()
     del fields[field]
     with pytest.raises(validation.AuditFieldError, match=field):
         validation.normalise_fields(fields)
 
 
+@pytest.mark.parametrize(
+    "field",
+    sorted(set(validation.FIELD_LIMITS) - set(validation.REQUIRED_FIELDS)),
+)
+def test_a_per_category_field_may_be_absent_or_empty(field: str) -> None:
+    """An authentication event has no fields_changed; a task completion has no user agent.
+
+    Absent and empty must both normalise to empty, so the digest covers a fixed shape
+    whatever the event category.
+    """
+    without = fixed_entry()
+    del without[field]
+    assert validation.normalise_fields(without)[field] == ""
+    assert validation.normalise_fields(fixed_entry(**{field: ""}))[field] == ""
+
+
 @pytest.mark.parametrize("blank", ["", "   ", "\t"])
-def test_a_blank_field_is_rejected(blank: str) -> None:
+def test_a_blank_required_field_is_rejected(blank: str) -> None:
     fields = fixed_entry()
     fields["resource"] = blank
     with pytest.raises(validation.AuditFieldError):
@@ -206,3 +222,108 @@ def test_a_conforming_action_is_accepted(good: str) -> None:
     fields = fixed_entry()
     fields["action"] = good
     assert validation.normalise_fields(fields)["action"] == good
+
+
+@pytest.mark.parametrize("outcome", ["SUCCESS", "FAILURE"])
+def test_an_authentication_outcome_is_accepted(outcome: str) -> None:
+    """AUD-001 requires success or failure on an authentication event."""
+    assert validation.normalise_fields(fixed_entry(outcome=outcome))["outcome"] == outcome
+
+
+@pytest.mark.parametrize("outcome", ["success", "PARTIAL", "OK", "SUCCESS "])
+def test_an_outcome_outside_the_closed_set_is_rejected(outcome: str) -> None:
+    """A closed set, so the column cannot drift into free text."""
+    with pytest.raises(validation.AuditFieldError, match="outcome"):
+        validation.normalise_fields(fixed_entry(outcome=outcome))
+
+
+@pytest.mark.parametrize("state", ["OPEN", "IN_PROGRESS", "PHASE_3", "A", "S" * 32])
+def test_an_enumerated_workflow_state_is_accepted(state: str) -> None:
+    """A task status and an incident phase are exactly what AUD-001 wants recorded."""
+    fields = validation.normalise_fields(fixed_entry(old_state="OPEN", new_state=state))
+    assert fields["new_state"] == state
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("an email address", "ash.higgins@bluestaq.uk"),
+        ("a person's name", "Ash Higgins"),
+        ("a postal address", "1 Example Street"),
+        ("lower case free text", "reporter was jane"),
+        ("a short sentence", "REPORTER CHANGED"),
+    ],
+)
+def test_a_state_field_structurally_cannot_carry_record_content(label: str, value: str) -> None:
+    """The pattern is the data-minimisation control, not a convention.
+
+    AUD-001 asks for the old and new value of a changed field. For a status that is
+    right; for an incident's content it would put personal data into a log that is
+    immutable by design, which no correction and no Article 17 erasure can reach. A field
+    that cannot hold a name, an address, an email or a sentence cannot carry that content
+    by accident, whatever a future caller intends.
+    """
+    with pytest.raises(validation.AuditFieldError, match="cannot carry record content"):
+        validation.normalise_fields(fixed_entry(new_state=value))
+    assert label
+
+
+@pytest.mark.parametrize("value", ["REPORTER CHANGED TO A NAMED INDIVIDUAL", "S" * 33])
+def test_a_state_field_longer_than_a_state_is_rejected_by_the_cap(value: str) -> None:
+    """Anything long enough to be a sentence is refused before the pattern is reached.
+
+    Two independent rules, so a value that slipped past the character set would still
+    have to fit in 32 bytes.
+    """
+    with pytest.raises(validation.AuditFieldError, match="over its cap"):
+        validation.normalise_fields(fixed_entry(new_state=value))
+
+
+@pytest.mark.parametrize(
+    "names",
+    ["status", "status,phase", "incident.reporter", "a.b.c,d_e,f", "old_status,new_status"],
+)
+def test_a_list_of_changed_field_names_is_accepted(names: str) -> None:
+    assert validation.normalise_fields(fixed_entry(fields_changed=names))["fields_changed"] == names
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("a value rather than a name", "reporter=Ash Higgins"),
+        ("an email address", "ash.higgins@bluestaq.uk"),
+        ("upper case", "STATUS"),
+        ("a space", "status, phase"),
+        ("a trailing comma", "status,"),
+        ("free text", "the reporter field changed"),
+    ],
+)
+def test_fields_changed_takes_names_only(label: str, value: str) -> None:
+    """A value here would put record content into an immutable log."""
+    with pytest.raises(validation.AuditFieldError, match=r"Names\s+only"):
+        validation.normalise_fields(fixed_entry(fields_changed=value))
+    assert label
+
+
+def test_an_authentication_event_carries_the_full_aud_001_shape() -> None:
+    """The one worked example from the AUD-001 Authentication row, end to end."""
+    fields = validation.normalise_fields(
+        fixed_entry(
+            action="LOGIN",
+            resource="session",
+            resource_id="sess-01",
+            outcome="FAILURE",
+            source_ip="203.0.113.42",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+    )
+    assert fields["outcome"] == "FAILURE"
+    assert fields["source_ip"] == "203.0.113.42"
+    assert fields["fields_changed"] == ""
+
+
+def test_an_ipv6_address_fits_the_source_address_cap() -> None:
+    """45 characters is the longest IPv6 form, so the cap must not reject a real address."""
+    longest = "1234:1234:1234:1234:1234:1234:255.255.255.255"
+    assert len(longest) == validation.FIELD_LIMITS["source_ip"]
+    assert validation.normalise_fields(fixed_entry(source_ip=longest))["source_ip"] == longest

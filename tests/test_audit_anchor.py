@@ -33,7 +33,7 @@ def test_the_genesis_anchor_describes_an_empty_log() -> None:
 def test_the_anchor_is_authenticated_so_it_cannot_be_forged_without_the_key(
     tmp_path: Path,
 ) -> None:
-    """The attack this closes needs no access to the SharePoint list at all.
+    """The attack this closes needs no access to the record store at all.
 
     An actor with write access to the volume replays an earlier entry's genuine digest
     into the anchor, and a truncated log then verifies as intact. The authentication tag
@@ -265,7 +265,7 @@ def test_a_write_that_would_shorten_the_record_is_refused(tmp_path: Path) -> Non
     read back an anchor it had itself overwritten, and the true head was gone for good.
     """
     write_anchor(str(tmp_path), Anchor(head="a" * 64, length=9, key_id=TEST_KEY_ID), TEST_KEY)
-    with pytest.raises(AnchorError, match="would destroy the durable head"):
+    with pytest.raises(AnchorError, match="would destroy the durable record"):
         write_anchor(str(tmp_path), Anchor.genesis(TEST_KEY_ID), TEST_KEY)
 
     stored = read_anchor(str(tmp_path), KEYS)
@@ -344,9 +344,10 @@ def test_a_deletion_alarm_survives_a_key_rotation(tmp_path: Path) -> None:
 
 def test_an_unknown_schema_version_fails_closed(tmp_path: Path) -> None:
     """A rolling deploy can put two image versions on one volume."""
-    later = Anchor(head="a" * 64, length=1, key_id=TEST_KEY_ID, schema_version=2)
+    ahead = anchor_module.ANCHOR_SCHEMA_VERSION + 1
+    later = Anchor(head="a" * 64, length=1, key_id=TEST_KEY_ID, schema_version=ahead)
     (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(later.as_json(TEST_KEY), encoding="utf-8")
-    with pytest.raises(AnchorError, match="schema version 2"):
+    with pytest.raises(AnchorError, match=f"schema version {ahead}"):
         read_anchor(str(tmp_path), KEYS)
 
 
@@ -469,3 +470,100 @@ def test_the_regression_guard_ignores_an_unauthenticated_stored_anchor(tmp_path:
     stored = read_anchor(str(tmp_path), KEYS)
     assert stored is not None
     assert stored.length == 2
+
+
+def test_a_fresh_anchor_reports_nothing_archived() -> None:
+    anchor = Anchor(head="a" * 64, length=4, key_id=TEST_KEY_ID)
+    assert anchor.total_length == 4
+    assert anchor.archived_length == 0
+    assert anchor.pruned_head == GENESIS_HASH
+
+
+def test_pruning_moves_entries_without_moving_the_total() -> None:
+    """AUD-001 prunes the active log annually. That is not a truncation.
+
+    The entries leave the active log, not the chain, so the total stands and the archive
+    boundary records what the remaining active log chains from.
+    """
+    before = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID)
+    after = before.after_prune(kept=4, pruned_head="a" * 64)
+
+    assert after.length == 4
+    assert after.total_length == 10, "the total is the figure a truncation would falsify"
+    assert after.archived_length == 6
+    assert after.pruned_head == "a" * 64
+    assert after.head == before.head, "pruning the tail end of the archive leaves the head"
+
+
+def test_pruning_everything_leaves_the_head_as_the_boundary() -> None:
+    before = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID)
+    after = before.after_prune(kept=0, pruned_head="a" * 64)
+    assert (after.length, after.total_length) == (0, 10)
+    assert after.pruned_head == before.head
+    assert after.head == before.head
+
+
+@pytest.mark.parametrize("kept", [-1, 11])
+def test_pruning_cannot_invent_entries(kept: int) -> None:
+    before = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID)
+    with pytest.raises(AnchorError, match="never invents them"):
+        before.after_prune(kept=kept, pruned_head="a" * 64)
+
+
+def test_pruning_requires_a_real_archive_boundary() -> None:
+    before = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID)
+    with pytest.raises(AnchorError, match="digest of the last archived entry"):
+        before.after_prune(kept=4, pruned_head="not a digest")
+
+
+def test_a_prune_is_a_legitimate_write_and_a_truncation_is_not(tmp_path: Path) -> None:
+    """The regression guard must permit the one and refuse the other.
+
+    Guarding the ACTIVE length would refuse a prune, which AUD-001 requires annually.
+    Guarding the total refuses a truncation, which is what the control is for.
+    """
+    write_anchor(str(tmp_path), Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID), TEST_KEY)
+
+    pruned = Anchor(head="e" * 64, length=10, key_id=TEST_KEY_ID).after_prune(
+        kept=4, pruned_head="a" * 64
+    )
+    write_anchor(str(tmp_path), pruned, TEST_KEY)
+    stored = read_anchor(str(tmp_path), KEYS)
+    assert stored is not None
+    assert (stored.length, stored.total_length) == (4, 10)
+
+    with pytest.raises(AnchorError, match="would destroy the durable record"):
+        write_anchor(str(tmp_path), Anchor(head="b" * 64, length=4, key_id=TEST_KEY_ID), TEST_KEY)
+
+
+def test_the_archive_boundary_survives_a_round_trip(tmp_path: Path) -> None:
+    pruned = Anchor(
+        head="e" * 64, length=3, key_id=TEST_KEY_ID, total_length=12, pruned_head="c" * 64
+    )
+    write_anchor(str(tmp_path), pruned, TEST_KEY)
+    stored = read_anchor(str(tmp_path), KEYS)
+    assert stored == pruned
+
+
+def test_an_anchor_claiming_fewer_entries_ever_than_it_holds_is_refused(tmp_path: Path) -> None:
+    """A total below the active length is incoherent, so it is not read."""
+    stored = json.loads(Anchor(head="a" * 64, length=5, key_id=TEST_KEY_ID).as_json(TEST_KEY))
+    stored["totalLength"] = 2
+    (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(json.dumps(stored), encoding="utf-8")
+    with pytest.raises(AnchorError):
+        read_anchor(str(tmp_path), KEYS)
+
+
+@pytest.mark.parametrize("field", ["totalLength", "prunedHead"])
+def test_the_archive_boundary_is_covered_by_the_authentication_tag(
+    tmp_path: Path, field: str
+) -> None:
+    """Otherwise an actor with volume write access edits the boundary and not the tag."""
+    genuine = Anchor(
+        head="e" * 64, length=3, key_id=TEST_KEY_ID, total_length=12, pruned_head="c" * 64
+    )
+    stored = json.loads(genuine.as_json(TEST_KEY))
+    stored[field] = 99 if field == "totalLength" else "d" * 64
+    (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(json.dumps(stored), encoding="utf-8")
+    with pytest.raises(AnchorError, match="not authenticated"):
+        read_anchor(str(tmp_path), KEYS)
