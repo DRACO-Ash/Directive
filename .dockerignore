@@ -1,0 +1,29 @@
+# Shapes the IMAGE. A separate contract from the upload package allowlist, which must
+# keep the tests the platform's Code Quality stage runs.
+.git
+.github
+.claude
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+docs
+scripts
+coverage.xml
+.coverage
+htmlcov
+.env
+.env.*
+data
+dist
+README.md
+CLAUDE.md
+READINESS.md
+requirements.in
+requirements-dev.in
+requirements-dev.txt
+pyproject.toml
+sonar-project.properties
