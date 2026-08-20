@@ -20,13 +20,17 @@ who already holds write access to it. It is kept because raising cost is worth s
 and because it is now authenticated so an unkeyed actor can neither forge nor plant it,
 but it does NOT close the attack and this file no longer says that it does.
 
-What closes it is corroboration against a store the volume attacker does not control. In
-this application that is the SharePoint list itself: "the list holds audit rows but the
-volume holds no anchor" is the tamper alarm, and "neither holds anything" is the only
-honest fresh install. That comparison needs the Graph read path, which is a later slice,
-so `read_anchor` returning ``None`` means only "this volume holds no anchor" and a caller
-MUST corroborate it before treating it as an empty log. TBC, re-verify the design of that
-corroboration with the ISM when the Graph module lands.
+What closes it is corroboration against a store the volume attacker does not control.
+This application holds its records in local files and does not integrate with SharePoint,
+so that store is the EXPORTED evidence pack the Information Security Manager uploads: a
+pack carrying an anchor is a copy of the record held somewhere the volume attacker cannot
+reach. "The last exported pack records entries but the volume holds no anchor" is the
+tamper alarm, and "neither holds anything" is the only honest fresh install. That
+comparison needs the export module, which is a later slice, so `read_anchor` returning
+``None`` means only "this volume holds no anchor" and a caller MUST corroborate it before
+treating it as an empty log. Between exports there is nothing to corroborate against,
+which is why the export cadence is a security control and not housekeeping: see
+`docs/DEPLOYMENT.md`. TBC, re-verify the cadence with the ISM.
 
 WHAT IT DOES DO, against the attacker who holds list rights but not the volume and not
 the key, which is the attacker the threat model actually names:
@@ -57,6 +61,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeGuard
 
 from .hashing import GENESIS_HASH, is_hash
 from .validation import AuditFieldError, check_key_id
@@ -71,8 +76,8 @@ MARKER_FILENAME = "audit-initialised"
 
 #: The stored shape's version. An unknown version fails closed rather than being read
 #: with today's semantics, which matters during a rolling deploy where two image versions
-#: share the volume.
-ANCHOR_SCHEMA_VERSION = 1
+#: share the volume. Version 2 added the archive boundary.
+ANCHOR_SCHEMA_VERSION = 2
 
 #: The anchor is a fixed, small document. Anything larger is refused unread.
 MAXIMUM_ANCHOR_BYTES = 4096
@@ -114,17 +119,79 @@ def _seen_length(data_dir: str) -> int:
 
 @dataclass(frozen=True)
 class Anchor:
-    """The expected end of the log."""
+    """The expected end of the log, and where the active log begins.
+
+    AUD-001 retains 24 months in the active log, exports annually to Library 08, and
+    prunes the active log for query performance. Pruning is therefore a normal operation
+    and must not read as a truncation, so the anchor records the archive boundary as well
+    as the end:
+
+    ● ``length`` is the number of entries in the ACTIVE log.
+    ● ``total_length`` is the number ever written, active and archived together.
+    ● ``pruned_head`` is the digest of the last archived entry, which is what the first
+      active entry chains to. It is ``GENESIS_HASH`` until the first prune.
+
+    So an active log that legitimately starts mid-chain verifies against ``pruned_head``
+    with :func:`~complyops.audit.chain.verify_sample`, while ``total_length`` remains the
+    figure a truncation would have to falsify. The annual export carries ``pruned_head``
+    forward, which is what makes the chain span the archive boundary rather than restart
+    at it.
+    """
 
     head: str
     length: int
     key_id: str
+    total_length: int | None = None
+    pruned_head: str = GENESIS_HASH
     schema_version: int = ANCHOR_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        """Set ``total_length`` to ``length`` for a log that has never been pruned."""
+        if self.total_length is None:
+            object.__setattr__(self, "total_length", self.length)
+
+    @property
+    def archived_length(self) -> int:
+        """Return how many entries have been pruned out of the active log."""
+        return (self.total_length or 0) - self.length
 
     @classmethod
     def genesis(cls, key_id: str) -> Anchor:
         """Return the anchor for a log with no entries yet."""
         return cls(head=GENESIS_HASH, length=0, key_id=key_id)
+
+    def after_prune(self, kept: int, pruned_head: str) -> Anchor:
+        """Return the anchor after pruning all but the newest ``kept`` active entries.
+
+        ``pruned_head`` is the digest of the newest entry being archived, which becomes
+        what the remaining active log chains from. ``total_length`` does not move: the
+        entries left the active log, not the chain.
+        """
+        if kept < 0 or kept > self.length:
+            raise AnchorError(
+                f"cannot keep {kept} of {self.length} active entries: pruning removes "
+                f"entries from the active log, it never invents them"
+            )
+        if kept and not is_hash(pruned_head):
+            raise AnchorError("the pruned head must be the digest of the last archived entry")
+        if not kept:
+            # Everything archived, so the last archived entry IS the current head by
+            # definition, whatever the caller passed. An empty active log ends where it
+            # begins, so head and the boundary are the same digest.
+            return Anchor(
+                head=self.head,
+                length=0,
+                key_id=self.key_id,
+                total_length=self.total_length,
+                pruned_head=self.head,
+            )
+        return Anchor(
+            head=self.head,
+            length=kept,
+            key_id=self.key_id,
+            total_length=self.total_length,
+            pruned_head=pruned_head,
+        )
 
     def _signed_document(self) -> dict[str, object]:
         """Return the fields the authentication tag covers."""
@@ -133,6 +200,8 @@ class Anchor:
             "head": self.head,
             "length": self.length,
             "keyId": self.key_id,
+            "totalLength": self.total_length,
+            "prunedHead": self.pruned_head,
         }
 
     def mac(self, key: bytes) -> str:
@@ -220,7 +289,7 @@ def write_anchor(
         Path(temporary).unlink(missing_ok=True)
         raise
     _fsync_directory(target.parent)
-    _record_length(data_dir, anchor.length)
+    _record_length(data_dir, anchor.total_length or 0)
 
 
 def _refuse_regression(data_dir: str, anchor: Anchor, key: bytes) -> None:
@@ -228,13 +297,20 @@ def _refuse_regression(data_dir: str, anchor: Anchor, key: bytes) -> None:
     floor = _seen_length(data_dir)
     stored = _read_stored(data_dir, {"": key}, strict=False)
     if stored is not None:
-        floor = max(floor, stored.length)
-    if anchor.length < floor:
+        floor = max(floor, stored.total_length or 0)
+    total = anchor.total_length or 0
+    if total < floor:
         raise AnchorError(
-            f"refusing to write an anchor recording {anchor.length} entries over one "
-            f"recording {floor}: that would destroy the durable head. Pass "
-            f"allow_shortening for a deliberate operator re-anchor."
+            f"refusing to write an anchor recording {total} entries ever over one recording "
+            f"{floor}: that would destroy the durable record. Pruning moves entries out of "
+            f"the ACTIVE log and leaves this figure alone, so a fall here is not a prune. "
+            f"Pass allow_shortening for a deliberate operator re-anchor."
         )
+
+
+def _is_count(value: object) -> TypeGuard[int]:
+    """Return whether a value is a usable non-negative count, refusing booleans."""
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -267,8 +343,8 @@ def read_anchor(data_dir: str, keys: Mapping[str, bytes]) -> Anchor | None:
                 f"until an operator re-anchors it from the evidence library."
             )
         return None
-    _check_not_rolled_back(anchor_path(data_dir), data_dir, anchor.length)
-    _record_length(data_dir, anchor.length)
+    _check_not_rolled_back(anchor_path(data_dir), data_dir, anchor.total_length or 0)
+    _record_length(data_dir, anchor.total_length or 0)
     return anchor
 
 
@@ -304,8 +380,8 @@ def _check_not_rolled_back(target: Path, data_dir: str, length: int) -> None:
     seen = _seen_length(data_dir)
     if length < seen:
         raise AnchorError(
-            f"the audit anchor at {target} records {length} entries but {seen} were already "
-            f"seen in this process, so an older anchor was restored. Treat the log as "
+            f"the audit anchor at {target} records {length} entries ever but {seen} were "
+            f"already seen in this process, so an older anchor was restored. Treat the log as "
             f"unverifiable until an operator re-anchors it from the evidence library."
         )
 
@@ -317,12 +393,16 @@ def _validate(target: Path, document: dict[str, object], keys: Mapping[str, byte
         document.get("length"),
         document.get("keyId"),
     )
+    total = document.get("totalLength", length)
+    pruned = document.get("prunedHead", GENESIS_HASH)
     unusable = AnchorError(f"the audit anchor at {target} is not a usable anchor")
-    if not is_hash(head):
+    if not is_hash(head) or not is_hash(pruned):
         raise unusable
     # `isinstance(True, int)` is True, so booleans are refused explicitly: `length=True`
     # would otherwise compare equal to a one-entry log.
-    if isinstance(length, bool) or not isinstance(length, int) or length < 0:
+    if not _is_count(length) or not _is_count(total):
+        raise unusable
+    if total < length:
         raise unusable
     if not isinstance(stored_key_id, str):
         raise unusable
@@ -341,7 +421,14 @@ def _validate(target: Path, document: dict[str, object], keys: Mapping[str, byte
             f"semantics."
         )
 
-    anchor = Anchor(head=head, length=length, key_id=checked_key_id, schema_version=version)
+    anchor = Anchor(
+        head=head,
+        length=length,
+        key_id=checked_key_id,
+        total_length=total,
+        pruned_head=pruned,
+        schema_version=version,
+    )
     tag = document.get("mac")
     # A non-digest tag must produce a verdict, not an exception: hmac.compare_digest raises
     # on a non-ASCII string, which let an actor with volume write and no key turn the

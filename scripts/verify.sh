@@ -30,6 +30,13 @@ echo "== lint (the platform analyser profile, not a looser local default) =="
 echo "== types (strict) =="
 "$PY" -m mypy
 
+echo "== static application security testing (AMD-001 section 10.6) =="
+# ruff and mypy are a linter and a type checker; neither is SAST, which AMD-001 requires
+# on every code change. bandit is the leg that satisfies that clause. Low severity is
+# reported and not failed: it is dominated by assert-in-test findings, and failing on
+# them would train the reader to ignore the output.
+"$PY" -m bandit --configfile pyproject.toml --quiet --recursive src wsgi.py
+
 echo "== tests with coverage =="
 # --cov-report=xml is what produces the Cobertura file the Code Quality gate reads. A
 # comprehensive suite that emits no report scores 0%.

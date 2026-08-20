@@ -21,7 +21,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .anchor import Anchor
-from .hashing import GENESIS_HASH, AuditHashError, entry_hash, hashes_equal, is_hash
+from .hashing import (
+    FIELD_ORDER,
+    GENESIS_HASH,
+    AuditHashError,
+    entry_hash,
+    hashes_equal,
+    is_hash,
+)
 from .validation import AuditFieldError, check_key_id, normalise_fields
 
 
@@ -29,10 +36,17 @@ from .validation import AuditFieldError, check_key_id, normalise_fields
 class AuditEntry:
     """One immutable audit-log row.
 
-    ``resource_id`` is the identifier of the record acted on, for example an incident
-    reference. No field holds a credential or the content of a personal data record: the
-    log records that an action happened, not what the data said. ``key_id`` names the
-    signing key, so history stays verifiable across a key rotation.
+    The field set is the AUD-001 Audit Log Scope table in one fixed shape. ``resource_id``
+    is the identifier of the record acted on, for example an incident reference. Fields
+    that do not apply to an event are empty rather than absent, so the digest covers a
+    fixed shape.
+
+    No field holds a credential, a session token, or the content of a record. ``actor``,
+    ``source_ip`` and ``user_agent`` are personal data, collected deliberately under
+    legitimate interest per POL-002 section 03. ``fields_changed`` names the fields a
+    change touched and never their values; ``old_state`` and ``new_state`` carry an
+    enumerated workflow state under a character rule that cannot hold record content.
+    ``key_id`` names the signing key, so history stays verifiable across a rotation.
     """
 
     timestamp: str
@@ -40,19 +54,19 @@ class AuditEntry:
     action: str
     resource: str
     resource_id: str
+    outcome: str
+    source_ip: str
+    user_agent: str
+    fields_changed: str
+    old_state: str
+    new_state: str
     key_id: str
     previous_hash: str
     entry_hash: str
 
     def covered_fields(self) -> dict[str, str]:
-        """Return only the record fields the digest covers."""
-        return {
-            "timestamp": self.timestamp,
-            "actor": self.actor,
-            "action": self.action,
-            "resource": self.resource,
-            "resource_id": self.resource_id,
-        }
+        """Return only the record fields the digest covers, in FIELD_ORDER."""
+        return {name: getattr(self, name) for name in FIELD_ORDER}
 
 
 @dataclass(frozen=True)
@@ -106,7 +120,7 @@ class ChainVerdict:
 class AuditChain:
     """The chain head. Holds the last digest and the length, never the entries.
 
-    Deliberately not a record of the log. The entries live in the SharePoint list; this
+    Deliberately not a record of the log. The entries live in the record store; this
     object exists only to derive the next digest correctly and to advance the anchor.
     """
 
@@ -138,10 +152,10 @@ class AuditChain:
         chain.
 
         The lock makes this atomic within one process. Across processes, and once the
-        entry is written to SharePoint rather than returned, the head read and the write
-        must become one conditional operation against the list with the head as its
-        precondition, or two workers can still fork the chain. TBC, re-verify when the
-        Graph write path lands.
+        entry is persisted rather than returned, the head read and the write must become
+        one operation holding an inter-process lock on the storage volume, or the two
+        gunicorn workers can still fork the chain. TBC, re-verify when the write path
+        lands.
         """
         snapshot = normalise_fields(fields)
         with self._lock:

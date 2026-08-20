@@ -72,15 +72,23 @@ def client(writable_data_dir: Path):
         yield test_client
 
 
-def fixed_entry(index: int = 1) -> dict[str, str]:
-    """Return a deterministic set of covered fields. Time is passed in, never read."""
-    return {
+def fixed_entry(index: int = 1, **overrides: str) -> dict[str, str]:
+    """Return one deterministic entry's fields, with the optional AUD-001 fields empty."""
+    fields = {
         "timestamp": f"2026-08-20T09:{index:02d}:00Z",
         "actor": "ash.higgins@bluestaq.uk",
         "action": "TASK_COMPLETE",
         "resource": "lst-Tasks",
         "resource_id": f"D-{index:02d}",
+        "outcome": "",
+        "source_ip": "",
+        "user_agent": "",
+        "fields_changed": "",
+        "old_state": "",
+        "new_state": "",
     }
+    fields.update(overrides)
+    return fields
 
 
 def new_chain(anchor: object = None) -> object:

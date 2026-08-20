@@ -27,9 +27,16 @@ action ``b|c``, so two different records would share a digest. Length prefixes r
 that ambiguity by construction.
 
 No truncation. Truncation cuts the work an attacker needs to forge a colliding entry,
-so all 64 hexadecimal characters are stored. If a list column cannot hold 64
-characters, that is a schema question for the list owner, never a reason to weaken the
-hash. TBC, re-verify against AUD-001.
+so all 64 hexadecimal characters are stored. AUD-001 does not ask for truncation; the
+flight plan mentioned a truncation policy and that is declined here, deliberately.
+
+Deviation from AUD-001, recorded for the Managing Director's sign-off. The policy
+specifies "a SHA-256 hash of the event data (timestamp + user + action + resource)".
+This build keys that digest with HMAC-SHA256, extends the covered fields to the full
+AUD-001 event set below, and chains each entry to its predecessor. Every difference is
+strictly stronger than the letter of the policy, and none of them weakens a stated
+control, but a deviation is still a deviation and belongs on the record rather than in
+a commit message.
 """
 
 from __future__ import annotations
@@ -44,7 +51,35 @@ from typing import TypeGuard
 #: Changing this tuple, its order, or the digest below breaks every historical entry, so
 #: it is an irreversible decision requiring the Managing Director's sign-off. A golden
 #: test vector pins it, so a change cannot pass the loop silently.
-FIELD_ORDER: tuple[str, ...] = ("timestamp", "actor", "action", "resource", "resource_id")
+#:
+#: The set covers every "Data Recorded" column in the AUD-001 Audit Log Scope table, in
+#: one fixed shape rather than one shape per event category, because a digest over a
+#: varying field set cannot be verified without knowing which variant was used. Fields
+#: that do not apply to an event are recorded empty, which the length-prefixed encoding
+#: represents unambiguously as `0:`.
+#:
+#: ● `timestamp`, `actor`, `action`, `resource`, `resource_id`: every category.
+#: ● `outcome`: the success or failure AUD-001 requires on an authentication event.
+#: ● `source_ip`, `user_agent`: the authentication category. Personal data, collected
+#:   deliberately under legitimate interest per POL-002 section 03.
+#: ● `fields_changed`: the NAMES of the fields a change touched, never their values.
+#: ● `old_state`, `new_state`: the before and after of an enumerated workflow state,
+#:   such as a task status or an incident phase. The character rule on these two is what
+#:   keeps record content out of an immutable log, so it is a structural guarantee and
+#:   not a promise about how a caller uses them.
+FIELD_ORDER: tuple[str, ...] = (
+    "timestamp",
+    "actor",
+    "action",
+    "resource",
+    "resource_id",
+    "outcome",
+    "source_ip",
+    "user_agent",
+    "fields_changed",
+    "old_state",
+    "new_state",
+)
 
 #: The chain's anchor. The first entry has no predecessor, so it chains to all zeroes.
 GENESIS_HASH = "0" * 64
@@ -53,6 +88,12 @@ GENESIS_HASH = "0" * 64
 HASH_LENGTH = 64
 
 _HEX_HASH = re.compile(r"\A[0-9a-f]{64}\Z")
+
+#: The fields that must carry a value on every entry, whatever the event category. The
+#: rest may be empty, and the key identifier is always supplied by the caller.
+_REQUIRED_NON_EMPTY = frozenset(
+    {"timestamp", "actor", "action", "resource", "resource_id", "\x00key_id"}
+)
 
 
 class AuditHashError(ValueError):
@@ -80,7 +121,10 @@ def canonical_payload(fields: Mapping[str, str], key_id: str) -> bytes:
     parts: list[bytes] = []
     for name in (*FIELD_ORDER, "\x00key_id"):
         value = key_id if name == "\x00key_id" else fields.get(name)
-        if not isinstance(value, str) or not value:
+        # Present but empty is legitimate: a field that does not apply to an event is
+        # recorded empty, and the length prefix renders that unambiguously as `0:`. A
+        # MISSING field is not, because it would silently shift the payload.
+        if not isinstance(value, str) or (not value and name in _REQUIRED_NON_EMPTY):
             raise AuditHashError(f"audit entry is missing the {name.lstrip(chr(0))!r} field")
         encoded = value.encode("utf-8")
         parts.append(f"{len(encoded)}:".encode("ascii"))

@@ -18,8 +18,8 @@ rather than transliterated, because an entry is evidence and evidence is refused
 than quietly rewritten.
 
 TBC, re-verify with the ISM: printable ASCII assumes every actor is a user principal
-name and every resource is a SharePoint list title, which holds for the nine lists in
-the architecture. A non-ASCII actor would be rejected loudly rather than mangled, which
+name and every resource is a register name, which holds for the nine registers in the
+architecture. A non-ASCII actor would be rejected loudly rather than mangled, which
 is the right failure, but the owner should confirm the assumption.
 
 Four classes are therefore rejected: anything outside printable ASCII; anything over its
@@ -35,15 +35,49 @@ import re
 from collections.abc import Mapping
 from datetime import datetime
 
-#: Byte caps per field. Generous enough for a real user principal name and a real list
-#: item reference, small enough that no single entry can dominate the log.
+#: Byte caps per field, in FIELD_ORDER order. Generous enough for a real user principal
+#: name, a real record reference, and a real user-agent string, small enough that no
+#: single entry can dominate the log.
 FIELD_LIMITS: dict[str, int] = {
     "timestamp": 32,
     "actor": 320,
     "action": 64,
     "resource": 128,
     "resource_id": 128,
+    "outcome": 16,
+    "source_ip": 45,
+    "user_agent": 512,
+    "fields_changed": 512,
+    "old_state": 32,
+    "new_state": 32,
 }
+
+#: The fields every entry must carry. The rest are per-category and may be empty: an
+#: authentication event has no `fields_changed`, and a task completion has no
+#: `user_agent`. Empty is recorded as empty rather than omitted, so the digest covers a
+#: fixed field set (see `hashing.FIELD_ORDER`).
+REQUIRED_FIELDS = ("timestamp", "actor", "action", "resource", "resource_id")
+
+#: `outcome` exists for the success or failure AUD-001 requires on an authentication
+#: event. A closed set, so it cannot drift into free text.
+OUTCOMES = frozenset({"SUCCESS", "FAILURE"})
+
+#: An enumerated workflow state: a task status, an incident phase, a role name. Upper
+#: snake case and short.
+#:
+#: This pattern is the data-minimisation control, not a convention. AUD-001 asks for the
+#: old and new value of a changed field, and for a task status or an incident phase that
+#: is exactly right. For an incident's content it would put personal data into a log that
+#: is immutable by design, so no correction and no Article 17 erasure can reach it. A
+#: field that cannot hold a name, an address, an email, or a sentence cannot carry that
+#: content by accident, whatever a future caller intends. Record content changes are
+#: therefore reported as field NAMES in `fields_changed`, never as values.
+_STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
+
+#: A comma-separated list of field names. Names only, for the reason above.
+_FIELD_NAMES = re.compile(
+    r"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(,[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*)*\Z"
+)
 
 #: Printable ASCII, space through tilde. An allowlist, because a denylist over Unicode
 #: leaks: see the module docstring.
@@ -86,7 +120,9 @@ def _check_one(name: str, value: object) -> str:
     if not isinstance(value, str):
         raise AuditFieldError(f"audit field {name!r} must be a string, got {type(value).__name__}")
     if not value:
-        raise AuditFieldError(f"audit field {name!r} must not be blank")
+        if name in REQUIRED_FIELDS:
+            raise AuditFieldError(f"audit field {name!r} must not be blank")
+        return ""
     if value != value.strip():
         raise AuditFieldError(
             f"audit field {name!r} has leading or trailing whitespace, which can hide a "
@@ -133,10 +169,35 @@ def normalise_fields(fields: Mapping[str, object]) -> dict[str, str]:
     snapshot: dict[str, str] = {}
     for name in FIELD_LIMITS:
         if name not in fields:
-            raise AuditFieldError(f"audit entry is missing the {name!r} field")
+            if name in REQUIRED_FIELDS:
+                raise AuditFieldError(f"audit entry is missing the {name!r} field")
+            snapshot[name] = ""
+            continue
         snapshot[name] = _check_one(name, fields[name])
 
     _check_timestamp(snapshot["timestamp"])
     if not _ACTION.match(snapshot["action"]):
         raise AuditFieldError(f"audit action must be upper snake case, got {snapshot['action']!r}")
+    _check_optional(snapshot)
     return snapshot
+
+
+def _check_optional(snapshot: dict[str, str]) -> None:
+    """Apply the per-field rules that only bind when the field carries a value."""
+    if snapshot["outcome"] and snapshot["outcome"] not in OUTCOMES:
+        raise AuditFieldError(
+            f"audit outcome must be one of {sorted(OUTCOMES)}, got {snapshot['outcome']!r}"
+        )
+    for name in ("old_state", "new_state"):
+        if snapshot[name] and not _STATE.match(snapshot[name]):
+            raise AuditFieldError(
+                f"audit field {name!r} must be an enumerated state in upper snake case, at "
+                f"most 32 characters, got {snapshot[name]!r}. This field cannot carry record "
+                f"content: report a content change as a field name in 'fields_changed'."
+            )
+    if snapshot["fields_changed"] and not _FIELD_NAMES.match(snapshot["fields_changed"]):
+        raise AuditFieldError(
+            f"audit field 'fields_changed' must be a comma-separated list of lower snake "
+            f"case field names, optionally dotted, got {snapshot['fields_changed']!r}. Names "
+            f"only: a value would put record content into an immutable log."
+        )
