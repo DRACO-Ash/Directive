@@ -249,6 +249,34 @@ def test_diagnostics_reuses_a_cached_verdict_rather_than_writing_per_request(
     assert len(probes) == 1
 
 
+def test_the_cache_window_is_measured_from_after_the_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stamping before the probe makes a served verdict older than the window claims.
+
+    Every other test supplies the clock, which makes both orderings identical, so
+    swapping the two lines back left the suite green: the fix asserted nothing.
+    """
+    probe_seconds = 0.4
+    real = health._write_probe
+
+    def slow(path: str) -> health.StorageVerdict:
+        time.sleep(probe_seconds)
+        return real(path)
+
+    monkeypatch.setattr(health, "_write_probe", slow)
+    health.reset_diagnostics_cache()
+    started = time.monotonic()
+    first = health.cached_storage_verdict(str(tmp_path))
+    stamped_at = health._cached[0] if health._cached else 0.0
+
+    assert first.writable is True
+    assert stamped_at >= started + probe_seconds, (
+        "the window was stamped before the probe, so the verdict is already "
+        f"{stamped_at - started:.2f}s into its life when it is stored"
+    )
+
+
 def test_the_cached_verdict_expires(tmp_path: Path) -> None:
     health.reset_diagnostics_cache()
     first = health.cached_storage_verdict(str(tmp_path), now=1000.0)

@@ -65,6 +65,17 @@ class ChainVerdict:
     reason: str | None = None
     broken_entry_hash: str | None = None
     invalid_under_current_rules: bool = False
+    key_unavailable: bool = False
+
+    @property
+    def tampered(self) -> bool:
+        """Return whether this verdict means tampering, as opposed to a fault of ours.
+
+        ``ok`` alone is not enough. A caller writing ``if not verdict.ok: alarm()`` would
+        raise a tamper alarm for a tightened field rule or a mistyped retired key, which is
+        the false alarm the other two flags exist to prevent.
+        """
+        return not self.ok and not self.invalid_under_current_rules and not self.key_unavailable
 
     def summary(self) -> str:
         """Return a one-line summary fit for an audit record or an operator banner.
@@ -82,6 +93,13 @@ class ChainVerdict:
                 f"entry {self.break_index} does not satisfy the current field rules; "
                 f"its digest is unbroken: {self.reason}"
             )
+        if self.key_unavailable:
+            return (
+                f"entry {self.break_index} cannot be checked because a key is missing, "
+                f"which is a configuration fault and not evidence of tampering: {self.reason}"
+            )
+        if self.break_index is None:
+            return f"the log does not match its trusted anchor: {self.reason}"
         return f"chain broken at index {self.break_index}: {self.reason}"
 
 
@@ -92,13 +110,24 @@ class AuditChain:
     object exists only to derive the next digest correctly and to advance the anchor.
     """
 
-    def __init__(self, key: bytes, key_id: str, anchor: Anchor | None = None) -> None:
-        """Start from an anchor where one exists, else from genesis."""
+    def __init__(self, anchor: Anchor | None, *, key: bytes, key_id: str) -> None:
+        """Start from an anchor, or from genesis when ``anchor`` is explicitly ``None``.
+
+        The anchor is positional and required, for the same reason it is on
+        :func:`verify_log`: defaulting it meant the shortest, most natural call produced a
+        genesis chain, and writing that anchor destroyed the trusted head. Forgetting an
+        argument must not be indistinguishable from a genuine first run, so a fresh
+        install is now an explicit ``None``.
+        """
         self._key = key
         self._key_id = check_key_id(key_id)
         self._lock = threading.Lock()
         self.head = anchor.head if anchor else GENESIS_HASH
         self.length = anchor.length if anchor else 0
+        # The key that signed the LAST entry, which is not the current key between a
+        # rotation and the next append. Stamping the current key into the anchor during
+        # that window made verify_log report untampered evidence as re-signed.
+        self._tail_key_id = anchor.key_id if anchor else self._key_id
 
     def append(self, fields: Mapping[str, object]) -> AuditEntry:
         """Validate, sign, and append one entry, advancing the head.
@@ -125,12 +154,16 @@ class AuditChain:
             )
             self.head = digest
             self.length += 1
+            self._tail_key_id = self._key_id
         return entry
 
     def anchor(self) -> Anchor:
-        """Return the anchor describing where the log should now end."""
+        """Return the anchor describing where the log should now end.
+
+        Stamps the key that signed the TAIL, not the key this chain would sign with next.
+        """
         with self._lock:
-            return Anchor(head=self.head, length=self.length, key_id=self._key_id)
+            return Anchor(head=self.head, length=self.length, key_id=self._tail_key_id)
 
 
 def _break(index: int, reason: str, entry: AuditEntry | None = None) -> ChainVerdict:
@@ -165,6 +198,11 @@ def _check_link(index: int, entry: AuditEntry, expected_previous: str) -> ChainV
     return None
 
 
+def _anchor_break(checked: int, reason: str) -> ChainVerdict:
+    """Build a failing verdict for a mismatch against the anchor, which has no index."""
+    return ChainVerdict(ok=False, checked=checked, break_index=None, reason=reason)
+
+
 def _verify_one(
     index: int, entry: AuditEntry, expected_previous: str, keys: Mapping[str, bytes]
 ) -> ChainVerdict | None:
@@ -174,7 +212,14 @@ def _verify_one(
         return linked
     key = keys.get(entry.key_id)
     if not key:
-        return _break(index, f"no verification key is available for key id {entry.key_id!r}", entry)
+        return ChainVerdict(
+            ok=False,
+            checked=index,
+            break_index=index,
+            reason=f"no verification key is available for key id {entry.key_id!r}",
+            broken_entry_hash=entry.entry_hash,
+            key_unavailable=True,
+        )
     # Recompute from the STORED fields, never from a re-validated snapshot, so a later
     # tightening of a field rule cannot change what is hashed.
     try:
@@ -241,14 +286,14 @@ def verify_log(
         return verdict
 
     if len(entries) != anchor.length:
-        return _break(
+        return _anchor_break(
             len(entries),
             f"the log holds {len(entries)} entries but the trusted anchor records "
             f"{anchor.length}, so entries were added or removed",
         )
     ending = entries[-1].entry_hash if entries else GENESIS_HASH
     if not hashes_equal(ending, anchor.head):
-        return _break(
+        return _anchor_break(
             len(entries),
             "the log does not end on the digest the trusted anchor records, so the end of "
             "the log was rewritten or truncated",
@@ -257,11 +302,10 @@ def verify_log(
         # A retired key stays a valid signer so history survives a rotation, but a key is
         # retired because it may have leaked. Requiring the log to END under the anchor's
         # key stops a leaked retired key being used to re-sign the whole log.
-        return _break(
+        return _anchor_break(
             len(entries),
             f"the log ends on an entry signed by key {entries[-1].key_id!r} but the "
             f"trusted anchor records {anchor.key_id!r}, so the tail was re-signed",
-            entries[-1],
         )
     return verdict
 

@@ -74,6 +74,10 @@ RUN useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin appu
 # THE LAST MUTATION IN THIS STAGE. Files and directories both: a file-only sweep misses
 # the setgid directories the policy scan stops on. Fails closed.
 RUN find / -xdev -perm /6000 \( -type f -o -type d \) -exec chmod a-s {} +
+# The sweep above is a mutation, so it cannot fail. This is the assertion: the build stops
+# here if any setuid or setgid bit survived it. A check rather than another mutation, so it
+# does not reopen the ordering problem the sweep-last rule exists to close.
+RUN [ -z "$(find / -xdev -perm /6000 \( -type f -o -type d \) -print -quit)" ]
 
 # ---- ship: one clean layer, so the policy scan finds nothing in layer history ----
 FROM scratch

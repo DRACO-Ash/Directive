@@ -7,23 +7,23 @@ rights on the SharePoint list. That actor can edit a row and recompute every has
 it, and an unkeyed verifier would report the result as intact.
 
 Keying with HMAC-SHA256 under a key the list editor does not hold removes that, because
-re-stamping now needs the key as well as edit rights. The key is delivered on the same
+re-stamping needs the key as well as edit rights. The key is delivered on the same
 channel as the session key, never written to the list, and never logged.
 
-The key must be REAL key material, not a passphrase. Every stored row is a message and
-its tag, and the list is readable by more people than hold the key, so a low-entropy
-operator passphrase such as ``Password1234567890Password123456`` falls to an offline
-attack and hands back full re-stamping power over the primary asset. A minimum character
-count cannot express that, so the value is required to decode, as hexadecimal or base64,
-to at least 32 bytes.
+The key must be real key material, and "real" is an entropy claim, not a length claim.
+Every stored row is a message and its tag, and the list is readable by more people than
+hold the key, so a low-entropy value falls to an offline attack and hands back full
+re-stamping power over the primary asset. A character floor cannot express that: a
+32-character passphrase was refused while the same passphrase re-spelt in the base64
+alphabet at 44 characters was accepted, and `"deadbeef" * 8` decodes to 32 perfectly
+shaped bytes drawn from four distinct values. So the decoded material is required to
+carry a minimum number of distinct byte values, and a decode that is wholly printable
+text is refused outright.
 
-Each entry records the identifier of the key that signed it, and the identifier is
-covered by the digest, so a key cannot be swapped for a weaker one after the fact. That
-is also what makes rotation possible: entries signed by a retired key still verify under
-that key while new entries use the current one. A retired key is retired because it may
-have leaked, so `chain.verify_log` additionally requires the log to END on an entry
-signed by the anchor's key, which stops a leaked retired key being used to re-sign the
-whole log.
+EVERY part of this configuration is read verbatim and rejected rather than rewritten:
+the key, its identifier, and the retired-key list. They used to have three different
+read rules, which meant an operator's recorded identifier could differ from the one
+inside the digest, so independent re-verification of clean evidence would fail.
 """
 
 from __future__ import annotations
@@ -32,12 +32,15 @@ import base64
 import binascii
 import os
 
-from .. import config
 from .validation import AuditFieldError, check_key_id
 
-#: The shortest key accepted, in DECODED BYTES. A character count cannot express key
-#: strength: a 32-character passphrase is not 32 bytes of entropy.
+#: The shortest key accepted, in DECODED BYTES.
 MINIMUM_KEY_BYTES = 32
+
+#: The fewest distinct byte values acceptable in the decoded key. Random material of 32
+#: bytes carries about 30 distinct values, and the chance of fewer than this is
+#: vanishingly small, so the floor rejects structured input without rejecting real keys.
+MINIMUM_DISTINCT_BYTES = 20
 
 #: Used when no identifier is configured. Recorded on every entry it signs.
 DEFAULT_KEY_ID = "k1"
@@ -45,14 +48,51 @@ DEFAULT_KEY_ID = "k1"
 #: How to produce a usable key. Quoted in the error, so the fix needs no documentation.
 KEY_GENERATION_COMMAND = "openssl rand -hex 32"
 
+#: The printable ASCII range. Key material that is wholly printable is text, not a key.
+PRINTABLE_LOW = 0x20
+PRINTABLE_HIGH = 0x7E
+
 
 class AuditKeyError(RuntimeError):
     """Raised when no usable signing key is available. Never sign without one."""
 
 
+def read_verbatim(name: str) -> str:
+    r"""Return an environment value with no rewriting, or raise.
+
+    Deliberately not `config.normalise`, which strips surrounding quotes and every
+    control character from anywhere in the value. Applied to key configuration that
+    silently changes it: a padded 41-character key became 37, and an identifier of
+    ``k1\\x01k2`` became ``k1k2``, so the application signed under a key or an identifier
+    the operator's own record does not reproduce. An assessor re-verifying from the
+    documented values would then see a broken chain over clean evidence.
+
+    A trailing newline is tolerated, because the operator console adds one routinely.
+    Nothing else is.
+    """
+    raw = os.environ.get(name, "").strip("\r\n")
+    if raw.startswith(('"', "'")) or raw.endswith(('"', "'")):
+        raise AuditKeyError(
+            f"{name} is wrapped in quotes. It is used verbatim and is never rewritten, so "
+            f"remove the quotes rather than relying on them being stripped."
+        )
+    if raw != raw.strip() or any(character < " " or character == "\x7f" for character in raw):
+        raise AuditKeyError(
+            f"{name} contains whitespace or control characters. It is used verbatim and is "
+            f"never rewritten, so fix the value rather than relying on trimming."
+        )
+    return raw
+
+
 def key_id() -> str:
-    """Return the identifier of the current signing key, validated."""
-    return check_key_id(config.env("AUDIT_KEY_ID", DEFAULT_KEY_ID))
+    """Return the identifier of the current signing key, read verbatim and validated."""
+    raw = read_verbatim("AUDIT_KEY_ID")
+    if not raw:
+        return DEFAULT_KEY_ID
+    try:
+        return check_key_id(raw)
+    except AuditFieldError as error:
+        raise AuditKeyError(f"AUDIT_KEY_ID is not usable: {error}") from error
 
 
 def _decode(raw: str) -> bytes | None:
@@ -67,31 +107,29 @@ def _decode(raw: str) -> bytes | None:
         return None
 
 
-def _read_secret(name: str) -> str:
-    """Read a secret WITHOUT rewriting it.
+def _is_strong(material: bytes) -> bool:
+    """Return whether the decoded material looks like a key rather than a passphrase."""
+    if len(material) < MINIMUM_KEY_BYTES:
+        return False
+    if len(set(material)) < MINIMUM_DISTINCT_BYTES:
+        return False
+    # Wholly printable text decoded into the right length is a passphrase in disguise.
+    return not all(PRINTABLE_LOW <= byte <= PRINTABLE_HIGH for byte in material)
 
-    Deliberately not `config.normalise`, which strips surrounding quotes and every
-    control character from anywhere in the value. Applied to key material that silently
-    changes the key: a padded 41-character value became 37, so the app signed under a key
-    the operator's own record does not reproduce, and an assessor re-verifying with the
-    documented key would see a broken chain over clean evidence. A malformed secret is
-    rejected loudly instead.
-    """
-    # A trailing newline is tolerated because the operator console adds one routinely.
-    # Nothing else is: quotes and interior whitespace or control characters are rejected
-    # rather than stripped.
-    raw = os.environ.get(name, "").strip("\r\n")
-    if raw.startswith(('"', "'")) or raw.endswith(('"', "'")):
+
+def _key_from(name: str, raw: str) -> bytes:
+    """Decode and strength-check one key value, or raise."""
+    material = _decode(raw)
+    if material is None or not _is_strong(material):
+        # The configured length is deliberately absent from this message: an exact length
+        # is an oracle on a credential, which is why the diagnostics read-out bands it.
         raise AuditKeyError(
-            f"{name} is wrapped in quotes. It is used verbatim and is never rewritten, so "
-            f"remove the quotes rather than relying on them being stripped."
+            f"{name} must be real key material: hexadecimal or base64 decoding to at least "
+            f"{MINIMUM_KEY_BYTES} bytes carrying at least {MINIMUM_DISTINCT_BYTES} distinct "
+            f"byte values, and not printable text. A passphrase is refused however it is "
+            f"encoded. Generate one with `{KEY_GENERATION_COMMAND}`."
         )
-    if raw != raw.strip() or any(character < " " or character == "\x7f" for character in raw):
-        raise AuditKeyError(
-            f"{name} contains whitespace or control characters. It is used verbatim and "
-            f"is never rewritten, so fix the value rather than relying on trimming."
-        )
-    return raw
+    return material
 
 
 def signing_key() -> bytes:
@@ -99,50 +137,64 @@ def signing_key() -> bytes:
 
     Read from the environment at call time, so a key the platform injects after the
     process starts is still seen. Never returned to a caller outside this package and
-    never logged: the diagnostics read-out reports its presence and length band only.
+    never logged: the diagnostics read-out reports its presence, band, and usability only.
     """
-    raw = _read_secret("AUDIT_HMAC_KEY")
+    raw = read_verbatim("AUDIT_HMAC_KEY")
     if not raw:
         raise AuditKeyError(
             "AUDIT_HMAC_KEY is not set, so no audit entry can be signed. The audit chain "
             f"fails closed rather than writing an unsigned entry. Generate one with "
             f"`{KEY_GENERATION_COMMAND}`."
         )
-    decoded = _decode(raw)
-    if decoded is None or len(decoded) < MINIMUM_KEY_BYTES:
-        # The configured length is deliberately absent from this message: an exact length
-        # is an oracle on a credential, which is why the diagnostics read-out bands it.
-        raise AuditKeyError(
-            f"AUDIT_HMAC_KEY must be real key material: hexadecimal or base64 decoding to "
-            f"at least {MINIMUM_KEY_BYTES} bytes, not a passphrase. Generate one with "
-            f"`{KEY_GENERATION_COMMAND}`."
-        )
-    return decoded
+    return _key_from("AUDIT_HMAC_KEY", raw)
 
 
 def verification_keys() -> dict[str, bytes]:
     """Return every key a stored entry may have been signed with, keyed by identifier.
 
     Retired keys are supplied as ``AUDIT_RETIRED_KEYS`` in ``id:key`` form, separated by
-    semicolons, so history signed before a rotation stays verifiable. A malformed pair is
-    skipped rather than guessed at: verification then fails closed on any entry naming
-    that identifier, which is the honest outcome.
+    semicolons, so history signed before a rotation stays verifiable.
+
+    A malformed pair RAISES rather than being skipped. Skipping it silently produced the
+    verdict "chain broken: no verification key is available for key id 'k0'" over
+    evidence nobody had touched, which is indistinguishable from real tampering: a
+    quoting mistake on the one variable that keeps history verifiable read as an attack.
+    A configuration fault must announce itself as a configuration fault.
     """
     result: dict[str, bytes] = {}
-    # Read leniently: this is a LIST, so an empty or whitespace-only value simply yields
-    # no pairs. Each individual key is still held to the same bar as the current one, and
-    # a pair that fails any of those checks is skipped rather than guessed at.
-    for pair in os.environ.get("AUDIT_RETIRED_KEYS", "").split(";"):
+    for pair in read_verbatim("AUDIT_RETIRED_KEYS").split(";"):
+        if not pair:
+            continue
         identifier, separator, secret = pair.partition(":")
         if not separator:
-            continue
-        decoded = _decode(secret)
-        if decoded is None or len(decoded) < MINIMUM_KEY_BYTES:
-            continue
+            raise AuditKeyError(
+                f"AUDIT_RETIRED_KEYS holds {pair!r}, which is not an `id:key` pair. "
+                f"Separate pairs with a semicolon."
+            )
         try:
-            result[check_key_id(identifier.strip())] = decoded
-        except AuditFieldError:
-            continue
+            checked = check_key_id(identifier)
+        except AuditFieldError as error:
+            raise AuditKeyError(
+                f"AUDIT_RETIRED_KEYS holds an unusable identifier: {error}"
+            ) from error
+        result[checked] = _key_from(f"AUDIT_RETIRED_KEYS[{checked}]", secret)
+
     if os.environ.get("AUDIT_HMAC_KEY"):
         result[key_id()] = signing_key()
     return result
+
+
+def key_is_usable() -> bool:
+    """Return whether the configured signing key would actually be accepted.
+
+    The diagnostics read-out needs this because presence and a length band cannot tell a
+    usable key from one this module refuses: a quoted key, a padded key, and a passphrase
+    all render as present at the same band as a correct key, so an operator who made the
+    exact mistake the deployment notes warn about saw a read-out saying all was well and
+    a dead audit path. A boolean leaks nothing beyond the fact of the refusal.
+    """
+    try:
+        signing_key()
+    except AuditKeyError:
+        return False
+    return True
