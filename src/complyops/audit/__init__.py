@@ -1,6 +1,6 @@
 """Tamper-evident audit log for the compliance operations console (AUD-001)."""
 
-from .anchor import Anchor, AnchorError, read_anchor, write_anchor
+from .anchor import Anchor, AnchorError, re_anchor, read_anchor, write_anchor
 from .chain import AuditChain, AuditEntry, ChainVerdict, verify_log, verify_sample
 from .hashing import (
     FIELD_ORDER,
@@ -35,6 +35,7 @@ __all__ = [
     "is_hash",
     "key_id",
     "normalise_fields",
+    "re_anchor",
     "read_anchor",
     "signing_key",
     "verification_keys",

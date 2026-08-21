@@ -37,22 +37,22 @@ from .validation import AuditFieldError, check_key_id, normalise_fields
 class AuditEntry:
     """One immutable audit-log row.
 
-        The field set is the AUD-001 Audit Log Scope table in one fixed shape. ``resource_id``
-        is the identifier of the record acted on, for example an incident reference. Fields
-        that do not apply to an event are empty rather than absent, so the digest covers a
-        fixed shape.
+    The field set is the AUD-001 Audit Log Scope table in one fixed shape. ``resource_id``
+    is the identifier of the record acted on, for example an incident reference. Fields
+    that do not apply to an event are empty rather than absent, so the digest covers a
+    fixed shape.
 
     No field should hold a credential, a session token, or the content of a record, and
-        the boundary rules in ``validation`` enforce that for the SHAPES record content
-        usually takes rather than for record content itself. ``resource``, ``resource_id``,
-        ``actor`` and ``user_agent`` are free-form within printable ASCII and a byte cap, so a
-        caller that puts a clinical note in ``resource`` will succeed. Caller discipline is
-        load-bearing; the rules narrow the surface, they do not close it.
+    the boundary rules in ``validation`` enforce that for the SHAPES record content
+    usually takes rather than for record content itself. ``resource``, ``resource_id``,
+    ``actor`` and ``user_agent`` are free-form within printable ASCII and a byte cap, so a
+    caller that puts a clinical note in ``resource`` will succeed. Caller discipline is
+    load-bearing; the rules narrow the surface, they do not close it.
 
-        ``actor``, ``source_ip`` and ``user_agent`` are personal data, collected deliberately
-        under legitimate interest per POL-002 section 03. ``fields_changed`` names the fields a
-        change touched and never their values. ``key_id`` names the signing key, so history
-        stays verifiable across a rotation.
+    ``actor``, ``source_ip`` and ``user_agent`` are personal data, collected deliberately
+    under legitimate interest per POL-002 section 03. ``fields_changed`` names the fields a
+    change touched and never their values. ``key_id`` names the signing key, so history
+    stays verifiable across a rotation.
     """
 
     timestamp: str

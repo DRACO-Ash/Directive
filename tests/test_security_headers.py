@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from flask import Flask, make_response, request
+from flask import Flask, abort, make_response, request
 from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -232,3 +232,88 @@ def test_the_blanket_pass_runs_last() -> None:
     assert handlers[0] is security_headers.apply_security_headers, (
         "the blanket pass must be registered first, so Flask runs it last"
     )
+
+
+def _tightened_then(app: Flask, sabotage: str) -> str | None:
+    """Register a route that tightens legitimately, then desynchronises the mark."""
+
+    @app.get("/desync")
+    def desync():  # noqa: ANN202 - Flask response object
+        response = make_response("", 204)
+        security_headers.tighten(response, "Content-Security-Policy", "default-src 'none'; sandbox")
+        if sabotage == "widen":
+            response.headers["Content-Security-Policy"] = "default-src * 'unsafe-inline'"
+        elif sabotage == "delete":
+            del response.headers["Content-Security-Policy"]
+        elif sabotage == "raise":
+            raise RuntimeError("boom")
+        elif sabotage == "abort":
+            abort(403)
+        elif sabotage == "other-response":
+            return make_response("", 200)
+        return response
+
+    return app.test_client().get("/desync").headers.get("Content-Security-Policy")
+
+
+@pytest.mark.parametrize("sabotage", ["widen", "delete", "raise", "abort", "other-response"])
+def test_the_mark_cannot_desynchronise_from_the_response(sabotage: str) -> None:
+    """The skip must validate the value on the wire, not trust the mark.
+
+    Trusting the mark meant five ordinary route shapes reached the client with a wider
+    policy or none at all, through the sanctioned door: tighten then widen (two lines of
+    route code, and the round-four hole restored), tighten then delete, tighten then raise
+    or abort (an error page with NO policy, which is the AMD-001 section 10.6 requirement),
+    and tightening one response object while returning another.
+    """
+    app = Flask(__name__)
+    security_headers.register(app)
+    assert _tightened_then(app, sabotage) == security_headers.CONTENT_SECURITY_POLICY
+
+
+def test_a_sanctioned_narrowing_still_survives_the_blanket_pass() -> None:
+    """The boundary in the other direction, or the validation is just a rewrite."""
+    app = Flask(__name__)
+    security_headers.register(app)
+
+    @app.get("/narrow")
+    def narrow():  # noqa: ANN202 - Flask response object
+        response = make_response("", 204)
+        return security_headers.tighten(
+            response, "Content-Security-Policy", "default-src 'none'; sandbox"
+        )
+
+    served = app.test_client().get("/narrow").headers["Content-Security-Policy"]
+    assert served == "default-src 'none'; sandbox"
+    assert served in security_headers.PERMITTED_TIGHTENINGS["Content-Security-Policy"]
+
+
+def test_a_mark_leaked_across_requests_cannot_strip_a_header() -> None:
+    """`g` is app-context scoped, not request scoped, so the mark can outlive its request.
+
+    Where an app context wraps request handling, a scheduler or a CLI worker for instance,
+    the mark set by one response applied to the next. Validating the served value makes
+    that harmless rather than load-bearing.
+    """
+    app = Flask(__name__)
+    security_headers.register(app)
+
+    @app.get("/narrow")
+    def narrow():  # noqa: ANN202 - Flask response object
+        response = make_response("", 204)
+        return security_headers.tighten(
+            response, "Content-Security-Policy", "default-src 'none'; sandbox"
+        )
+
+    @app.get("/plain")
+    def plain() -> tuple[str, int]:
+        return "", 204
+
+    with app.app_context():
+        client = app.test_client()
+        assert client.get("/narrow").headers["Content-Security-Policy"] == (
+            "default-src 'none'; sandbox"
+        )
+        assert client.get("/plain").headers["Content-Security-Policy"] == (
+            security_headers.CONTENT_SECURITY_POLICY
+        )

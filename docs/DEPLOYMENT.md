@@ -71,14 +71,34 @@ The audit signing key is the one to place most carefully. It is what makes the a
 
 ## Key rotation
 
-Rotation is supported and tested, and the procedure is short.
+Rotation is supported and tested, and it costs exactly one extra step.
 
 1. Generate the new key: `openssl rand -hex 32`.
-2. Move the current `AUDIT_HMAC_KEY` value and its `AUDIT_KEY_ID` into `AUDIT_RETIRED_KEYS` as one `id:key` pair.
+2. Move the outgoing `AUDIT_HMAC_KEY` value and its `AUDIT_KEY_ID` into
+   `AUDIT_RETIRED_KEYS` as one `id:key` pair.
 3. Set `AUDIT_HMAC_KEY` to the new value and `AUDIT_KEY_ID` to a new identifier.
-4. Save and apply the full environment set, then confirm `/api/diagnostics` reports `usable` true for the key.
+4. Save and apply the full environment set, then confirm `/api/diagnostics` reports
+   `usable` true for the key.
+5. **Re-anchor.** Run `complyops.audit.re_anchor(DATA_DIR, outgoing_key=..., incoming_key=...)`
+   once, which reads the stored anchor under the outgoing key and writes it back under the
+   incoming one, carrying the head, the length, the total and the archive boundary
+   unchanged.
 
-No re-anchor step is needed. The anchor authenticates against every key still held, and the anchor records the key that signed the LAST entry rather than the key the application would sign with next, so verification stays green across the rotation and through the first append afterwards. Keep every retired key for as long as the entries it signed are retained: dropping one makes those entries unverifiable, which is reported as a configuration fault rather than as tampering, but it is still unverifiable.
+Step 5 is not optional and it is not housekeeping. **The anchor authenticates under the
+current signing key only**, so until it is re-signed the new key cannot read it and the
+audit path fails closed.
+
+That is a deliberate trade, and the reason is worth stating because the opposite choice was
+made first and was wrong. Accepting any key still held meant an actor holding a LEAKED
+RETIRED key plus write access to the volume could re-sign the whole log under it, write a
+matching anchor and marker, and have wholly invented history certified as intact. A key is
+retired because it may have leaked, so it is precisely the key the trusted reference must
+not accept. Retired keys remain valid for stored ENTRIES, which is what they are for, and
+`verify_log` still verifies history across a rotation.
+
+Keep every retired key for as long as the entries it signed are retained. Dropping one
+makes those entries unverifiable, which is reported as a configuration fault rather than as
+tampering, but unverifiable either way.
 
 ## Rollback
 
@@ -124,7 +144,8 @@ and that gap is recorded rather than assumed closed.
 | AUD-001, Q-06 quarterly hash verification on a sample | **Mechanism met, procedure open.** `verify_sample` is the sampling entry point and cannot report a truncation, by construction; `verify_log` verifies the whole ACTIVE log and requires the anchor. There is no scheduler, no runbook step, and no caller, so the quarterly activity itself is not yet real. | `src/complyops/audit/chain.py` |
 | AUD-001, SharePoint list versioning and ISC-Owners permission as the delete control | **Not in the live path.** The application no longer writes to SharePoint, so this control applies to the exported evidence pack once uploaded, and not before. See the export cadence note below. | This document |
 | AUD-001, Monitoring and Alerting (five Application Insights alerts) | **Not applicable as written.** The App Store does not provide Application Insights. `TBC, re-verify`: AUD-001 needs an amendment naming the platform equivalent. The gap is open, not covered. | Adam Field owns the amendment |
-| AUD-001, timestamps in UTC (IASME 12.3) | **Met.** RFC 3339 in UTC is the only accepted form; a local offset is rejected at the boundary. | `validation._check_timestamp` |
+| AUD-001, timestamp FORM in UTC | **Met.** RFC 3339 in UTC is the only accepted form, the calendar is parsed rather than pattern-matched, and a local offset is rejected at the boundary. | `validation._check_timestamp` |
+| IASME 12.3, time SYNCHRONISATION | **Not met, and not the same clause.** AUD-001 evidences 12.3 as "All timestamps in UTC from Azure App Service (NTP-synchronised)", a platform this build no longer uses. The timestamp is also caller-supplied: nothing in the build generates it or establishes the time source. `TBC, re-verify` the App Store clock source, and consider deriving the timestamp server-side when the records module lands. | Open |
 | AMD-001 10.6, static application security testing on every change | **Met.** `bandit` in the local loop and, as of this round, in Continuous Integration, which is the only leg that runs on every change. `ruff` and `mypy` are a linter and a type checker and do not satisfy this clause. | `scripts/verify.sh`, `.github/workflows/verify.yml` |
 | AMD-001 10.6, dependencies pinned with integrity verification | **Met.** Exact pins, hash-locked, installed with `--require-hashes`. | `requirements.txt`, `Dockerfile` |
 | AMD-001 10.6, security headers on all responses | **Met.** All four named headers, plus three more, on every response including probes, redirects and error pages, applied OVER anything a route set. The previous implementation was first-writer-wins, so a route could serve a wider policy and keep it; a narrower per-route policy now goes through an explicit `tighten` call and there is no door for a wider one. | `src/complyops/security_headers.py`, `tests/test_security_headers.py` |
