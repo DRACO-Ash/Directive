@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 
 import pytest
 
@@ -181,3 +182,30 @@ def test_a_non_string_field_value_fails_closed_in_the_hasher(hostile: object) ->
 def test_the_key_identifier_must_be_a_string_too() -> None:
     with pytest.raises(hashing.AuditHashError, match="missing the 'key_id' field"):
         hashing.canonical_payload(fixed_entry(), None)  # type: ignore[arg-type]
+
+
+def test_the_anchor_authentication_tag_is_pinned_by_a_golden_vector() -> None:
+    """The anchor's signed form needs the same protection as the entry digest.
+
+    Nothing pinned it: removing `sort_keys=True` from the MAC message left the whole suite
+    green. Reordering the signed document in a later slice would then make every stored
+    anchor read as "not authenticated", which is a tamper accusation over clean evidence,
+    the one failure this module must never produce. Changing the construction below is the
+    same irreversible decision as changing FIELD_ORDER and needs the same sign-off.
+    """
+    from complyops.audit import Anchor  # noqa: PLC0415
+
+    anchor = Anchor(
+        head="a" * 64, length=3, key_id=TEST_KEY_ID, total_length=12, pruned_head="c" * 64
+    )
+    message = (
+        b'{"head": "' + b"a" * 64 + b'", "keyId": "test-k1", "length": 3, '
+        b'"prunedHead": "' + b"c" * 64 + b'", "schemaVersion": 2, "totalLength": 12}'
+    )
+    expected = hmac.new(TEST_KEY, message, hashlib.sha256).hexdigest()
+    assert anchor.mac(TEST_KEY) == expected, "the anchor's signed form changed"
+
+    # And the stored document is exactly that message plus the tag.
+    stored = json.loads(anchor.as_json(TEST_KEY))
+    assert stored.pop("mac") == expected
+    assert json.dumps(stored, sort_keys=True).encode("utf-8") == message

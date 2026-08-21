@@ -30,18 +30,23 @@ Out of scope: the Bluestaq App Store platform itself, Microsoft Entra ID, and Mi
 The primary asset is **audit log integrity**, because the log is the evidence shown to an
 IASME or Defence Cyber Certification assessor and, if it comes to it, to the Information
 Commissioner's Office. The audit chain is keyed with HMAC-SHA256 under a server-held key
-and anchored to a record of where the log should end, so neither write access to the log
-nor access to the storage volume alone is enough to rewrite history undetected.
+and anchored to a record of where the log should end, so **write access to the stored log
+alone is not enough to rewrite history undetected**: an edit, a re-stamp, a reorder, a
+deletion, a truncation and a wholesale replacement are all caught.
+
+Write access to the storage VOLUME is a different matter, and the two limits below are
+real. Do not read the sentence above as covering them.
 
 Two limits are stated openly rather than left for a reader to discover:
 
 ● An actor with write access to the persistent volume can delete the anchor and its
   first-use marker together, which leaves a state indistinguishable from a fresh install.
 ● The same actor, holding no key, can restore a genuine older anchor alongside a matching
-  truncation of the log. The in-process refusal to move backwards does not survive a
-  restart, and restarts are routine on this platform, so the result is worse than the
-  case above: it does not look like a missing anchor, it looks like clean shorter history,
-  and verification positively certifies it as intact.
+  truncation of the log. The refusal to move backwards is held in memory PER PROCESS, and
+  the container serves two workers, so the second worker accepts the rolled-back anchor
+  with no restart at all; a restart clears it for both. The result is worse than the case
+  above: it does not look like a missing anchor, it looks like clean shorter history, and
+  verification positively certifies it as intact.
 
   Closing both needs corroboration against a store that actor does not control, which for
   this build is the exported evidence pack. That detects the removal of entries a prior

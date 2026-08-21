@@ -259,6 +259,7 @@ def test_the_distinct_byte_floor_is_enforced_at_the_boundary_in_both_directions(
         ("the key pasted without its id prefix", "{key}"),
         ("a space where the colon should be", "k0 {key}"),
         ("an unusable identifier", "k 0:{key}"),
+        ("a well-formed pair whose key is too weak", "k0:{weak}"),
     ],
 )
 def test_a_malformed_retired_pair_never_echoes_the_key(
@@ -271,11 +272,16 @@ def test_a_malformed_retired_pair_never_echoes_the_key(
     would write to the container log.
     """
     key = bytes(range(64, 96)).hex()
-    monkeypatch.setenv("AUDIT_RETIRED_KEYS", template.format(key=key))
+    weak = ("dead" * 16)[:64]
+    monkeypatch.setenv("AUDIT_RETIRED_KEYS", template.format(key=key, weak=weak))
     with pytest.raises(keys.AuditKeyError) as raised:
         keys.verification_keys()
 
+    # The whole exception chain, because a suppressed cause still reaches a log.
     message = str(raised.value)
-    assert key not in message, f"{label}: the key leaked into the message"
-    assert key[:16] not in message, f"{label}: a prefix of the key leaked"
+    cause = raised.value.__cause__
+    chained = f"{message} {cause}" if cause else message
+    for secret, name in ((key, "the key"), (weak, "the weak key")):
+        assert secret not in chained, f"{label}: {name} leaked into the message"
+        assert secret[:16] not in chained, f"{label}: a prefix of {name} leaked"
     assert "entry 1" in message, "the operator still needs to know which entry is at fault"

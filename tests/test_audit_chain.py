@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from complyops.audit import (
     write_anchor,
 )
 from complyops.audit import anchor as anchor_module
+from complyops.audit import chain as chain_module
 from complyops.audit.hashing import entry_hash
 from complyops.audit.validation import AuditFieldError
 from conftest import TEST_KEY, TEST_KEY_ID, fixed_entry, keys_for_verification, new_chain
@@ -474,15 +476,15 @@ def test_the_archive_boundary_survives_a_prune_a_restart_and_an_append(tmp_path:
     ever than the stored one, the write was refused, and the audit path wedged.
     """
     chain, entries = build(10)
-    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY, KEYS)
+    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY)
 
     # Prune to the newest four, archiving six.
     pruned = chain.anchor().after_prune(kept=4, pruned_head=entries[5].entry_hash)
-    write_anchor(str(tmp_path), pruned, TEST_KEY, KEYS)
+    write_anchor(str(tmp_path), pruned, TEST_KEY)
 
     # Restart: a fresh process reads the anchor and rebuilds the chain from it.
     anchor_module.reset_high_water_mark()
-    stored = read_anchor(str(tmp_path), KEYS)
+    stored = read_anchor(str(tmp_path), TEST_KEY)
     assert stored is not None
     assert (stored.length, stored.total_length, stored.archived_length) == (4, 10, 6)
 
@@ -495,7 +497,7 @@ def test_the_archive_boundary_survives_a_prune_a_restart_and_an_append(tmp_path:
     assert advanced.pruned_head == entries[5].entry_hash, "the boundary must be carried"
 
     # And the advanced anchor is a legitimate write, not a regression.
-    write_anchor(str(tmp_path), advanced, TEST_KEY, KEYS)
+    write_anchor(str(tmp_path), advanced, TEST_KEY)
 
     active = [*entries[6:], eleventh]
     verdict = verify_log(active, KEYS, advanced)
@@ -561,10 +563,10 @@ def test_pruning_a_live_chain_keeps_the_boundary_without_a_restart(tmp_path: Pat
     Six entries of evidence lost with no alarm and no attacker.
     """
     chain, entries = build(10)
-    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY, KEYS)
+    write_anchor(str(tmp_path), chain.anchor(), TEST_KEY)
 
     moved = chain.prune(kept=4, pruned_head=entries[5].entry_hash)
-    write_anchor(str(tmp_path), moved, TEST_KEY, KEYS)
+    write_anchor(str(tmp_path), moved, TEST_KEY)
 
     eleventh = chain.append(fixed_entry(11))
     advanced = chain.anchor()
@@ -573,39 +575,62 @@ def test_pruning_a_live_chain_keeps_the_boundary_without_a_restart(tmp_path: Pat
     assert advanced.archived_length == 6
     assert advanced.pruned_head == entries[5].entry_hash
 
-    write_anchor(str(tmp_path), advanced, TEST_KEY, KEYS)
+    write_anchor(str(tmp_path), advanced, TEST_KEY)
     verdict = verify_log([*entries[6:], eleventh], KEYS, advanced)
     assert verdict.ok, verdict.summary()
     assert not verdict.tampered
     assert not verify_log(entries[7:], KEYS, advanced).ok
 
 
-def test_pruning_is_serialised_against_a_concurrent_append() -> None:
-    """The move and an append must not interleave, or the head forks."""
+def test_pruning_and_appending_are_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assert the exclusion directly, because racing for it does not pin it.
+
+    Two earlier versions of this test raced a prune against an append and asserted
+    invariants on the result. Both passed with the lock deleted, because the outcomes of
+    the two legitimate orderings are hard to tell apart from the outcome of an interleave.
+    So this holds the prune's critical section open and asserts that an append cannot enter
+    it, which is the property the lock exists to provide and is decidable.
+
+    What the lock buys: `prune` reads `self.length`, computes the move from it, and writes
+    it back. An append landing inside that window is computed away, so the chain's view of
+    its own length silently disagrees with the log.
+    """
     chain, entries = build(6)
-    results: list[object] = []
+    inside_prune = threading.Event()
+    overlaps: list[str] = []
 
-    def appender() -> None:
-        results.append(chain.append(fixed_entry(20)))
+    real_after_prune = Anchor.after_prune
+    real_entry_hash = chain_module.entry_hash
 
-    def pruner() -> None:
-        results.append(chain.prune(kept=3, pruned_head=entries[2].entry_hash))
+    def slow_after_prune(self: Anchor, kept: int, pruned_head: str) -> Anchor:
+        inside_prune.set()
+        time.sleep(0.2)
+        try:
+            return real_after_prune(self, kept, pruned_head)
+        finally:
+            inside_prune.clear()
 
-    previous = sys.getswitchinterval()
-    sys.setswitchinterval(1e-9)
-    try:
-        threads = [threading.Thread(target=appender), threading.Thread(target=pruner)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-    finally:
-        sys.setswitchinterval(previous)
+    def watching_entry_hash(*args: object, **kwargs: object) -> str:
+        if inside_prune.is_set():
+            overlaps.append("an append entered the prune's critical section")
+        return real_entry_hash(*args, **kwargs)  # type: ignore[arg-type]
 
-    final = chain.anchor()
-    assert final.total_length == 7, "the append is counted whichever order they ran in"
-    assert final.archived_length == final.total_length - final.length
-    assert final.archived_length >= 0
+    monkeypatch.setattr(Anchor, "after_prune", slow_after_prune)
+    monkeypatch.setattr(chain_module, "entry_hash", watching_entry_hash)
+
+    pruner = threading.Thread(target=lambda: chain.prune(kept=3, pruned_head=entries[2].entry_hash))
+    pruner.start()
+    assert inside_prune.wait(timeout=2.0), "the prune never reached its critical section"
+
+    appender = threading.Thread(target=lambda: chain.append(fixed_entry(20)))
+    appender.start()
+    appender.join(timeout=5.0)
+    pruner.join(timeout=5.0)
+
+    assert not overlaps, overlaps
+    assert chain.anchor().total_length == 7
 
 
 def test_a_no_op_prune_leaves_the_anchor_untouched() -> None:

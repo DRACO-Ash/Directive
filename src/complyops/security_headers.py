@@ -114,8 +114,11 @@ def tighten(response: Response, name: str, value: str) -> Response:
 def _tightened() -> set[str]:
     """Return the set of headers this request has legitimately narrowed.
 
-    Held on the request context, not on the response, so it cannot be set by a client, sent
-    to one, or confused with a header a route echoes.
+    Held on the APP context (`flask.g`), not on the response, so it cannot be set by a
+    client, sent to one, or confused with a header a route echoes. App context, not request
+    context, is the honest description: Flask reuses an already-pushed app context, so where
+    one wraps request handling the mark outlives the request that set it. That is why
+    :func:`apply_security_headers` validates the served value rather than trusting the mark.
     """
     if not hasattr(g, "_complyops_tightened"):
         g._complyops_tightened = set()
@@ -137,8 +140,16 @@ def apply_security_headers(response: Response) -> Response:
     """
     tightened = _tightened() if has_request_context() else set()
     for name, value in SECURITY_HEADERS.items():
-        if name not in tightened:
-            response.headers[name] = value
+        # Self-validating: the mark alone is not enough, because it can desynchronise from
+        # the response actually served. Trusting it meant a route could tighten and then
+        # widen the same header, tighten and then raise (a 500 with NO policy), tighten and
+        # then delete the header, or tighten one response object and return another. The
+        # skip now requires the value ON THE WIRE to be a sanctioned narrowing, so a
+        # desynchronised mark fails safe by re-asserting the default.
+        served = response.headers.get(name)
+        if name in tightened and served in PERMITTED_TIGHTENINGS.get(name, frozenset()):
+            continue
+        response.headers[name] = value
     return response
 
 

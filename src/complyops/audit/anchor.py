@@ -35,9 +35,19 @@ which is why the export cadence is a security control and not housekeeping: see
 WHAT IT DOES DO, against the attacker who holds list rights but not the volume and not
 the key, which is the attacker the threat model actually names:
 
-It is authenticated. The document carries an HMAC under a signing key, verified against
-every key still held so a rotation does not turn genuine evidence into an accusation. An
-actor without a key can neither write one nor alter one.
+It is authenticated under the CURRENT signing key, and only that key. An actor without it
+can neither write an anchor nor alter one. A retired key is deliberately NOT accepted here,
+even though it IS accepted for stored entries: a key is retired because it may have leaked,
+and an actor holding a leaked retired key plus write access to this volume would otherwise
+re-sign the whole log, write a matching anchor and marker, and have wholly invented history
+certified as intact. That was real, not hypothetical: it defeated the tail-key check in
+`chain.verify_log` completely. A retired key exists so stored ENTRIES stay verifiable across
+a rotation, which is a different job. Rotation therefore carries an explicit re-anchor step
+rather than a wider trust rule.
+
+Against the attacker the threat model names, somebody with write access to the log but not
+the volume and not the key, this is sufficient: an edit, a re-stamp, a reorder, a deletion,
+a truncation and a wholesale replacement are all caught.
 
 It only moves forward. A write that would shorten the record is refused, and so is a read
 of an anchor shorter than one already seen in this process. The first of those matters
@@ -46,19 +56,23 @@ most: one bad write used to destroy the durable head and length irrecoverably.
 Writes are atomic and durable: a uniquely named temporary file in the target directory,
 the file and the directory both flushed, then a rename over the target. A shared fixed
 temporary name is not atomic across writers, and without the flushes a pod kill can leave
-a stale or zero-length anchor. The marker is written BEFORE the rename, so an anchor can
-never exist without one.
+a stale or zero-length anchor. The marker is written AFTER the anchor rename, with the same
+sequence, and an anchor found without a valid marker has the marker repaired on read rather
+than being read as evidence. Writing the marker first was worse in both directions: a
+failed anchor write left a marker on a virgin volume and every later read raised "it was
+deleted", and a non-durable marker write left a zero-length marker beside a good anchor, so
+deleting the anchor read as a fresh install.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
 import os
 import tempfile
 import threading
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard
@@ -281,8 +295,8 @@ def _marker_tag(data_dir: str, key: bytes) -> str:
     return hmac.new(key, _key(data_dir).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _marker_is_valid(data_dir: str, keys: Mapping[str, bytes]) -> bool:
-    """Return whether a genuine marker is present, under any key still held."""
+def _marker_is_valid(data_dir: str, key: bytes) -> bool:
+    """Return whether a genuine marker is present, under the CURRENT signing key."""
     target = marker_path(data_dir)
     if not target.exists():
         return False
@@ -290,18 +304,13 @@ def _marker_is_valid(data_dir: str, keys: Mapping[str, bytes]) -> bool:
         stored = target.read_text(encoding="utf-8").strip()
     except OSError:
         return False
-    return any(
-        hmac.compare_digest(stored, _marker_tag(data_dir, candidate))
-        for candidate in keys.values()
-        if candidate
-    )
+    return bool(key) and hmac.compare_digest(stored, _marker_tag(data_dir, key))
 
 
 def write_anchor(
     data_dir: str,
     anchor: Anchor,
     key: bytes,
-    keys: Mapping[str, bytes],
     *,
     allow_shortening: bool = False,
 ) -> None:
@@ -310,12 +319,8 @@ def write_anchor(
     A shorter total than the one already recorded destroys the durable record
     irrecoverably, which is worse than any read-time control can repair.
 
-    ``keys`` is every key still held, and it is POSITIONAL AND REQUIRED. It was briefly an
-    optional keyword defaulting to the signing key alone, which meant the rotation fix
-    applied only when a caller remembered to opt in: omit it after a rotation and a
-    shortening write was accepted. That is the same fail-open default that `verify_log` and
-    `AuditChain` had their anchors made positional and required to remove, and it does not
-    get to survive here.
+    ``key`` is the CURRENT signing key and the only key the anchor is ever authenticated
+    under. See :func:`read_anchor` for why a retired key is not accepted here.
 
     Pass ``allow_shortening`` only for a deliberate operator re-anchor; it also lowers the
     in-process high-water mark, so the next ordinary write is not then refused.
@@ -324,8 +329,19 @@ def write_anchor(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if not allow_shortening:
-        _refuse_regression(data_dir, anchor, keys)
+        _refuse_regression(data_dir, anchor, key)
 
+    _write(data_dir, anchor, key)
+    if allow_shortening:
+        _set_length(data_dir, anchor.total_length)
+    else:
+        _record_length(data_dir, anchor.total_length)
+
+
+def _write(data_dir: str, anchor: Anchor, key: bytes) -> None:
+    """Write the anchor and its marker atomically and durably. No policy, just the write."""
+    target = anchor_path(data_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
     document = anchor.as_json(key)
 
     # A unique temp name in the SAME directory: a shared fixed name is not atomic across
@@ -348,20 +364,22 @@ def write_anchor(
     # marker absent" is now repaired on read rather than treated as evidence.
     _write_marker(data_dir, key)
     _fsync_directory(target.parent)
-    if allow_shortening:
-        _set_length(data_dir, anchor.total_length)
-    else:
-        _record_length(data_dir, anchor.total_length)
 
 
-def _refuse_regression(data_dir: str, anchor: Anchor, keys: Mapping[str, bytes]) -> None:
-    """Refuse a write that would shorten the recorded log.
-
-    ``keys`` is every key still held, not just the signing key. Reading the stored anchor
-    under the current key alone meant that after a rotation, which the deployment notes
-    document as needing no re-anchor, the stored anchor could not be authenticated here,
-    was treated as no evidence of a longer log, and a shortening write was accepted.
-    """
+def _refuse_regression(data_dir: str, anchor: Anchor, key: bytes) -> None:
+    """Refuse a write that would shorten or erase the recorded log."""
+    if not anchor_path(data_dir).exists() and _marker_is_valid(data_dir, key):
+        # The anchor is gone but this log has been used before, which `read_anchor` treats
+        # as a hard alarm. The write path has to agree with it: without this, deleting the
+        # anchor and leaving the marker let the next write lay down a clean genesis anchor,
+        # so ONE deletion produced a state indistinguishable from a fresh install. The
+        # module claims the marker raises the cost to two deletions, and this is what makes
+        # that true once a writer exists.
+        raise AnchorError(
+            f"the audit anchor at {anchor_path(data_dir)} is missing although this log has "
+            f"been used before, so refusing to write over it. Pass allow_shortening for a "
+            f"deliberate operator re-anchor."
+        )
     floor = _seen_length(data_dir)
     if anchor_path(data_dir).exists():
         # Strict: an anchor that exists but authenticates under no held key is evidence of
@@ -369,7 +387,7 @@ def _refuse_regression(data_dir: str, anchor: Anchor, keys: Mapping[str, bytes])
         # anchor" and "there is one I cannot authenticate" into the same answer, and the
         # second is exactly the state the alarm exists for. An operator who genuinely needs
         # to write over it has `allow_shortening`.
-        stored = _read_stored(data_dir, keys, strict=True)
+        stored = _read_stored(data_dir, key, strict=True)
         if stored is not None:
             floor = max(floor, stored.total_length)
     total = anchor.total_length
@@ -411,31 +429,55 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def read_anchor(data_dir: str, keys: Mapping[str, bytes]) -> Anchor | None:
+def re_anchor(data_dir: str, *, outgoing_key: bytes, incoming_key: bytes) -> Anchor | None:
+    """Re-sign the stored anchor under a new key, carrying the record forward unchanged.
+
+    The one operator step a key rotation costs, as executable code rather than prose in a
+    runbook, because the write path deliberately refuses to read an anchor it cannot
+    authenticate and would otherwise block the very procedure that fixes that.
+
+    Safe by construction: the stored anchor is read and authenticated under the outgoing key
+    first, then written back verbatim. Nothing is shortened, and ``key_id`` is untouched
+    because it records the key that signed the last ENTRY, not the key that signed this
+    document. Returns the carried anchor, or ``None`` if there was nothing to carry.
+    """
+    stored = read_anchor(data_dir, outgoing_key)
+    if stored is None:
+        return None
+    _write(data_dir, stored, incoming_key)
+    _set_length(data_dir, stored.total_length)
+    return stored
+
+
+def read_anchor(data_dir: str, key: bytes) -> Anchor | None:
     """Return the stored anchor, ``None`` if this volume holds none, or fail closed.
 
-    ``keys`` is every key still held, so an anchor written before a key rotation still
-    authenticates: verifying under the current key alone turned genuine evidence into an
-    accusation against the volume, with no recovery path that did not itself trip the
-    deletion alarm.
+    ``key`` is the CURRENT signing key, and it is the ONLY key an anchor is authenticated
+    under. Accepting any key still held was a serious mistake, made to stop a rotation
+    producing a false alarm: an actor holding a LEAKED RETIRED key and write access to the
+    volume could then re-sign the whole log under that key, write a matching anchor and
+    marker, and have wholly invented history certified as intact. A retired key exists so
+    stored ENTRIES stay verifiable across a rotation, which is a different job; the anchor
+    is the trusted reference, and a reference trusted to a key that may have leaked is not
+    one. The rotation procedure therefore carries an explicit re-anchor step: read under
+    the outgoing key, write under the incoming one. See `docs/DEPLOYMENT.md`.
 
     ``None`` means only "this volume holds no anchor". It is NOT proof the log is empty:
     an attacker with volume write access can delete the anchor and the marker together. The
     caller must corroborate against the last exported evidence pack before treating it as a
     fresh install.
     """
-    anchor = _read_stored(data_dir, keys, strict=True)
-    if anchor is not None and not _marker_is_valid(data_dir, keys):
+    anchor = _read_stored(data_dir, key, strict=True)
+    if anchor is not None and not _marker_is_valid(data_dir, key):
         # The anchor is the evidence; the marker only records that a log exists. A missing
         # or truncated marker beside a genuine anchor is a crash artefact, so repair it
         # rather than raising: raising here would wedge the audit path over a control that
-        # the anchor itself already satisfies.
-        for candidate in keys.values():
-            if candidate:
-                _write_marker(data_dir, candidate)
-                break
+        # the anchor itself already satisfies. Best effort, so a full or read-only volume
+        # cannot turn a successful read into a failure.
+        with contextlib.suppress(OSError):
+            _write_marker(data_dir, key)
     if anchor is None:
-        if _marker_is_valid(data_dir, keys):
+        if _marker_is_valid(data_dir, key):
             raise AnchorError(
                 f"the audit anchor at {anchor_path(data_dir)} is missing although this log "
                 f"has been used before, so it was deleted. Treat the log as unverifiable "
@@ -447,11 +489,11 @@ def read_anchor(data_dir: str, keys: Mapping[str, bytes]) -> Anchor | None:
     return anchor
 
 
-def _read_stored(data_dir: str, keys: Mapping[str, bytes], *, strict: bool) -> Anchor | None:
+def _read_stored(data_dir: str, key: bytes, *, strict: bool) -> Anchor | None:
     """Return the anchor on disk, or ``None``. ``strict`` decides whether faults raise."""
     target = anchor_path(data_dir)
     try:
-        return _parse_stored(target, keys)
+        return _parse_stored(target, key)
     except (OSError, ValueError) as error:
         if not strict:
             return None
@@ -462,7 +504,7 @@ def _read_stored(data_dir: str, keys: Mapping[str, bytes], *, strict: bool) -> A
         raise
 
 
-def _parse_stored(target: Path, keys: Mapping[str, bytes]) -> Anchor | None:
+def _parse_stored(target: Path, key: bytes) -> Anchor | None:
     """Read and validate the anchor document, or return ``None`` when there is none."""
     if not target.exists():
         return None
@@ -471,7 +513,7 @@ def _parse_stored(target: Path, keys: Mapping[str, bytes]) -> Anchor | None:
     document = json.loads(target.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise AnchorError(f"the audit anchor at {target} is not a usable anchor")
-    return _validate(target, document, keys)
+    return _validate(target, document, key)
 
 
 def _check_not_rolled_back(target: Path, data_dir: str, length: int) -> None:
@@ -494,7 +536,7 @@ def _check_not_rolled_back(target: Path, data_dir: str, length: int) -> None:
         )
 
 
-def _validate(target: Path, document: dict[str, object], keys: Mapping[str, bytes]) -> Anchor:
+def _validate(target: Path, document: dict[str, object], key: bytes) -> Anchor:
     """Return the anchor from a parsed document, or fail closed."""
     head, length, stored_key_id = (
         document.get("head"),
@@ -541,11 +583,11 @@ def _validate(target: Path, document: dict[str, object], keys: Mapping[str, byte
     # A non-digest tag must produce a verdict, not an exception: hmac.compare_digest raises
     # on a non-ASCII string, which let an actor with volume write and no key turn the
     # tamper alarm into an unhandled error.
-    if not is_hash(tag) or not any(
-        hmac.compare_digest(tag, anchor.mac(candidate)) for candidate in keys.values() if candidate
-    ):
+    if not is_hash(tag) or not key or not hmac.compare_digest(tag, anchor.mac(key)):
         raise AnchorError(
-            f"the audit anchor at {target} is not authenticated under any key still held, so "
-            f"it was written or altered by something without a key"
+            f"the audit anchor at {target} is not authenticated under the current signing "
+            f"key, so it was written or altered by something without that key. After a key "
+            f"rotation, re-anchor: read under the outgoing key and write under the incoming "
+            f"one."
         )
     return anchor
