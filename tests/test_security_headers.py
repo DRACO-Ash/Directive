@@ -317,3 +317,42 @@ def test_a_mark_leaked_across_requests_cannot_strip_a_header() -> None:
         assert client.get("/plain").headers["Content-Security-Policy"] == (
             security_headers.CONTENT_SECURITY_POLICY
         )
+
+
+def test_a_sanctioned_value_set_without_the_door_is_still_replaced() -> None:
+    """One reviewed door, and the mark is what proves a route went through it.
+
+    A mutation dropping the mark check left the suite green, so nothing asserted that a
+    route cannot simply set a sanctioned narrowing directly. It must not: the point of the
+    allowlist is that a narrowing is a visible, reviewed call, not a value a route can
+    discover.
+    """
+    app = Flask(__name__)
+    security_headers.register(app)
+
+    @app.get("/sneak")
+    def sneak() -> tuple[str, int, dict[str, str]]:
+        return "", 204, {"Content-Security-Policy": "default-src 'none'; sandbox"}
+
+    served = app.test_client().get("/sneak").headers["Content-Security-Policy"]
+    assert served == security_headers.CONTENT_SECURITY_POLICY
+
+
+def test_a_duplicate_added_after_a_tighten_is_replaced() -> None:
+    """`get` read the first occurrence, so a second wider value reached the wire.
+
+    Browsers intersect multiple policies, so it was not a weakening, but two documents say
+    no wider value reaches a client and one visibly did.
+    """
+    app = Flask(__name__)
+    security_headers.register(app)
+
+    @app.get("/dupe")
+    def dupe():  # noqa: ANN202 - Flask response object
+        response = make_response("", 204)
+        security_headers.tighten(response, "Content-Security-Policy", "default-src 'none'; sandbox")
+        response.headers.add("Content-Security-Policy", "default-src * 'unsafe-inline'")
+        return response
+
+    served = app.test_client().get("/dupe").headers.getlist("Content-Security-Policy")
+    assert served == [security_headers.CONTENT_SECURITY_POLICY]

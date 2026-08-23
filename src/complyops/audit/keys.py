@@ -92,8 +92,15 @@ def key_id() -> str:
         return DEFAULT_KEY_ID
     try:
         return check_key_id(raw)
-    except AuditFieldError as error:
-        raise AuditKeyError(f"AUDIT_KEY_ID is not usable: {error}") from error
+    except AuditFieldError:
+        # The value is not repeated and the cause is suppressed, for the same reason as the
+        # retired-key list below: a paste error puts key material into an identifier field,
+        # and these two variables sit next to each other in the console.
+        raise AuditKeyError(
+            "AUDIT_KEY_ID is not usable: it must be 1 to 32 characters of letters, digits, "
+            "underscore or hyphen. The value is not repeated here because it may be key "
+            "material."
+        ) from None
 
 
 def _decode(raw: str) -> bytes | None:

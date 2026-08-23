@@ -209,3 +209,28 @@ def test_the_anchor_authentication_tag_is_pinned_by_a_golden_vector() -> None:
     stored = json.loads(anchor.as_json(TEST_KEY))
     assert stored.pop("mac") == expected
     assert json.dumps(stored, sort_keys=True).encode("utf-8") == message
+
+
+def test_hashes_are_compared_in_constant_time_by_construction() -> None:
+    """A mutation showed `==` passed all 467 tests, so the property needs asserting.
+
+    Timing cannot be measured reliably in a test, so this asserts the implementation
+    instead: the comparison must go through `hmac.compare_digest`. The digests are public,
+    so nothing secret leaks by timing today, but the control is load-bearing the moment a
+    verification endpoint exists and the suite could not defend it.
+    """
+    calls: list[tuple[str, str]] = []
+    real = hmac.compare_digest
+
+    def watching(left: object, right: object) -> bool:
+        calls.append((str(left), str(right)))
+        return real(left, right)  # type: ignore[arg-type]
+
+    hashing.hmac.compare_digest = watching  # type: ignore[attr-defined]
+    try:
+        assert hashing.hashes_equal("a" * 64, "a" * 64) is True
+        assert hashing.hashes_equal("a" * 64, "b" * 64) is False
+    finally:
+        hashing.hmac.compare_digest = real  # type: ignore[attr-defined]
+
+    assert len(calls) == 2, "hashes_equal must compare through hmac.compare_digest"

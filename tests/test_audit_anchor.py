@@ -346,10 +346,13 @@ def test_a_marker_from_another_volume_does_not_count(tmp_path: Path) -> None:
 
 
 def test_the_marker_exists_whenever_an_anchor_does(tmp_path: Path) -> None:
-    """The marker is written before the rename, so the alarm cannot be silently disarmed.
+    """A successful write leaves both files, so the deletion alarm has something to fire on.
 
-    A kill between the rename and the marker used to leave an anchor with no marker, and
-    deleting the anchor then read as a fresh install.
+    The marker is written AFTER the anchor rename, with the same durable sequence. Writing
+    it first was worse in both directions: a failed anchor write left a marker on a virgin
+    volume and every later read raised "it was deleted", and a non-durable write left a
+    zero-length marker beside a good anchor. An anchor found without a valid marker is now
+    repaired on read rather than read as evidence.
     """
     write_anchor(str(tmp_path), Anchor.genesis(TEST_KEY_ID), TEST_KEY)
     assert (tmp_path / anchor_module.MARKER_FILENAME).exists()
@@ -646,7 +649,7 @@ def test_a_rotation_needs_a_re_anchor_and_the_procedure_works(tmp_path: Path) ->
     # deliberately refuses to read an anchor it cannot authenticate and would otherwise
     # block the very procedure that fixes that.
     carried = anchor_module.re_anchor(
-        str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY
+        str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=9
     )
     assert carried is not None
     assert carried.key_id == TEST_KEY_ID, (
@@ -882,7 +885,9 @@ def test_a_lenient_read_of_a_corrupt_anchor_returns_nothing(tmp_path: Path) -> N
 
 def test_a_re_anchor_on_a_virgin_volume_carries_nothing(tmp_path: Path) -> None:
     assert (
-        anchor_module.re_anchor(str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY)
+        anchor_module.re_anchor(
+            str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=0
+        )
         is None
     )
 
@@ -891,7 +896,9 @@ def test_a_re_anchor_cannot_be_driven_by_the_wrong_outgoing_key(tmp_path: Path) 
     """Otherwise it is a way to launder a forged anchor onto the current key."""
     write_anchor(str(tmp_path), Anchor(head="a" * 64, length=5, key_id=TEST_KEY_ID), TEST_KEY)
     with pytest.raises(AnchorError, match="not authenticated under the current signing key"):
-        anchor_module.re_anchor(str(tmp_path), outgoing_key=OTHER_KEY, incoming_key=ROTATED_KEY)
+        anchor_module.re_anchor(
+            str(tmp_path), outgoing_key=OTHER_KEY, incoming_key=ROTATED_KEY, expected_total=5
+        )
 
 
 def test_a_re_anchor_preserves_the_archive_boundary(tmp_path: Path) -> None:
@@ -900,7 +907,115 @@ def test_a_re_anchor_preserves_the_archive_boundary(tmp_path: Path) -> None:
     )
     write_anchor(str(tmp_path), pruned, TEST_KEY)
     carried = anchor_module.re_anchor(
-        str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY
+        str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=12
     )
     assert carried == pruned
     assert read_anchor(str(tmp_path), ROTATED_KEY) == pruned
+
+
+def test_a_re_anchor_refuses_a_shortened_anchor(tmp_path: Path) -> None:
+    """The hole this parameter exists to close, and it was a real one.
+
+    An attacker holding the leaked OUTGOING key plus volume write plants a short forgery.
+    Rotation is the documented response to a possibly-leaked key, so the operator then runs
+    the re-anchor step and certifies the forgery under the new key. Measured before the fix:
+    the record fell from nine entries to two, the invented log verified clean, and no alarm
+    fired. The floor cannot come from the volume, because the volume is what the attacker
+    controls.
+    """
+    write_anchor(str(tmp_path), Anchor(head="e" * 64, length=9, key_id=TEST_KEY_ID), TEST_KEY)
+
+    # The forgery: genuine-looking, correctly signed under the outgoing key, but short.
+    short = Anchor(head="f" * 64, length=2, key_id=TEST_KEY_ID)
+    (tmp_path / anchor_module.ANCHOR_FILENAME).write_text(short.as_json(TEST_KEY), encoding="utf-8")
+    anchor_module.marker_path(str(tmp_path)).write_text(
+        anchor_module._marker_tag(str(tmp_path), TEST_KEY), encoding="utf-8"
+    )
+    anchor_module.reset_high_water_mark()
+
+    with pytest.raises(AnchorError, match="shortened or replaced under the outgoing key"):
+        anchor_module.re_anchor(
+            str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=9
+        )
+
+    # And it stays unreadable under the new key, so nothing was laundered.
+    with pytest.raises(AnchorError, match="not authenticated under the current signing key"):
+        read_anchor(str(tmp_path), ROTATED_KEY)
+
+
+def test_a_re_anchor_refuses_a_removed_anchor_that_should_exist(tmp_path: Path) -> None:
+    """Deleting the anchor must not read as "nothing to carry" during a rotation."""
+    write_anchor(str(tmp_path), Anchor(head="e" * 64, length=4, key_id=TEST_KEY_ID), TEST_KEY)
+    (tmp_path / anchor_module.ANCHOR_FILENAME).unlink()
+    anchor_module.marker_path(str(tmp_path)).unlink()
+    anchor_module.reset_high_water_mark()
+
+    with pytest.raises(AnchorError, match="entries were expected"):
+        anchor_module.re_anchor(
+            str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=4
+        )
+
+
+def test_a_re_anchor_accepts_a_longer_record_than_expected(tmp_path: Path) -> None:
+    """The off-volume figure is a FLOOR, not an equality: entries are added between exports."""
+    write_anchor(str(tmp_path), Anchor(head="e" * 64, length=9, key_id=TEST_KEY_ID), TEST_KEY)
+    carried = anchor_module.re_anchor(
+        str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=6
+    )
+    assert carried is not None
+    assert carried.total_length == 9
+
+
+def test_a_negative_expected_total_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(AnchorError, match="cannot be negative"):
+        anchor_module.re_anchor(
+            str(tmp_path), outgoing_key=TEST_KEY, incoming_key=ROTATED_KEY, expected_total=-1
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("non-ASCII", "é" * 64),
+        ("invalid UTF-8", b"\xff\xfe" * 32),
+        ("not a digest", "planted by somebody without a key"),
+        ("oversize", "a" * (anchor_module.MAXIMUM_ANCHOR_BYTES + 1)),
+        ("empty", ""),
+    ],
+)
+def test_a_hostile_marker_never_raises_out_of_the_read_or_the_write(
+    tmp_path: Path, label: str, payload: str | bytes
+) -> None:
+    """The marker got the authentication tag and not the fail-closed guard.
+
+    `hmac.compare_digest` raises TypeError on a non-ASCII string and `read_text` raises
+    UnicodeDecodeError on invalid UTF-8, and neither was caught, so one hostile byte turned
+    the tamper alarm into an unhandled exception out of BOTH `read_anchor` and the write
+    guard. Since no register mutation may happen without an audit entry, a one-byte file
+    denied the whole write path and returned a 500 instead of a diagnosis. This is the same
+    bug class already fixed for the anchor's own tag.
+    """
+    write_anchor(str(tmp_path), Anchor(head="a" * 64, length=2, key_id=TEST_KEY_ID), TEST_KEY)
+    marker = anchor_module.marker_path(str(tmp_path))
+    if isinstance(payload, bytes):
+        marker.write_bytes(payload)
+    else:
+        marker.write_text(payload, encoding="utf-8")
+
+    # A genuine anchor still reads, and the marker is repaired on the way past.
+    stored = read_anchor(str(tmp_path), TEST_KEY)
+    assert stored is not None, f"{label}: a hostile marker must not deny a genuine anchor"
+
+    # And with the anchor gone, the write guard gives a verdict rather than an exception.
+    (tmp_path / anchor_module.ANCHOR_FILENAME).unlink()
+    marker.write_bytes(payload) if isinstance(payload, bytes) else marker.write_text(
+        payload, encoding="utf-8"
+    )
+    anchor_module.reset_high_water_mark()
+    write_anchor(str(tmp_path), Anchor.genesis(TEST_KEY_ID), TEST_KEY)
+
+
+def test_the_marker_is_not_consulted_without_a_key(tmp_path: Path) -> None:
+    """No key means cannot verify, which fails closed as "no valid marker"."""
+    write_anchor(str(tmp_path), Anchor.genesis(TEST_KEY_ID), TEST_KEY)
+    assert anchor_module._marker_is_valid(str(tmp_path), b"") is False

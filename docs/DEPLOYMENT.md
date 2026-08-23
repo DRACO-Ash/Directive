@@ -79,14 +79,27 @@ Rotation is supported and tested, and it costs exactly one extra step.
 3. Set `AUDIT_HMAC_KEY` to the new value and `AUDIT_KEY_ID` to a new identifier.
 4. Save and apply the full environment set, then confirm `/api/diagnostics` reports
    `usable` true for the key.
-5. **Re-anchor.** Run `complyops.audit.re_anchor(DATA_DIR, outgoing_key=..., incoming_key=...)`
-   once, which reads the stored anchor under the outgoing key and writes it back under the
-   incoming one, carrying the head, the length, the total and the archive boundary
-   unchanged.
+5. **Re-anchor.** First obtain the entries-ever total from OFF this volume: the figure
+   recorded by the last exported evidence pack, or your own record. Then run
+   `complyops.audit.re_anchor(DATA_DIR, outgoing_key=..., incoming_key=..., expected_total=N)`
+   once. It reads the stored anchor under the outgoing key, refuses to proceed if the stored
+   total is below `N`, and writes it back under the incoming key, carrying the head, the
+   length, the total and the archive boundary unchanged.
 
 Step 5 is not optional and it is not housekeeping. **The anchor authenticates under the
 current signing key only**, so until it is re-signed the new key cannot read it and the
 audit path fails closed.
+
+`expected_total` is not a formality either, and this is the part to read twice. **Re-anchoring
+is the one moment the outgoing key is trusted**, and a rotation is the documented response to
+a key that may have leaked, so the outgoing key is precisely the key that may have signed a
+forged anchor. An earlier version took its floor from the stored anchor, which is to say from
+the volume, which is to say from the attacker: a short forgery planted under the leaked key
+was carried forward and certified under the new key by this very step, taking the record from
+nine entries to two with no alarm. The off-volume figure is how a number the attacker cannot
+reach enters the decision. **After a suspected key compromise, corroborate the stored anchor
+against the last exported pack before you re-anchor**, because this step carries forward
+whatever the outgoing key certified. See the residual risk above.
 
 That is a deliberate trade, and the reason is worth stating because the opposite choice was
 made first and was wrong. Accepting any key still held meant an actor holding a LEAKED

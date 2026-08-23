@@ -146,8 +146,14 @@ def apply_security_headers(response: Response) -> Response:
         # then delete the header, or tighten one response object and return another. The
         # skip now requires the value ON THE WIRE to be a sanctioned narrowing, so a
         # desynchronised mark fails safe by re-asserting the default.
-        served = response.headers.get(name)
-        if name in tightened and served in PERMITTED_TIGHTENINGS.get(name, frozenset()):
+        # getlist, not get: `get` reads the FIRST occurrence, so a route could tighten and
+        # then `headers.add` a second, wider value, and both reached the wire. Browsers
+        # enforce multiple policies as an intersection, so it was not a weakening, but two
+        # documents say no wider value reaches a client and one visibly did. The skip now
+        # requires exactly one occurrence, and that one to be a sanctioned narrowing.
+        served = response.headers.getlist(name)
+        sanctioned = PERMITTED_TIGHTENINGS.get(name, frozenset())
+        if name in tightened and len(served) == 1 and served[0] in sanctioned:
             continue
         response.headers[name] = value
     return response
