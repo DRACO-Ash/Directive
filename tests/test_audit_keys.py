@@ -285,3 +285,24 @@ def test_a_malformed_retired_pair_never_echoes_the_key(
         assert secret not in chained, f"{label}: {name} leaked into the message"
         assert secret[:16] not in chained, f"{label}: a prefix of {name} leaked"
     assert "entry 1" in message, "the operator still needs to know which entry is at fault"
+
+
+def test_an_unusable_key_identifier_never_echoes_its_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A paste error puts key material into the identifier field.
+
+    AUDIT_KEY_ID and AUDIT_HMAC_KEY sit next to each other in the console, and the retired
+    key list already suppresses exactly this echo for exactly this reason. The identifier
+    path did not, so pasting a key into it put the whole key in the message and the chain.
+    """
+    key = bytes(range(32)).hex()
+    monkeypatch.setenv("AUDIT_KEY_ID", key)
+    with pytest.raises(keys.AuditKeyError) as raised:
+        keys.key_id()
+
+    cause = raised.value.__cause__
+    chained = f"{raised.value} {cause}" if cause else str(raised.value)
+    assert key not in chained
+    assert key[:16] not in chained
+    assert "1 to 32 characters" in str(raised.value), "the operator still needs the rule"

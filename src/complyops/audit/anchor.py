@@ -296,15 +296,30 @@ def _marker_tag(data_dir: str, key: bytes) -> str:
 
 
 def _marker_is_valid(data_dir: str, key: bytes) -> bool:
-    """Return whether a genuine marker is present, under the CURRENT signing key."""
+    """Return whether a genuine marker is present, under the CURRENT signing key.
+
+    Fails CLOSED on a hostile file, and never raises. The marker is written by us and read
+    by us, but it sits on a volume an attacker may be able to write, so it is untrusted
+    input like any other. Guarding the tag with :func:`is_hash` before comparing is the same
+    fix already applied to the anchor's own tag: `hmac.compare_digest` raises `TypeError` on
+    a non-ASCII string and `read_text` raises `UnicodeDecodeError` on invalid UTF-8, so one
+    hostile byte here used to come out of `read_anchor` AND out of the write guard as an
+    unhandled exception, turning the tamper alarm into a 500 and denying the whole audit
+    path with a one-byte file.
+
+    An empty ``key`` means "cannot verify", which fails closed by reporting no valid marker:
+    a caller with no key has no business establishing that a log has been used before.
+    """
     target = marker_path(data_dir)
-    if not target.exists():
+    if not key or not target.exists():
         return False
     try:
+        if target.stat().st_size > MAXIMUM_ANCHOR_BYTES:
+            return False
         stored = target.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, ValueError, UnicodeDecodeError):
         return False
-    return bool(key) and hmac.compare_digest(stored, _marker_tag(data_dir, key))
+    return is_hash(stored) and hmac.compare_digest(stored, _marker_tag(data_dir, key))
 
 
 def write_anchor(
@@ -325,9 +340,6 @@ def write_anchor(
     Pass ``allow_shortening`` only for a deliberate operator re-anchor; it also lowers the
     in-process high-water mark, so the next ordinary write is not then refused.
     """
-    target = anchor_path(data_dir)
-    target.parent.mkdir(parents=True, exist_ok=True)
-
     if not allow_shortening:
         _refuse_regression(data_dir, anchor, key)
 
@@ -382,8 +394,8 @@ def _refuse_regression(data_dir: str, anchor: Anchor, key: bytes) -> None:
         )
     floor = _seen_length(data_dir)
     if anchor_path(data_dir).exists():
-        # Strict: an anchor that exists but authenticates under no held key is evidence of
-        # a record, not the absence of one. Reading it leniently collapsed "there is no
+        # Strict: an anchor that exists but does not authenticate under the current key is
+        # evidence of a record, not the absence of one. Reading it leniently collapsed "there is no
         # anchor" and "there is one I cannot authenticate" into the same answer, and the
         # second is exactly the state the alarm exists for. An operator who genuinely needs
         # to write over it has `allow_shortening`.
@@ -429,23 +441,53 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def re_anchor(data_dir: str, *, outgoing_key: bytes, incoming_key: bytes) -> Anchor | None:
+def re_anchor(
+    data_dir: str, *, outgoing_key: bytes, incoming_key: bytes, expected_total: int
+) -> Anchor | None:
     """Re-sign the stored anchor under a new key, carrying the record forward unchanged.
 
     The one operator step a key rotation costs, as executable code rather than prose in a
     runbook, because the write path deliberately refuses to read an anchor it cannot
     authenticate and would otherwise block the very procedure that fixes that.
 
-    Safe by construction: the stored anchor is read and authenticated under the outgoing key
-    first, then written back verbatim. Nothing is shortened, and ``key_id`` is untouched
-    because it records the key that signed the last ENTRY, not the key that signed this
-    document. Returns the carried anchor, or ``None`` if there was nothing to carry.
+    ``expected_total`` is REQUIRED and must come from OFF this volume: the total recorded by
+    the last exported evidence pack, or the operator's own record. It is not a formality.
+    This function is the one moment the outgoing key is trusted, and a rotation is the
+    documented response to a key that MAY HAVE LEAKED, so the outgoing key is precisely the
+    key that may have signed a forged anchor. Taking the floor from the volume would mean
+    taking it from the attacker: an earlier version did, and a short forgery planted under
+    the leaked key was then certified under the new key by the operator's own rotation step,
+    with the record falling from nine entries to two and no alarm raised. That version's
+    docstring said "safe by construction". It was not.
+
+    So the honest description is this: re-anchoring carries forward whatever the outgoing key
+    certified, and ``expected_total`` is how a number the attacker cannot reach gets into the
+    decision. After a suspected compromise, corroborate against the exported pack first.
+
+    ``key_id`` is untouched, because it records the key that signed the last ENTRY, not the
+    key that signed this document. Returns the carried anchor, or ``None`` when the volume
+    holds no anchor and none was expected.
     """
+    if expected_total < 0:
+        raise AnchorError("expected_total cannot be negative")
     stored = read_anchor(data_dir, outgoing_key)
     if stored is None:
+        if expected_total:
+            raise AnchorError(
+                f"this volume holds no anchor, but {expected_total} entries were expected "
+                f"from the off-volume record, so it was removed. Do not re-anchor: treat the "
+                f"log as unverifiable until it is restored from the evidence library."
+            )
         return None
+    if stored.total_length < expected_total:
+        raise AnchorError(
+            f"the stored anchor records {stored.total_length} entries ever but "
+            f"{expected_total} were expected from the off-volume record, so it was shortened "
+            f"or replaced under the outgoing key. Refusing to carry it forward: re-anchoring "
+            f"would certify it under the new key."
+        )
     _write(data_dir, stored, incoming_key)
-    _set_length(data_dir, stored.total_length)
+    _record_length(data_dir, stored.total_length)
     return stored
 
 
@@ -554,10 +596,10 @@ def _validate(target: Path, document: dict[str, object], key: bytes) -> Anchor:
         raise unusable
     if total < length:
         raise unusable
-    if not isinstance(stored_key_id, str):
-        raise unusable
     try:
-        checked_key_id = check_key_id(stored_key_id)
+        # `check_key_id` rejects a non-string as well as a malformed one, so there is no
+        # separate isinstance guard: a surviving mutant proved that branch unreachable.
+        checked_key_id = check_key_id(stored_key_id)  # type: ignore[arg-type]
     except AuditFieldError as error:
         raise AnchorError(f"the audit anchor at {target} names an unusable key id") from error
 
