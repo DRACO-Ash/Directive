@@ -559,25 +559,47 @@ def _read_stored(data_dir: str, key: bytes, *, strict: bool) -> Anchor | None:
     target = anchor_path(data_dir)
     try:
         return _parse_stored(target, key)
-    except (OSError, ValueError) as error:
+    except OSError as error:
+        # An ACCESS fault. This one genuinely can be infrastructure, so it stays a fault to
+        # diagnose whatever the marker says.
         if not strict:
             return None
-        if isinstance(error, ValueError) and _marker_is_valid(data_dir, key):
-            # A CONTENT fault beside a valid marker. This application only ever writes the
-            # anchor by renaming a fully written, fsynced temporary file over it, so it
-            # cannot produce an unparseable one; something else wrote it. Emptying the file
-            # is cheaper than deleting it, and reporting the two differently let the cheaper
-            # attack downgrade its own verdict from tampering to a fault to diagnose.
-            raise AnchorTamperError(
-                f"the audit anchor at {target} is unreadable although this log has been "
-                f"used before, so it was overwritten. Treat the log as unverifiable until "
-                f"an operator re-anchors it from the evidence library."
-            ) from error
         raise AnchorError(f"the audit anchor at {target} could not be read: {error}") from error
-    except AnchorError:
+    except (ValueError, AnchorError) as error:
         if not strict:
             return None
-        raise
+        raise _content_fault(data_dir, target, key, error) from error
+
+
+def _content_fault(data_dir: str, target: Path, key: bytes, error: Exception) -> AnchorError:
+    """Return the right error for an anchor whose CONTENT is unusable.
+
+    Classified on STATE, never on the exception's type. Keying off `ValueError` alone
+    covered an emptied file and missed every other one-write content fault: `{}`, `[]`, a
+    bumped `schemaVersion`, a malformed key id, an oversized file. All of those raise
+    `AnchorError` from `_parse_stored`, so overwriting the anchor with two bytes reported as
+    a fault to diagnose while emptying it reported as tampering. Same attacker, same single
+    write, opposite labels, and the cheaper attack bought the softer verdict.
+
+    The rule is the marker. This application only ever writes the anchor by renaming a
+    fully written, fsynced temporary file over it, so it cannot produce an unusable one; if
+    the log has been used before and the anchor is now unusable, something else wrote it.
+
+    Be exact about the reach: an actor who deletes the marker as well still gets the softer
+    verdict, because nothing then says the log was ever used. That limit is the anchor's own
+    and is recorded in `docs/DEPLOYMENT.md`; this closes the cheaper half of it.
+    """
+    if isinstance(error, AnchorTamperError):
+        return error
+    if _marker_is_valid(data_dir, key):
+        return AnchorTamperError(
+            f"the audit anchor at {target} is unusable although this log has been used "
+            f"before, so it was overwritten. Treat the log as unverifiable until an "
+            f"operator re-anchors it from the evidence library."
+        )
+    if isinstance(error, AnchorError):
+        return error
+    return AnchorError(f"the audit anchor at {target} could not be read: {error}")
 
 
 def _parse_stored(target: Path, key: bytes) -> Anchor | None:

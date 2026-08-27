@@ -59,6 +59,11 @@ def create_app() -> Flask:
     # AMD-001 section 10.6: every response, including a probe and an error page.
     security_headers.register(app)
 
+    # The presence map FIRST. `_install_application` refuses to boot in production without
+    # Entra ID or SESSION_KEY, and that refusal used to suppress the very read-out an
+    # operator needs to see which variable the pod actually received. Nothing in here can
+    # prevent boot, and now nothing can prevent it either.
+    _log_input_presence(app)
     _install_application(app)
 
     app.register_blueprint(health_bp)
@@ -66,7 +71,6 @@ def create_app() -> Flask:
     app.register_blueprint(console_bp)
     app.register_blueprint(api_bp)
 
-    _log_input_presence(app)
     _log_boot_verdict(app)
     return app
 

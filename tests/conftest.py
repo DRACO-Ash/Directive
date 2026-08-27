@@ -50,6 +50,20 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _fresh_refusal_tracker() -> Iterator[None]:
+    """Forget collapsed sign-in refusals between tests.
+
+    The tracker is process-wide by design, so without this one test's refusals collapse
+    the next one's and the failures read as unrelated.
+    """
+    from complyops.views import refusals  # noqa: PLC0415 - after the sys.path insert
+
+    refusals.reset()
+    yield
+    refusals.reset()
+
+
 @pytest.fixture()
 def writable_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the app at a writable temporary data directory."""
