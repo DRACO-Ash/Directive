@@ -87,27 +87,31 @@ def test_the_tracker_itself_is_bounded() -> None:
 def test_the_least_recently_seen_survives_an_address_churn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The active caller survives an address churn; the genuinely stale one is dropped.
+    """The active caller survives an eviction; the genuinely stale one is dropped.
 
-    Least recently SEEN, not first inserted, and the distinction is the whole bound.
+    Least recently SEEN, not first inserted, and the distinction is the whole bound. Two
+    shapes of test fail to tell them apart and both were written here before this one.
+    Noting each address once in increasing time order makes insertion and recency order
+    identical. Re-noting the flooder AFTER every eviction also passes under insertion
+    order, because re-noting reinserts it at the end of the dict.
 
-    Noting each address once in increasing time order makes insertion order and recency
-    order identical, so a first-inserted policy satisfies that shape exactly and the
-    previous test could not tell them apart. Under insertion order a sustained flooder is
-    evicted once it is the oldest ENTRY even though it is the most active caller, its
-    counter resets, and its next refusal buys a fresh window of individual rows.
+    So the flooder is re-noted BEFORE the eviction and never again: under insertion order
+    it is still the first key and goes first, and under recency it is the newest and stays.
+    Under insertion order a sustained flooder is evicted while still active, its counter
+    resets, and its next refusal buys a fresh window of individual rows. Measured over 200
+    rounds: six rows under this policy, seventy-five under insertion order.
     """
     monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 8)
     refusals.note("sustained", now=0.0)
-    for index in range(6):
+    for index in range(7):
         refusals.note(f"quiet-{index}", now=float(index + 1))
-    # The flooder keeps calling, so it is the most recently seen and the least recently
-    # inserted at the same time. Only one policy keeps it.
-    for index in range(6, 20):
-        refusals.note(f"churn-{index}", now=float(index + 101))
-        refusals.note("sustained", now=float(index + 101.5))
+    assert len(refusals._windows) == 8, "the tracker is full and nothing has been evicted"
 
-    assert "sustained" in refusals._windows, "the active caller must not be evicted"
+    # The flooder is now the FIRST key and the MOST recently seen at the same time.
+    refusals.note("sustained", now=100.0)
+    refusals.note("one-more", now=101.0)
+
+    assert "sustained" in refusals._windows, "the active caller must survive the eviction"
     assert "quiet-0" not in refusals._windows, "the genuinely stale one goes"
 
 
