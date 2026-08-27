@@ -109,6 +109,18 @@ class AnchorError(RuntimeError):
     """Raised when the anchor cannot be read or is not trustworthy. Always fail closed."""
 
 
+class AnchorRollbackError(AnchorError):
+    """Raised when the stored anchor records FEWER entries than this process has seen.
+
+    A distinct type because it means something distinct. Every other anchor fault says the
+    file is unreadable, oversized, malformed or unauthenticated, which is a fault to
+    diagnose; this one says a genuine older anchor was put back, which is the rollback the
+    high-water mark exists to catch. Reporting the two the same way meant a file containing
+    the bytes `{ not an anchor` was shown to an assessor as a restored-anchor attack, which
+    is the false alarm the whole verdict type exists to prevent.
+    """
+
+
 def reset_high_water_mark() -> None:
     """Forget the highest length seen. For tests and for a deliberate operator re-anchor."""
     with _high_water_lock:
@@ -573,7 +585,7 @@ def _check_not_rolled_back(target: Path, data_dir: str, length: int) -> None:
     """
     seen = _seen_length(data_dir)
     if length < seen:
-        raise AnchorError(
+        raise AnchorRollbackError(
             f"the audit anchor at {target} records {length} entries ever but {seen} were "
             f"already seen in this process, so an older anchor was restored. Treat the log as "
             f"unverifiable until an operator re-anchors it from the evidence library."

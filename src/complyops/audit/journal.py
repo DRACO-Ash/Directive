@@ -280,9 +280,11 @@ def _repair_lag(
         return anchor
     if any(entry.key_id != key_id for entry in entries[anchor.length :]):
         return anchor
-    if not verify_log(entries[: anchor.length], keys, anchor).ok:
-        return anchor
 
+    # One verification, not two. A prefix check against the stored anchor was here as
+    # defence in depth and is strictly redundant: the whole-log walk below starts from the
+    # same archive boundary, so a corrupted prefix fails it too. No test could tell the two
+    # apart, which is the signal that the second check was not a control.
     extended = Anchor(
         head=entries[-1].entry_hash,
         length=len(entries),

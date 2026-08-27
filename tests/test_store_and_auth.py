@@ -15,6 +15,7 @@ from flask import Flask
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from complyops import auth, create_app, records, store
+from complyops.audit.journal import read_entries
 from complyops.records import RecordError
 from complyops.store import StoreError
 
@@ -490,3 +491,52 @@ def test_a_full_volume_answers_503_rather_than_an_unhandled_500(
 
     assert refused.status_code == 503
     assert refused.get_json()["error"] == "the register is unavailable. See /api/diagnostics."
+
+
+def test_a_refused_register_write_leaves_the_log_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The staging control, asserted where it actually shows.
+
+    Removing `holder.stage()` from `records.mutate` leaves the status code identical: the
+    fallback write in `__exit__` fails just the same and the route still answers 503. What
+    changes is the log, which gains an immutable SUCCESS entry for a change the register
+    never received. That is the whole point of staging, so it is the thing to assert.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    client = create_app().test_client()
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+    )
+    token = {"X-CSRF-Token": client.get("/api/registers").headers["X-CSRF-Token"]}
+    before = len(read_entries(str(tmp_path)))
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise store.StoreError("the 'tasks' register could not be prepared: [Errno 28]")
+
+    monkeypatch.setattr(store, "stage", refuse)
+    refused = client.post("/api/registers/tasks", json={"title": "x"}, headers=token)
+
+    assert refused.status_code == 503
+    assert len(read_entries(str(tmp_path))) == before, (
+        "no entry may describe a change the register never received"
+    )
+    assert store.read(str(tmp_path), "tasks") == []
+
+
+def test_the_container_runs_one_worker(tmp_path: Path) -> None:
+    """Four source files and two documentation sections rest correctness on this.
+
+    `chain.py`, `journal.py`, `anchor.py` and `store.py` all state that a second process
+    would fork the chain or lose an edit, and the mitigation is that there is no second
+    process. Nothing pinned it, so raising the worker count would silently falsify all six.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    assert "--workers 1" in dockerfile
+    assert "--workers 2" not in dockerfile

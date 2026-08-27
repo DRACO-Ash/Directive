@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -127,7 +128,12 @@ def test_a_non_ascii_token_is_refused_rather_than_raising(signed_in: FlaskClient
 
     `compare_digest` raises TypeError on a non-ASCII str, and 500 is the wrong answer to a
     forged token; on the sign-in route it would also skip the audit entry.
+
+    The session's own token is minted first, deliberately. Without that the comparison is
+    never reached at all: `valid` returns False at the "no expected token" guard, and this
+    test passed with the ASCII guard deleted.
     """
+    token_for(signed_in)
     refused = signed_in.post(
         "/api/registers/tasks", json={"title": "x"}, headers={"X-CSRF-Token": "é" * 43}
     )
@@ -742,3 +748,188 @@ def test_a_patch_body_that_is_not_an_object_is_refused(signed_in: FlaskClient) -
         f"/api/registers/tasks/{created['id']}", json=[1, 2, 3], headers=token_for(signed_in)
     )
     assert refused.status_code == 400
+
+
+# ============================ a caller may not veto their own entry ============================
+
+
+HOSTILE_AGENT = {"User-Agent": "Mozilla/5.0 \u00e9vil"}
+
+
+def test_a_header_cannot_suppress_an_audit_entry_on_the_callback(
+    app: Flask, client: FlaskClient
+) -> None:
+    """The route that mattered: unauthenticated, production-reachable, and it left nothing.
+
+    Werkzeug decodes headers as latin-1, so any byte from 0x80 to 0xFF arrives as a
+    non-ASCII character, the audit boundary refused the entry, and the refusal path wrote
+    its LOGIN_FAILED entry through the same function with the same header, so that was
+    discarded too. Probing the callback left no record at all, which deletes exactly the
+    source address and user agent AUD-001 collects for security monitoring.
+    """
+    entries = app.extensions["complyops_chain"].entries
+    client.get("/auth/callback?code=x&state=forged", headers=HOSTILE_AGENT)
+
+    assert [entry.action for entry in entries] == ["LOGIN_FAILED"]
+    assert entries[0].user_agent == "unrecordable"
+
+
+def test_a_header_cannot_suppress_a_sign_in_entry(app: Flask, client: FlaskClient) -> None:
+    """Same header, the self-asserted path, a successful sign-in."""
+    entries = app.extensions["complyops_chain"].entries
+    client.post(
+        "/sign-in",
+        data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": form_token(client)},
+        headers=HOSTILE_AGENT,
+    )
+
+    assert [entry.action for entry in entries] == ["LOGIN"]
+    assert entries[0].user_agent == "unrecordable"
+
+
+def test_a_header_cannot_suppress_a_register_entry(app: Flask, signed_in: FlaskClient) -> None:
+    """And a mutation, where a suppressed entry would mean an unevidenced record change."""
+    entries = app.extensions["complyops_chain"].entries
+    before = len(entries)
+    created = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "Access review"},
+        headers={**token_for(signed_in), **HOSTILE_AGENT},
+    )
+
+    assert created.status_code == 201
+    assert len(entries) == before + 1
+    assert entries[-1].user_agent == "unrecordable"
+
+
+def test_the_marker_is_not_a_transliteration(app: Flask, client: FlaskClient) -> None:
+    """The rule forbids transliterating a value. This records that it could not be recorded."""
+    client.post(
+        "/sign-in",
+        data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": form_token(client)},
+        headers={"User-Agent": "curl/8 é"},
+    )
+    entry = app.extensions["complyops_chain"].entries[-1]
+
+    assert entry.user_agent == "unrecordable"
+    assert "curl" not in entry.user_agent, "no partial value survives"
+
+
+def test_a_recordable_user_agent_is_recorded_verbatim(app: Flask, client: FlaskClient) -> None:
+    """The marker is for a value that cannot be written, never a blanket replacement."""
+    client.post(
+        "/sign-in",
+        data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": form_token(client)},
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0)"},
+    )
+    assert (
+        app.extensions["complyops_chain"].entries[-1].user_agent == "Mozilla/5.0 (Windows NT 10.0)"
+    )
+
+
+# ============================ anchor faults are not all the same fault ============================
+
+
+def test_a_corrupt_anchor_is_not_reported_as_an_attack(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """A file of nonsense is a fault to diagnose, not a restored-anchor attack.
+
+    Reporting every anchor fault as a rollback showed an assessor the bytes
+    `{ not an anchor` as evidence of tampering, which is the false alarm the verdict type
+    exists to prevent.
+    """
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    (Path(tmp_path) / "audit-anchor.json").write_text("{ not an anchor", encoding="utf-8")
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert verdict["tampered"] is False, "a corrupt file is not evidence of tampering"
+    assert verdict["invalidUnderCurrentRules"] is True
+    assert "could not be read or authenticated" in verdict["note"]
+
+
+def test_a_restored_older_anchor_is_reported_as_an_attack(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """And the one anchor fault that DOES mean tampering still says so."""
+    signed_in.post("/api/registers/tasks", json={"title": "First"}, headers=token_for(signed_in))
+    keep_log = (Path(tmp_path) / "audit" / "log.jsonl").read_bytes()
+    keep_anchor = (Path(tmp_path) / "audit-anchor.json").read_bytes()
+    signed_in.post("/api/registers/tasks", json={"title": "Second"}, headers=token_for(signed_in))
+    (Path(tmp_path) / "audit" / "log.jsonl").write_bytes(keep_log)
+    (Path(tmp_path) / "audit-anchor.json").write_bytes(keep_anchor)
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["tampered"] is True
+    assert "older than one already seen" in verdict["note"]
+    # The summary is what reaches an audit record or an operator banner, so the reason
+    # itself has to name the rollback rather than a generic read fault.
+    assert "an older anchor was restored" in verdict["summary"]
+
+
+def test_the_export_survives_an_unusable_anchor(tmp_path: Path, signed_in: FlaskClient) -> None:
+    """503, not an unhandled 500. The pack matters most when tampering has been detected."""
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    (Path(tmp_path) / "audit-anchor.json").write_text("{ not an anchor", encoding="utf-8")
+
+    refused = signed_in.get("/api/export")
+    assert refused.status_code == 503
+    body = refused.get_json()["error"]
+    assert "the audit anchor is unusable" in body
+    assert str(tmp_path) not in body
+
+
+def test_the_exported_anchor_comes_from_the_volume(tmp_path: Path, signed_in: FlaskClient) -> None:
+    """Both halves of the pack, not only the entries. It is the whole corroboration.
+
+    The in-memory head is moved without touching the volume, which is the only way to make
+    the two sources disagree without also tripping the rollback guard.
+    """
+    signed_in.post("/api/registers/tasks", json={"title": "First"}, headers=token_for(signed_in))
+    stored = json.loads((Path(tmp_path) / "audit-anchor.json").read_text(encoding="utf-8"))
+    chain = signed_in.application.extensions["complyops_chain"]
+    chain._chain.head = "0" * 64
+
+    pack = signed_in.get("/api/export").get_json()
+    assert pack["auditAnchor"]["head"] == stored["head"], "the volume's anchor, not this process's"
+    assert pack["auditAnchor"]["head"] != chain.anchor().head
+
+
+def test_a_volume_that_disagrees_with_this_process_is_reported(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """A volume internally consistent but not the chain this process is appending to.
+
+    `read_anchor`'s high-water mark catches a SHORTER total; this catches the case where
+    the totals agree and the heads do not, which nothing else would notice.
+    """
+    signed_in.post("/api/registers/tasks", json={"title": "First"}, headers=token_for(signed_in))
+    chain = signed_in.application.extensions["complyops_chain"]
+    entries = list(chain.entries)
+    chain.entries.clear()
+    chain.entries.extend(entries)
+    chain._chain.head = "0" * 64
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert "disagrees with this process" in verdict["note"]
+
+
+def test_a_tab_in_the_next_path_cannot_bounce_the_operator_off_this_origin(
+    client: FlaskClient,
+) -> None:
+    """Werkzeug strips the control character on the way out, turning a tab path into //x."""
+    landed = client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": form_token(client),
+            "next": "/\t/evil.example",
+        },
+    )
+    assert landed.headers["Location"].endswith("/console")

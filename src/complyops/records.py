@@ -149,8 +149,9 @@ def mutate(  # noqa: PLR0913 - each argument is a distinct part of one audit ent
 ) -> dict[str, Any]:
     """Create or update one record, writing its audit entry first.
 
-    The audit entry is built and signed BEFORE the register is written, and any failure to
-    do so aborts the whole operation with the register untouched. A change that cannot be
+    The register's new contents are staged first, then the audit entry is built and signed,
+    then the staged file is committed on a clean exit. Any failure at any step aborts the
+    whole operation with the stored register untouched. A change that cannot be
     evidenced does not happen.
 
     Returns the stored record.

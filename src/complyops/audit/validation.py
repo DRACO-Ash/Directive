@@ -137,6 +137,17 @@ class AuditFieldError(ValueError):
     """Raised when a field is not fit to be recorded. Always reject, never coerce."""
 
 
+def is_recordable(value: str) -> bool:
+    """Return whether a value satisfies the audit boundary's character rule.
+
+    Exposed so a caller can decide what to do about a value BEFORE offering it, which is
+    not the same as relaxing the rule. The register and sign-in routes use it on the source
+    address and user agent: a caller who picks a header the boundary refuses must not be
+    able to suppress their own audit entry by doing so.
+    """
+    return bool(value) and bool(_PRINTABLE_ASCII.match(value))
+
+
 def check_key_id(value: str) -> str:
     """Validate a signing-key identifier, or raise :class:`AuditFieldError`."""
     if not isinstance(value, str) or not KEY_ID_PATTERN.match(value):

@@ -288,7 +288,7 @@ def readiness() -> tuple[Response, int]:
     )
 
 
-def _input_report(name: str) -> dict[str, object]:
+def input_report(name: str) -> dict[str, object]:
     """Report one configured input: present, banded length, and usable where knowable.
 
     Presence and a length band cannot tell a usable value from one its consumer refuses.
@@ -329,5 +329,5 @@ def diagnostics() -> Response:
     if auth.current_actor() is not None:
         report["dataDir"] = verdict.path
         report["auditLog"] = current_app.extensions.get("complyops_audit_status", "not installed")
-        report["inputs"] = {name: _input_report(name) for name in CRITICAL_INPUTS}
+        report["inputs"] = {name: input_report(name) for name in CRITICAL_INPUTS}
     return jsonify(report)
