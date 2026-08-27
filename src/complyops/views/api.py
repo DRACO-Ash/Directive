@@ -12,9 +12,11 @@ from flask import Blueprint, current_app, jsonify, request
 from werkzeug.wrappers.response import Response
 
 from .. import auth, csrf, records, store
-from ..audit import AuditFieldError, verify_log, verify_sample
-from ..audit.journal import JournalChain, JournalError
+from ..audit import AuditFieldError, ChainVerdict, verify_log
+from ..audit.anchor import AnchorError, read_anchor
+from ..audit.journal import JournalChain, JournalError, read_entries
 from ..records import RecordError
+from ..store import StoreError
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -63,16 +65,34 @@ def _record_error(error: RecordError) -> tuple[Response, int]:
     return jsonify({"error": str(error)}), 400
 
 
+#: What a caller is told when the volume is at fault. Deliberately fixed and uninformative:
+#: the real message carries an absolute path and an OS error string, which is server-side
+#: detail and belongs in the log, not in a response body. The operator reads the detail on
+#: /api/diagnostics, which is authenticated.
+VOLUME_FAULT = "the change was not made: the audit log is unavailable. See /api/diagnostics."
+
+
 @api_bp.errorhandler(JournalError)
 def _journal_error(error: JournalError) -> tuple[Response, int]:
     """Return a failure to persist the log as a server fault, because it is one.
 
     503 rather than 500: the change was refused because the evidence could not be written,
     the register is untouched, and retrying after an operator fixes the volume is the right
-    response. The message names the volume fault, never a key or a record.
+    response.
     """
     current_app.logger.error("audit log unavailable: %s", error)
-    return jsonify({"error": f"the change was not made: {error}"}), 503
+    return jsonify({"error": VOLUME_FAULT}), 503
+
+
+@api_bp.errorhandler(StoreError)
+def _store_error(error: StoreError) -> tuple[Response, int]:
+    """Return a register that could not be read or written as a server fault.
+
+    Without this a full volume escapes as an unhandled 500 carrying a traceback, which is
+    both the wrong status and the wrong disclosure.
+    """
+    current_app.logger.error("register unavailable: %s", error)
+    return jsonify({"error": "the register is unavailable. See /api/diagnostics."}), 503
 
 
 @api_bp.errorhandler(AuditFieldError)
@@ -187,7 +207,7 @@ def verify() -> Response:
 
     chain = _chain()
     keys = verification_keys() or {chain.signing_key_id: chain.signing_key}
-    verdict = verify_log(chain.entries, keys, chain.anchor())
+    verdict, note = _verify_the_volume(chain, keys)
     return jsonify(
         {
             "ok": verdict.ok,
@@ -196,8 +216,55 @@ def verify() -> Response:
             "keyUnavailable": verdict.key_unavailable,
             "checked": verdict.checked,
             "summary": verdict.summary(),
+            "note": note,
         }
     )
+
+
+def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[ChainVerdict, str]:
+    """Verify what is ON THE VOLUME, and confirm this process agrees with it.
+
+    Reading the process's own entries and its own anchor was worse than useless: both come
+    from the same memory, so the check passed while the file on disk was truncated to one
+    line and the anchor was deleted. A control that cannot fail on an attacker-reachable
+    input is not a control. Everything here is re-read from the volume.
+
+    The in-memory head is then compared to the stored one, because a volume that verifies
+    against a stale anchor while this process holds a longer chain is also a finding.
+    """
+    directory = _data_dir()
+    try:
+        entries = read_entries(directory)
+    except JournalError:
+        current_app.logger.exception("verification could not read the log")
+        return ChainVerdict(ok=False, checked=0, reason="the log could not be read"), (
+            "The audit log on the volume could not be read. See /api/diagnostics."
+        )
+    try:
+        anchor = read_anchor(directory, chain.signing_key)
+    except AnchorError:
+        # Reported separately from a read fault, because it is not one. `read_anchor`
+        # raises here when the anchor on the volume records fewer entries than this process
+        # has already seen, which means an older anchor was restored. That is the rollback
+        # this control exists to notice, so it must not read as "the file was unreadable".
+        current_app.logger.exception("verification refused the stored anchor")
+        return ChainVerdict(
+            ok=False, checked=len(entries), reason="an older anchor was restored"
+        ), "The anchor on the volume is older than one already seen. See /api/diagnostics."
+
+    if anchor is None:
+        return ChainVerdict(
+            ok=False, checked=len(entries), reason="this volume holds no anchor"
+        ), "The volume holds no anchor, so nothing can be verified against it."
+
+    verdict = verify_log(entries, keys, anchor)
+    if verdict.ok and anchor.head != chain.anchor().head:
+        return ChainVerdict(
+            ok=False,
+            checked=len(entries),
+            reason="the stored log does not match the chain this process is appending to",
+        ), "The volume verifies against its own anchor but disagrees with this process."
+    return verdict, "Verified against the log and anchor read from the volume."
 
 
 @api_bp.get("/export")
@@ -212,12 +279,16 @@ def export() -> Response:
     """
     directory = _data_dir()
     chain = _chain()
+    stored_anchor = read_anchor(directory, chain.signing_key)
     pack = {
         "exported": records.now(),
         "exportedBy": auth.audit_actor(),
         "registers": dict(store.iter_registers(directory)),
-        "auditEntries": [entry.__dict__ for entry in chain.entries],
-        "auditAnchor": chain.anchor().__dict__,
+        # Read from the VOLUME, not from this process's memory. The pack is the off-volume
+        # corroboration the anchor's blind spot rests on, so a pack assembled from memory
+        # would corroborate the volume against nothing at all.
+        "auditEntries": [entry.__dict__ for entry in read_entries(directory)],
+        "auditAnchor": stored_anchor.__dict__ if stored_anchor else None,
         "note": (
             "Keep the anchor with this pack. A pack without it proves the entries were "
             "internally consistent and nothing about whether any were removed."
@@ -230,4 +301,4 @@ def export() -> Response:
     return response
 
 
-__all__ = ["api_bp", "verify_sample"]
+__all__ = ["api_bp"]

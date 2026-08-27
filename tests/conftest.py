@@ -71,6 +71,19 @@ def client(writable_data_dir: Path):
         yield test_client
 
 
+@pytest.fixture()
+def signed_in_client(client):
+    """Return a client that has signed in, for a route behind the authorisation check."""
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+    )
+    return client
+
+
 def fixed_entry(index: int = 1, **overrides: str) -> dict[str, str]:
     """Return one deterministic entry's fields, with the optional AUD-001 fields empty."""
     fields = {

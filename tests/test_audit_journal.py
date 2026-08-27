@@ -226,23 +226,34 @@ def test_an_unanchored_tail_is_repaired_at_boot(tmp_path: Path) -> None:
 
 
 def test_the_repair_refuses_a_tail_that_does_not_chain(tmp_path: Path) -> None:
-    """The repair is a crash recovery, never a way to graft history on."""
+    """The repair is a crash recovery, never a way to graft history on.
+
+    The anchor assertion is the load-bearing half. Without the final verification inside
+    `_repair_lag`, one appended line makes `resume` write an anchor recording the
+    attacker's tail over the genuine one, authenticated under the real key, BEFORE
+    refusing the boot. The durable head and length would be gone irrecoverably and the
+    regression guard would then block the recovery.
+    """
     written(tmp_path, 2)
+    genuine = read_anchor(str(tmp_path), KEY)
     forged = AuditChain(None, key=KEY, key_id="k1").append(fields(9))
     append_entry(str(tmp_path), forged)
 
     with pytest.raises(JournalError, match="does not verify"):
         resume(str(tmp_path), key=KEY, key_id="k1", keys=KEYS)
+    assert read_anchor(str(tmp_path), KEY) == genuine, "the genuine anchor must survive"
 
 
 def test_the_repair_refuses_a_tail_signed_by_another_key(tmp_path: Path) -> None:
     """A key is retired because it may have leaked. It must not extend the log."""
     chain = written(tmp_path, 2)
+    genuine = read_anchor(str(tmp_path), KEY)
     stray = AuditChain(chain.anchor(), key=OTHER_KEY, key_id="k0").append(fields(3))
     append_entry(str(tmp_path), stray)
 
     with pytest.raises(JournalError, match="does not verify"):
         resume(str(tmp_path), key=KEY, key_id="k1", keys={"k1": KEY, "k0": OTHER_KEY})
+    assert read_anchor(str(tmp_path), KEY) == genuine, "the genuine anchor must survive"
 
 
 def test_the_repair_leaves_an_untouched_anchor_alone(tmp_path: Path) -> None:
@@ -316,3 +327,35 @@ def test_an_anchor_write_failure_wedges_the_chain(tmp_path: Path) -> None:
     with pytest.raises(JournalError, match="could not be persisted"):
         chain.append(fields(2))
     assert chain.wedged is not None
+    # The ordering, asserted rather than only described. The entry reached the log before
+    # the anchor write failed, which is the benign direction: a log longer than its anchor
+    # is repairable at boot, and an anchor ahead of its log is indistinguishable from a
+    # truncation. Reversing the two writes in `JournalChain.append` fails here.
+    assert len(read_entries(str(tmp_path))) == 2, "journal first, anchor second"
+
+
+def test_the_repair_writes_no_anchor_when_the_tail_is_not_clean(tmp_path: Path) -> None:
+    """The stored anchor is only ever replaced by one the whole log verifies against."""
+    written(tmp_path, 3)
+    genuine = read_anchor(str(tmp_path), KEY)
+    target = log_path(str(tmp_path))
+    lines = target.read_text(encoding="utf-8").splitlines()
+    target.write_text("\n".join([*lines, lines[-1]]) + "\n", encoding="utf-8")
+
+    with pytest.raises(JournalError, match="does not verify"):
+        resume(str(tmp_path), key=KEY, key_id="k1", keys=KEYS)
+    assert read_anchor(str(tmp_path), KEY) == genuine, "a replayed tail must not re-anchor"
+
+
+def test_a_log_byte_that_is_not_utf_8_fails_closed_as_a_journal_error(tmp_path: Path) -> None:
+    """Every fault in this module is a JournalError, including a decode fault.
+
+    A raw UnicodeDecodeError escaping `resume` would break the contract the app factory
+    relies on to keep booting with the audit path unavailable.
+    """
+    written(tmp_path, 1)
+    with log_path(str(tmp_path)).open("ab") as handle:
+        handle.write(b"\xff\xfe not utf-8\n")
+
+    with pytest.raises(JournalError, match="could not be read"):
+        read_entries(str(tmp_path))

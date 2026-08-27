@@ -108,7 +108,9 @@ def check_fields(
             raise RecordError(f"{name!r} must be text")
         cap = FIELD_CAPS.get(name)
         if cap is None:
-            raise RecordError(f"{name!r} is not a field of the {register} register")
+            # The name is truncated before it is echoed. It is attacker-supplied and
+            # unbounded, and a client error is not a mirror.
+            raise RecordError(f"{name[:64]!r} is not a field of the {register} register")
         if len(value) > cap:
             raise RecordError(f"{name!r} is {len(value)} characters, over its cap of {cap}")
         clean[name] = value.strip()
@@ -161,14 +163,22 @@ def mutate(  # noqa: PLR0913 - each argument is a distinct part of one audit ent
         else {}
     )
 
-    with store.register(data_dir, register) as rows:
+    holder = store.register(data_dir, register)
+    with holder as rows:
         if record_id is None:
             record = _create(rows, clean, register=register)
             changed, before, after = sorted(clean), "", record.get("state", "")
         else:
             record, changed, before, after = _update(rows, record_id, clean, register=register)
 
-        # The audit entry, before the register is written. `store.register` writes on a
+        # Stage the register BEFORE the entry, commit it after. The serialisation, the disk
+        # space and the flush all happen in the stage, so a full volume refuses the change
+        # with nothing yet recorded; only the rename is left for the exit. That narrows the
+        # window in which an immutable entry could describe a change that never landed, and
+        # it does not close it: see `store.register` and `docs/DEPLOYMENT.md`.
+        holder.stage()
+
+        # The audit entry, before the register is committed. `store.register` commits on a
         # clean exit only, so a rejected entry leaves the register exactly as it was.
         chain.append(
             {
@@ -214,7 +224,10 @@ def _update(
 
     changed = sorted(name for name, value in clean.items() if record.get(name) != value)
     if not changed:
-        return record, [], record.get("state", ""), record.get("state", "")
+        # Nothing moved, so nothing is reported as having moved. Returning the current state
+        # as both before and after wrote "OPEN to OPEN" into an immutable entry and the
+        # console rendered it as a transition, which contradicts the rule six lines below.
+        return record, [], "", ""
 
     before = str(record.get("state", ""))
     record.update(clean)

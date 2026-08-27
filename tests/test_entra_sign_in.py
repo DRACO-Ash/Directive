@@ -203,7 +203,7 @@ def test_a_replayed_callback_signs_nobody_in(
         nonce = stored["complyops_signin_nonce"]
     monkeypatch.setattr(auth, "_post_form", endpoint)
     client.get(f"/auth/callback?code=the-code&state={state}")
-    client.post("/sign-out")
+    client.post("/sign-out", data={"csrf_token": client.get("/").headers["X-CSRF-Token"]})
 
     replayed = client.get(f"/auth/callback?code=the-code&state={state}")
     assert replayed.headers["Location"].endswith("/sign-in")
@@ -297,3 +297,50 @@ def test_an_actor_is_never_invented(app: Flask) -> None:
     """An audit entry with no real actor is worse than a refused sign-in."""
     with pytest.raises(auth.AuthError, match="no usable actor"):
         auth.actor_from_claims({"name": "Somebody"})
+
+
+def test_a_verified_actor_the_log_cannot_name_is_refused(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Entra `preferred_username` legitimately carries non-ASCII, and the log cannot.
+
+    That combination used to sign the operator in with no authentication entry at all,
+    which defeats the stated reason authentication stays in this application. It now
+    refuses, and the refusal is audited against a placeholder actor.
+    """
+    nonce = None
+
+    def endpoint(url: str, form: dict[str, str]) -> dict[str, Any]:
+        return {"id_token": id_token(nonce=nonce, preferred_username="renée@bluestaq.uk")}
+
+    state = start(client)
+    with client.session_transaction() as stored:
+        nonce = stored["complyops_signin_nonce"]
+    monkeypatch.setattr(auth, "_post_form", endpoint)
+
+    landed = client.get(f"/auth/callback?code=the-code&state={state}")
+    assert landed.headers["Location"].endswith("/sign-in")
+    assert client.get("/api/registers").status_code == 401
+
+    chain = client.application.extensions["complyops_chain"]
+    assert [entry.action for entry in chain.entries] == ["LOGIN_FAILED"]
+
+
+def test_a_non_ascii_state_is_refused_rather_than_raising(client: FlaskClient) -> None:
+    """`compare_digest` raises TypeError on a non-ASCII str, on an unauthenticated route.
+
+    A 500 there would also skip the LOGIN_FAILED entry the refusal path writes.
+    """
+    start(client)
+    landed = client.get("/auth/callback?code=the-code&state=%C3%A9%C3%A9")
+
+    assert landed.status_code == 302
+    assert landed.headers["Location"].endswith("/sign-in")
+    chain = client.application.extensions["complyops_chain"]
+    assert [entry.action for entry in chain.entries] == ["LOGIN_FAILED"]
+
+
+def test_a_non_ascii_nonce_in_a_token_is_refused(app: Flask) -> None:
+    """Same comparison, same failure mode, reached through the token instead."""
+    with app.app_context(), pytest.raises(auth.AuthError, match="nonce"):
+        auth.claims_from_id_token(id_token(nonce="ééé"), nonce="the-nonce")

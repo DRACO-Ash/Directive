@@ -21,6 +21,15 @@ advanced in memory at that point, so continuing would chain the next entry onto 
 predecessor that is not on disk and fork the log. Refusing every later append is the
 fail-closed answer: a change that cannot be evidenced does not happen, and after an
 evidence write fails, nothing else happens either until an operator looks.
+
+What this does NOT catch, stated here because the first version of this docstring claimed
+the opposite. An actor with write access to the volume and NO KEY can keep a copy of a
+genuine older anchor, truncate the log to match it, and restore both. `resume` then
+verifies that shorter log as intact, because it IS intact: every entry in it is genuine and
+it ends where the restored anchor says it should. The refusal to move backwards lives in
+process memory and a restart clears it. Closing this needs a total the attacker cannot
+reach, which is the last exported evidence pack, and it is the same control `re_anchor`
+already demands an off-volume floor for. Recorded in `docs/DEPLOYMENT.md`.
 """
 
 from __future__ import annotations
@@ -59,8 +68,9 @@ def append_entry(data_dir: str, entry: AuditEntry) -> None:
 
     The line is written under one ``write`` call so a concurrent appender in another
     process cannot interleave inside it. That is a property of a small append to a file
-    opened ``O_APPEND``, not a substitute for the inter-process lock the two gunicorn
-    workers still need; see the deferred table in ``docs/DEPLOYMENT.md``.
+    opened ``O_APPEND``, not a substitute for an inter-process lock. The container runs a
+    single worker so that no second process appends at all; see the deferred table in
+    ``docs/DEPLOYMENT.md``.
     """
     target = log_path(data_dir)
     fresh = not target.exists()
@@ -102,7 +112,10 @@ def read_entries(data_dir: str) -> list[AuditEntry]:
         if target.stat().st_size > MAXIMUM_LOG_BYTES:
             raise JournalError(f"the audit log at {target} is implausibly large")
         text = target.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
+        # UnicodeDecodeError is a ValueError, not an OSError: one non-UTF-8 byte appended to
+        # the log used to escape this module as a raw decode error, breaking the contract
+        # that every fault here becomes a JournalError.
         raise JournalError(f"the audit log at {target} could not be read: {error}") from error
 
     entries: list[AuditEntry] = []
@@ -211,8 +224,11 @@ def resume(
     removed. It is now detectable from this side for the first time, though corroborating a
     volume that holds NEITHER still needs the last exported evidence pack.
 
-    A log shorter than its anchor is refused. That is a truncation, which is the single
-    thing the anchor exists to catch.
+    A log shorter than THE ANCHOR ON THIS VOLUME is refused. Be exact about the reach of
+    that: it catches an actor who shortens the log and leaves the anchor, and it does NOT
+    catch one who restores a genuine older anchor alongside a matching truncation, because
+    that pair is internally consistent and the refusal to move backwards does not survive a
+    restart. See the note at the top of this module.
 
     A log one or more entries LONGER than its anchor is repaired, and only when the extra
     entries chain cleanly and are signed under the CURRENT key. That is a crash between the
