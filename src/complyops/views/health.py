@@ -324,6 +324,7 @@ def diagnostics() -> Response:
             "storageWritable": verdict.writable,
             "storageErrno": verdict.errno,
             "logViewEvents": settings.log_view_events,
+            "auditLog": current_app.extensions.get("complyops_audit_status", "not installed"),
             "inputs": {name: _input_report(name) for name in CRITICAL_INPUTS},
         }
     )

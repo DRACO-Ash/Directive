@@ -120,8 +120,9 @@ There is no separate rollback on this platform. Roll back by resubmitting the pr
 ## Known gaps before the first submission
 
 ● The image has not been built or probed. The Docker daemon is unavailable in the build environment, so the non-root user, the port binding, the absence of a package manager, the absence of setuid bits, and the flattened single layer are verified by construction against the Dockerfile, not by running the container. Before the deploy gate, build it and run: `docker run --rm --entrypoint sh comply-ops -c 'command -v apt-get dpkg apt pip pip3; find / -xdev -perm /6000; id'` and expect no command found, no path listed, and `uid=10001`.
-● Request-time fail-closed handling of a missing or stale credential is not implemented. Nothing yet consumes `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `SESSION_KEY` or `REDIRECT_URI` outside the diagnostics read-out. It lands with the authentication module.
-● The audit anchor is not yet written by any code path, because no entry is yet persisted. The store and its verification are in place and tested; wiring them to the record write path lands with the records module, and that is also where the in-process append lock has to become an inter-process lock on the storage volume, since the container serves two gunicorn workers.
+● Entra ID sign-in is implemented and has never run against a real tenant. `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `SESSION_KEY` and `REDIRECT_URI` are consumed by the authentication module, which refuses to serve a production environment without them and refuses the self-asserted sign-in path whenever a tenant is configured. The full authorisation code flow with Proof Key for Code Exchange is in place and is driven end to end in `tests/test_entra_sign_in.py` against a fake token endpoint, so what is proved is this application's half of the exchange. No request has ever reached Microsoft. `TBC, re-verify` on first deploy: the reply URL registered against the app registration, the tenant's real issuer string, and the wire format of the token response.
+● **The identity token's signature is not verified, deliberately, and it needs sign-off.** The token is read only where it arrives in the direct HTTPS response to this application's own back-channel POST carrying its own client secret, which is the case OpenID Connect Core section 3.1.3.7 permits TLS server validation for in place of signature checking. The issuer, audience, expiry and nonce ARE all checked. Adding signature verification means a JSON Web Key Set fetch and an RSA implementation, so a new hash-locked dependency. Recorded as a deviation for Adam Field's sign-off; `claims_from_id_token` must never be called on a token from any other source, and its docstring says so.
+● The in-process append lock is still not an inter-process lock on the storage volume. The container runs a single gunicorn worker so that no second process holds a competing view of the chain head, which is a mitigation and not a fix: any other process touching the same volume reopens it. Closed at V2.1: the anchor IS now written on every append, and entries are persisted to `DATA_DIR/audit/log.jsonl` before the call returns.
 ● Rate limiting is not implemented. When it lands, `/readyz` and `/api/diagnostics` both belong behind the broad limiter. The per-request amplification is already closed: the storage probe is single-flight, so concurrent callers join one probe rather than each starting a thread.
 ● **What the anchor does not do, stated plainly because it was over-claimed twice.** The anchor is a file on the persistent volume, so an actor who can write that volume can delete it, and can delete anything else placed there to notice the deletion. Two controls were added in successive review rounds to close that: an authentication tag, and a first-use marker so that an absent anchor reads as a tamper alarm rather than a fresh install. The tag holds and is worth having. The marker only raised the cost from one deletion to two, in the same directory, which is no cost at all to an actor who already holds write access to it. It is kept, and it is now authenticated so an unkeyed actor can neither forge nor plant one, but it does not close the attack.
 
@@ -195,18 +196,50 @@ candidate and is not yet agreed.
 
 ## Deferred by design, and why each one cannot be finished here
 
-Five controls in the audit module are deliberately incomplete. Each is blocked on a module
-that does not exist yet, and each was attempted inside this slice and produced a worse
-result than declaring it. They are listed here so a reviewer can tell a deferral from an
-oversight, and so nobody closes one by adding another file to the same volume.
+Three of the five controls this table carried at V2.0 are closed by the records, store and
+journal modules in V2.1. The two that remain are listed below with what closed the others,
+so a reviewer can tell a deferral from an oversight and can see which claims moved.
 
-| Control | Why it cannot be finished here | Lands with |
+| Control | State at V2.1 | Where |
 | --- | --- | --- |
-| Anchor corroboration against an off-volume store | The anchor lives on the volume, so an actor who can write the volume can delete it and anything placed beside it to notice. Two attempts (an authentication tag, then a first-use marker) raised the cost from one deletion to two in the same directory. Closing it needs a copy the attacker cannot reach, which is the exported evidence pack. | The export module |
-| Cross-process append and anchor serialisation | The append lock and the rollback high-water mark are per process, and the container serves two gunicorn workers, so neither is shared between them. Closing it needs an inter-process lock on the storage volume, which needs a write path to hold it. | The records module |
-| A closed vocabulary of workflow states | The character rule on `old_state` and `new_state` rejects the common shapes of record content, not record content itself. Making it structural needs the real state set, and the v1 prototype yields only a partial one (`open`, `pending`, `closed`, `done`, `On Track`, `At Risk`, `Planned`). Inventing the rest would breach the no-invention rule. | The records module |
-| Spreadsheet safety of the exported pack | The boundary rules exclude the double quote, so a value cannot terminate its own comma-separated field, but the comma itself is legitimate in a user agent and required in `fields_changed`. A safe export must quote every field and prefix any cell starting `=+-@`. There is no exporter to put that in. | The export module |
-| AUD-001 Q-06 quarterly verification | `verify_sample` and `verify_log` exist and are tested. There is no scheduler, no runbook step and no caller, so the quarterly activity is a mechanism rather than a practice. | The records module and the operating rhythm |
+| Cross-process append and anchor serialisation | **Still open, and now reachable.** The append lock, the register lock and the rollback high-water mark are all per process, and the container serves two gunicorn workers. V2.0 had no write path, so the gap was theoretical; V2.1 has one, so two workers editing the same register or appending concurrently can lose an edit or fork the chain. Closing it needs an inter-process lock on the volume. The Dockerfile therefore pins `--workers 1 --threads 8`, which is a mitigation and not a fix: any second process on the same volume reopens it. | `src/complyops/store.py`, `src/complyops/audit/chain.py` |
+| Spreadsheet safety of the exported pack | **Still open, and narrowed.** The pack `/api/export` produces is JSON, so no cell is interpreted as a formula and the risk does not arise for it. AUD-001's annual export to Library 08 is specified as CSV, and a CSV exporter must quote every field and prefix any cell starting `=+-@`. There is still no CSV exporter. | `src/complyops/views/api.py` |
+
+Closed since V2.0, each with the test that holds it closed:
+
+● **A closed vocabulary of workflow states.** `records.check_state` holds every transition
+  to an enumerated set per register, so no route in this application can put record content
+  in `old_state` or `new_state`. Precisely: the audit boundary itself still accepts any
+  token satisfying its character rule, so this is a property of the live path rather than
+  of the audit module, and a future caller reaching `AuditChain.append` directly is still
+  on caller discipline. `test_the_boundary_rejects_bad_input`.
+● **Anchor corroboration against an off-volume store, in mechanism.** `/api/export` emits
+  the registers, the entries and the anchor as one pack, which is the copy an actor with
+  volume write access cannot reach. The practice is not closed: nothing enforces that a
+  pack is ever downloaded, and the written comparison step in the operating rhythm does not
+  exist. `test_the_export_carries_the_registers_the_entries_and_the_anchor`.
+● **The anchor's blind spot, in one direction.** `journal.resume` refuses to start when the
+  volume holds entries and no anchor, so a deleted anchor is now detectable at boot. A
+  volume holding NEITHER is still indistinguishable from a fresh install without the last
+  exported pack. `test_entries_with_no_anchor_refuse_to_resume`.
+● **AUD-001 Q-06 quarterly verification, in mechanism.** `/api/audit/verify` runs
+  `verify_log` against the live anchor and the console has a control for it. There is still
+  no scheduler and no runbook step, so the quarterly activity remains a mechanism rather
+  than a practice.
+
+New in V2.1 and worth a reviewer's attention:
+
+● **The log is persistent.** Entries are appended to `DATA_DIR/audit/log.jsonl` and fsynced
+  before the write returns, and the anchor is advanced after each one. At V2.0 the entries
+  lived in memory and nothing wrote the anchor, so a restart lost the log and started a
+  fresh chain with no alarm. AUD-001's 24-month retention was not met by any part of V2.0.
+● **The write order is journal, then anchor.** A crash between them leaves the log one
+  entry longer than the anchor, which `resume` repairs, and only for entries that chain
+  cleanly under the CURRENT key. The reverse order would leave an anchor ahead of its log,
+  which is indistinguishable from a truncation.
+● **A failure to persist wedges the chain for the life of the process.** The head has
+  already advanced in memory, so continuing would fork the log. Every later mutation then
+  answers 503. Restarting the pod clears it once the volume fault is fixed.
 
 Two AUD-001 clauses need a policy amendment rather than code, and both are Ash and Adam
 Field's to make:

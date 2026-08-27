@@ -1,0 +1,165 @@
+"""Sign-in and sign-out, and the audit entries both produce.
+
+AUD-001 requires an authentication event to record the timestamp, the user principal name,
+the source address, the user agent, and success or failure. All five are written here, and
+they are the reason `source_ip` and `user_agent` are in the audit field set at all: they are
+deliberately collected personal data under legitimate interest per POL-002 section 03, not
+an accident to be minimised away.
+"""
+
+from __future__ import annotations
+
+from flask import Blueprint, current_app, redirect, render_template, request, session, url_for
+from werkzeug.wrappers.response import Response
+
+from .. import auth, records
+
+auth_bp = Blueprint("auth", __name__)
+
+#: Where the sign-in round trip keeps its state. All three are consumed on first use, so a
+#: replayed callback has nothing to match against.
+STATE_KEY = "complyops_signin_state"
+VERIFIER_KEY = "complyops_signin_verifier"
+NONCE_KEY = "complyops_signin_nonce"
+
+#: The longest self-asserted actor accepted, well inside the audit field's 320-byte cap.
+MAXIMUM_ACTOR_LENGTH = 200
+
+
+def _client_ip() -> str:
+    """Return the caller's address as the audit entry should record it.
+
+    `request.remote_addr` only, never `X-Forwarded-For`: a header a caller can set is not
+    evidence, and recording a spoofable value as though it were fact is worse than
+    recording the proxy's own address. The platform terminates at a known ingress, so the
+    resolved address is what the container actually saw.
+    """
+    return (request.remote_addr or "unknown")[:45]
+
+
+def _user_agent() -> str:
+    """Return the caller's user agent, capped to the audit field's limit."""
+    return (request.headers.get("User-Agent") or "unknown")[:512]
+
+
+def _record_authentication(action: str, actor: str, outcome: str) -> None:
+    """Write one authentication audit entry, and never fail the request because of it.
+
+    A sign-in that succeeded must not be reported as failed because the log was
+    unavailable, and a failure to log is itself worth surfacing, so it is logged
+    server-side rather than shown to the caller.
+    """
+    chain = current_app.extensions.get("complyops_chain")
+    if chain is None:
+        return
+    try:
+        chain.append(
+            {
+                "timestamp": records.now(),
+                "actor": actor[:320],
+                "action": action,
+                "resource": "session",
+                "resource_id": "sign-in",
+                "outcome": outcome,
+                "source_ip": _client_ip(),
+                "user_agent": _user_agent(),
+                "fields_changed": "",
+                "old_state": "",
+                "new_state": "",
+            }
+        )
+    except Exception as error:
+        current_app.logger.warning("authentication audit entry refused: %s", type(error).__name__)
+
+
+@auth_bp.get("/sign-in")
+def sign_in_page() -> str | Response:
+    """Show the sign-in page, or start the Entra ID round trip when it is configured."""
+    if auth.current_actor():
+        return redirect(url_for("console.dashboard"))
+    if auth.entra_is_configured():
+        state = auth.new_state()
+        verifier = auth.new_verifier()
+        nonce = auth.new_state()
+        session[STATE_KEY] = state
+        session[VERIFIER_KEY] = verifier
+        session[NONCE_KEY] = nonce
+        return redirect(
+            auth.entra_authorise_url(state, challenge=auth.challenge_for(verifier), nonce=nonce)
+        )
+    return render_template(
+        "sign_in.html",
+        banner=auth.development_banner(),
+        next_path=request.args.get("next", ""),
+    )
+
+
+@auth_bp.post("/sign-in")
+def sign_in_submit() -> Response:
+    """Accept a self-asserted actor, in development only.
+
+    Refuses outright when Entra ID is configured, so this path cannot become a way around
+    a real identity provider once one exists.
+    """
+    if auth.entra_is_configured():
+        _record_authentication("LOGIN_FAILED", "unknown", "FAILURE")
+        return redirect(url_for("auth.sign_in_page"))
+
+    actor = (request.form.get("actor") or "").strip()
+    if not actor or len(actor) > MAXIMUM_ACTOR_LENGTH:
+        _record_authentication("LOGIN_FAILED", actor or "unknown", "FAILURE")
+        return redirect(url_for("auth.sign_in_page"))
+
+    auth.sign_in(actor, verified=False)
+    _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS")
+    return auth.redirect_after_sign_in(request.form.get("next"))
+
+
+@auth_bp.get("/auth/callback")
+def entra_callback() -> Response:
+    """Complete the Entra ID round trip.
+
+    Fails closed at every step, and the caller is told nothing beyond "it did not work":
+    which check refused a forged callback is information an attacker would use to build a
+    better one. The reason is logged server-side and the failure is audited.
+
+    All three round-trip values are popped before anything is checked, so a replay has
+    nothing left to match against even when this request is the one that fails.
+    """
+    expected_state = session.pop(STATE_KEY, None)
+    verifier = session.pop(VERIFIER_KEY, None)
+    nonce = session.pop(NONCE_KEY, None)
+    code = request.args.get("code", "")
+
+    if not auth.state_matches(expected_state, request.args.get("state")):
+        return _refuse("the callback state did not match")
+    if not isinstance(verifier, str) or not isinstance(nonce, str) or not code:
+        return _refuse("the callback carried no code, or the session lost its round trip")
+
+    try:
+        tokens = auth.exchange_code(code, verifier)
+        claims = auth.claims_from_id_token(tokens["id_token"], nonce=nonce)
+        actor = auth.actor_from_claims(claims)
+    except auth.AuthError as error:
+        return _refuse(str(error))
+
+    auth.sign_in(actor, verified=True)
+    _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS")
+    return auth.redirect_after_sign_in(None)
+
+
+def _refuse(reason: str) -> Response:
+    """Audit a failed sign-in, log why server-side, and send the caller back generically."""
+    current_app.logger.warning("sign-in refused: %s", reason)
+    _record_authentication("LOGIN_FAILED", "unknown", "FAILURE")
+    return redirect(url_for("auth.sign_in_page"))
+
+
+@auth_bp.post("/sign-out")
+def sign_out() -> Response:
+    """End the session."""
+    actor = auth.audit_actor()
+    if auth.current_actor():
+        _record_authentication("LOGOUT", actor, "SUCCESS")
+    auth.sign_out()
+    return redirect(url_for("auth.sign_in_page"))

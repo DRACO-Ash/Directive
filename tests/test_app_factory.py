@@ -17,12 +17,32 @@ def test_the_factory_returns_an_app_without_listening(writable_data_dir: Path) -
     assert writable_data_dir.is_dir()
 
 
-def test_no_static_route_is_registered_over_a_directory_that_does_not_exist(
-    writable_data_dir: Path,
-) -> None:
+def test_the_static_folder_serves_the_console_assets(writable_data_dir: Path) -> None:
+    """The console needs its stylesheet and script, so the static folder is enabled.
+
+    It was disabled while the app served only health paths, on the principle that surface
+    you do not need is surface you do not defend. Re-enabling it is a deliberate decision
+    recorded here: the directory holds two authored files, `send_from_directory` refuses
+    traversal, and nothing generated is served from it.
+    """
     app = create_app()
-    assert app.static_folder is None
-    assert not [rule for rule in app.url_map.iter_rules() if "static" in rule.rule]
+    assert app.static_folder is not None
+    assert Path(app.static_folder).name == "static"
+    assert sorted(path.name for path in Path(app.static_folder).iterdir()) == [
+        "console.css",
+        "console.js",
+    ]
+
+
+@pytest.mark.parametrize(
+    "traversal",
+    ["../__init__.py", "..%2f__init__.py", "....//__init__.py", "%2e%2e/records.py"],
+)
+def test_the_static_route_refuses_traversal(writable_data_dir: Path, traversal: str) -> None:
+    """The cost of re-enabling it, measured rather than assumed."""
+    response = create_app().test_client().get(f"/static/{traversal}")
+    assert response.status_code in {400, 404}
+    assert b"complyops" not in response.data
 
 
 def test_json_keys_are_not_reordered(writable_data_dir: Path) -> None:

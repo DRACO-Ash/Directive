@@ -96,4 +96,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # Bind 0.0.0.0 and read PORT, defaulting to 8080. Gunicorn defaults to 127.0.0.1, which
 # the platform probe cannot reach, so this line is load-bearing. `exec` so SIGTERM
 # reaches gunicorn and shutdown does not hang.
-CMD ["sh","-c","exec gunicorn wsgi:app -b 0.0.0.0:${PORT:-8080} --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -"]
+#
+# ONE worker, deliberately, and threads instead. The audit chain's append lock and the
+# register locks are per process: two workers would each hold their own view of the chain
+# head, both append from it, and produce two entries claiming the same predecessor. That
+# log then fails its own verification with no attacker anywhere near it, which is the one
+# thing this control must never say about clean evidence. Raising the worker count is
+# blocked on an inter-process lock on the volume; see the deferred table in
+# `docs/DEPLOYMENT.md`. Threads are safe because every lock above covers them.
+CMD ["sh","-c","exec gunicorn wsgi:app -b 0.0.0.0:${PORT:-8080} --workers 1 --threads 8 --timeout 60 --access-logfile - --error-logfile -"]
