@@ -72,6 +72,8 @@ def test_boot_survives_a_probe_that_raises(monkeypatch: pytest.MonkeyPatch) -> N
     """
     import complyops  # noqa: PLC0415 - patched on the module object
 
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+
     def explode(_path: str, *args: object, **kwargs: object) -> None:
         raise RuntimeError("the probe blew up")
 
@@ -94,6 +96,7 @@ def test_boot_warns_loudly_when_storage_is_unusable(
 ) -> None:
     """An unusable mount must leave a narrative, not a bare "listening" line."""
     monkeypatch.setenv("DATA_DIR", "relative/data")
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     with caplog.at_level(logging.WARNING):
         create_app()
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]

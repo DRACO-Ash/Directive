@@ -24,7 +24,9 @@ POLICY_HEADERS = (
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
+    """Return a client. The environment is stated, because there is no safe implicit one."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     return create_app().test_client()
 
 
@@ -219,7 +221,7 @@ def test_a_client_cannot_remove_a_header_through_a_route_that_echoes_one() -> No
     assert "Strict-Transport-Security" in headers
 
 
-def test_the_blanket_pass_runs_last() -> None:
+def test_the_blanket_pass_runs_last(monkeypatch: pytest.MonkeyPatch) -> None:
     """The guarantee depends on registration order, so pin it.
 
     An app-level after_request registered BEFORE this one runs after it and can serve a
@@ -227,6 +229,7 @@ def test_the_blanket_pass_runs_last() -> None:
     """
     from complyops import create_app  # noqa: PLC0415
 
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     app = create_app()
     handlers = app.after_request_funcs[None]
     assert handlers[0] is security_headers.apply_security_headers, (

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 
 import pytest
+from flask.logging import has_level_handler
 
 from complyops import create_app
 from complyops.version import __version__
@@ -419,26 +421,60 @@ def test_readiness_and_diagnostics_survive_a_refusal_to_start_a_thread(
     assert client.get("/livez").status_code == 200
 
 
+def test_the_application_logs_at_info(writable_data_dir: Path) -> None:
+    """The three boot lines are dropped unless the logger's own level says otherwise.
+
+    Flask attaches its handler to `app.logger` on first access, so the old
+    `if not app.logger.handlers` guard never fired and `basicConfig` never ran. The
+    effective level stayed at root's WARNING and every boot line was discarded. Under
+    gunicorn it was worse: it configures `gunicorn.error` and leaves root bare, so the
+    container emitted none of the three lines `docs/DEPLOYMENT.md` rests the locked-out
+    operator's recovery on. Asserted on the LOGGER, not through `caplog.at_level`, which
+    manufactures the exact condition production lacked.
+    """
+    app = create_app()
+
+    assert app.logger.isEnabledFor(logging.INFO), "the boot narrative must survive to stderr"
+    # Reachability, not `app.logger.handlers`: Flask only attaches its own handler when no
+    # ancestor already has one, and under pytest caplog's root handler satisfies that. The
+    # property that matters either way is that a record has somewhere to go.
+    assert has_level_handler(app.logger), "and it must have somewhere to go"
+
+
 def test_the_boot_log_carries_the_input_presence_map(
-    writable_data_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    writable_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The recovery channel for an operator who cannot sign in.
 
-    `docs/DEPLOYMENT.md` now rests the present-but-wrong-credential recovery on this line,
-    so it has to exist and it has to be readable without authenticating.
+    `docs/DEPLOYMENT.md` rests the present-but-wrong-credential recovery on this line, so
+    it has to exist under the conditions production actually runs in. A plain handler is
+    attached at NOTSET rather than raising the level with `caplog.at_level`: raising the
+    level here would hide the very defect this test exists to catch.
     """
     injected = "a-client-credential-value-that-must-not-leak"
     monkeypatch.setenv("CLIENT_SECRET", injected)
     monkeypatch.delenv("TENANT_ID", raising=False)
-    with caplog.at_level("INFO"):
-        create_app()
 
-    lines = [record.getMessage() for record in caplog.records if "inputs " in record.getMessage()]
+    captured: list[str] = []
+
+    class Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    collector = Collector(level=logging.NOTSET)
+    logging.getLogger("complyops").addHandler(collector)
+    try:
+        create_app()
+    finally:
+        logging.getLogger("complyops").removeHandler(collector)
+
+    lines = [line for line in captured if "inputs " in line]
     assert lines, "the boot log must carry the presence map"
     assert "CLIENT_SECRET=set" in lines[0]
     assert "TENANT_ID=MISSING" in lines[0]
     assert injected not in lines[0], "never a value"
     assert str(len(injected)) not in lines[0], "never an exact length"
+    assert any("storage accepted a write" in line for line in captured), "and the storage line"
 
 
 def test_the_presence_map_never_prevents_boot(

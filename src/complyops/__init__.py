@@ -22,6 +22,15 @@ from .views.auth_routes import auth_bp
 from .views.console import console_bp
 from .views.health import probe_storage
 
+#: The level the application logs at. Set explicitly, and this is load-bearing rather than
+#: cosmetic. Flask attaches its own stderr handler to `app.logger` on first access, so the
+#: old `if not app.logger.handlers: basicConfig(...)` guard never fired; the logger's
+#: effective level stayed at root's WARNING, and every `logger.info` was dropped. Under
+#: gunicorn it is worse: gunicorn configures `gunicorn.error` and leaves root bare, so the
+#: three boot lines `docs/DEPLOYMENT.md` rests the locked-out-operator recovery on were
+#: never emitted by the container at all. Measured against the real Dockerfile command.
+LOG_LEVEL = logging.INFO
+
 #: The largest request body any route accepts.
 MAXIMUM_REQUEST_BYTES = 256 * 1024
 
@@ -37,6 +46,7 @@ def create_app() -> Flask:
     # you do not need is surface you do not defend. `send_from_directory` refuses traversal,
     # and the directory holds two authored files and nothing generated.
     app = Flask(__name__, static_folder="static", static_url_path="/static")
+    _configure_logging(app)
     # A byte cap on every request body. Werkzeug refuses a larger one with 413 before any
     # handler sees it, so no route has to defend itself against an unbounded payload. Well
     # above the largest legitimate record, which is a 4000-character note.
@@ -59,6 +69,15 @@ def create_app() -> Flask:
     _log_input_presence(app)
     _log_boot_verdict(app)
     return app
+
+
+def _configure_logging(app: Flask) -> None:
+    """Make sure the application's own log lines actually reach the container's stderr.
+
+    Touching `app.logger` here is deliberate: it makes Flask attach its handler now, and
+    the level is then set on the logger rather than left to inherit root's WARNING.
+    """
+    app.logger.setLevel(LOG_LEVEL)
 
 
 def _install_application(app: Flask) -> None:
@@ -121,9 +140,6 @@ def _log_boot_verdict(app: Flask) -> None:
     for a misconfigured value, so a probe that fails while establishing the narrative
     must not take down the very endpoint that would explain it.
     """
-    if not app.logger.handlers:
-        logging.basicConfig(level=logging.INFO)
-
     try:
         settings = config.Settings.from_environment()
         verdict = probe_storage(settings.data_dir)
@@ -154,9 +170,6 @@ def _log_input_presence(app: Flask) -> None:
     failure suppressed the credential recovery channel, which is backwards: the two
     diagnose different faults and neither should be able to silence the other.
     """
-    if not app.logger.handlers:
-        logging.basicConfig(level=logging.INFO)
-
     from .views.health import CRITICAL_INPUTS, input_report  # noqa: PLC0415 - avoids a cycle
 
     try:

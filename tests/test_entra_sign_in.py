@@ -68,7 +68,7 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Flask:
     monkeypatch.setenv("CLIENT_SECRET", TEST_SECRET)
     monkeypatch.setenv("REDIRECT_URI", "https://comply-ops.apps.bluestaq.com/auth/callback")
     monkeypatch.setenv("SESSION_KEY", "0" * 48)
-    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     return create_app()
 
 

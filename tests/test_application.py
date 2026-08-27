@@ -32,7 +32,7 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Flask:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     return create_app()
 
 
@@ -367,6 +367,7 @@ def test_the_console_carries_the_security_headers(signed_in: FlaskClient) -> Non
 def entra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
     """Return a client for an app with Entra ID configured."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     for name, value in [
         ("TENANT_ID", "a-tenant"),
@@ -447,6 +448,7 @@ def test_the_audit_log_survives_a_restart(
     before = signed_in.get("/api/audit").get_json()
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -468,6 +470,7 @@ def test_the_chain_verifies_after_a_restart(
     )
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -496,6 +499,7 @@ def test_a_truncated_log_leaves_the_audit_path_unavailable(
     target.write_text(target.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -772,6 +776,7 @@ HOSTILE_AGENTS = {
     "over the cap": "M" * 900,
     "line separator": "Mozilla\u2028evil",
     "empty": "",
+    "whitespace only": "   ",
     "null byte": "Mozilla\x00evil",
 }
 HOSTILE_AGENT = {"User-Agent": HOSTILE_AGENTS["non-ascii"]}
@@ -855,7 +860,15 @@ def test_a_header_cannot_suppress_a_register_entry(app: Flask, signed_in: FlaskC
 
 
 @pytest.mark.parametrize(
-    "shape", ["non-ascii", "formula lead =", "formula lead -", "double quote", "line separator"]
+    "shape",
+    [
+        "non-ascii",
+        "formula lead =",
+        "formula lead -",
+        "double quote",
+        "line separator",
+        "whitespace only",
+    ],
 )
 def test_a_value_that_cannot_be_brought_inside_the_rules_is_marked(
     app: Flask, client: FlaskClient, shape: str
@@ -905,7 +918,12 @@ def test_a_corrupt_anchor_is_not_reported_as_an_attack(
     signed_in.post(
         "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
     )
+    # The marker goes too. A corrupt anchor BESIDE a valid marker is interference: this
+    # application only writes the anchor by renaming a fully written temporary file over it,
+    # so it cannot produce an unparseable one. Without the marker there is nothing saying
+    # the log was ever used, so an unreadable file is a fault to diagnose.
     (Path(tmp_path) / "audit-anchor.json").write_text("{ not an anchor", encoding="utf-8")
+    (Path(tmp_path) / "audit-initialised").unlink()
 
     verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
     assert verdict["ok"] is False
@@ -915,6 +933,11 @@ def test_a_corrupt_anchor_is_not_reported_as_an_attack(
         "that flag means a tightened rule on an ENTRY, which is a false statement here"
     )
     assert "could not be read" in verdict["note"]
+    # Positively, not only by two negative substrings: the fall-through summary ("the log
+    # does not match its trusted anchor") satisfies both, and is itself a false statement,
+    # because nothing was compared against the anchor. That is the exact misstatement this
+    # branch was added to prevent, so the test asserted it away rather than for it.
+    assert "the trusted anchor could not be read or used" in verdict["summary"]
     assert "does not satisfy the current field rules" not in verdict["summary"]
     assert "entry None" not in verdict["summary"]
 
@@ -1075,3 +1098,45 @@ def test_a_mistyped_retired_key_is_a_verdict_not_an_exception(
     assert verdict["ok"] is False
     assert verdict["keyUnavailable"] is True
     assert verdict["tampered"] is False, "a configuration fault is not evidence of tampering"
+
+
+def test_a_corrupt_anchor_beside_a_marker_is_reported_as_interference(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """Emptying the anchor is cheaper than deleting it, and must not buy a softer verdict.
+
+    Reporting the two differently let the cheaper attack downgrade its own finding from
+    tampering to a fault to diagnose, on the read-out an assessor is shown.
+    """
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    (Path(tmp_path) / "audit-anchor.json").write_text("", encoding="utf-8")
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["tampered"] is True
+    assert verdict["anchorUnusable"] is False
+    assert "was removed" in verdict["summary"] or "not authenticated" in verdict["summary"]
+
+
+def test_the_diagnostics_read_out_reports_a_wedged_chain(
+    app: Flask, signed_in: FlaskClient
+) -> None:
+    """Every 503 says "See /api/diagnostics", so it has to report the fault it is named in.
+
+    The boot status alone was stale by construction: it went on saying "chain intact" while
+    the chain had wedged and nothing could be written.
+    """
+
+    def refuse(entry_fields: object) -> None:
+        raise JournalError("the audit log could not be written")
+
+    chain = app.extensions["complyops_chain"]
+    original = chain.append
+    chain.append = refuse  # type: ignore[method-assign]
+    chain._wedged = "OSError: no space left on device"
+    try:
+        assert "wedged since boot" in signed_in.get("/api/diagnostics").get_json()["auditLog"]
+    finally:
+        chain.append = original  # type: ignore[method-assign]
+        chain._wedged = None

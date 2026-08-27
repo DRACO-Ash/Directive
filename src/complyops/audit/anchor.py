@@ -562,6 +562,17 @@ def _read_stored(data_dir: str, key: bytes, *, strict: bool) -> Anchor | None:
     except (OSError, ValueError) as error:
         if not strict:
             return None
+        if isinstance(error, ValueError) and _marker_is_valid(data_dir, key):
+            # A CONTENT fault beside a valid marker. This application only ever writes the
+            # anchor by renaming a fully written, fsynced temporary file over it, so it
+            # cannot produce an unparseable one; something else wrote it. Emptying the file
+            # is cheaper than deleting it, and reporting the two differently let the cheaper
+            # attack downgrade its own verdict from tampering to a fault to diagnose.
+            raise AnchorTamperError(
+                f"the audit anchor at {target} is unreadable although this log has been "
+                f"used before, so it was overwritten. Treat the log as unverifiable until "
+                f"an operator re-anchors it from the evidence library."
+            ) from error
         raise AnchorError(f"the audit anchor at {target} could not be read: {error}") from error
     except AnchorError:
         if not strict:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from complyops.audit import validation
+from complyops.audit.validation import UNRECORDABLE, recordable
 from conftest import fixed_entry
 
 
@@ -389,3 +390,55 @@ def test_the_two_required_field_lists_cannot_drift() -> None:
     from complyops.audit import hashing  # noqa: PLC0415
 
     assert hashing._REQUIRED_NON_EMPTY - {"\x00key_id"} == set(validation.REQUIRED_FIELDS)
+
+
+def test_recordable_refuses_an_unknown_field_name() -> None:
+    """A typo at a call site must raise, never blank the field.
+
+    `FIELD_LIMITS.get(name, 0)` sliced an unknown name to nothing, `_check_one` accepted
+    the empty string as an optional field, and the AUD-001-required address or user agent
+    was blanked to the marker on every entry written thereafter, irreversibly, with a green
+    suite. Fail-open to a plausible value, in the one module whose doctrine is reject,
+    never coerce.
+    """
+    with pytest.raises(KeyError):
+        recordable("useragent", "Mozilla/5.0")
+
+
+def test_recordable_marks_a_value_that_is_only_whitespace() -> None:
+    """Trimming can empty a value, and an empty AUD-001 field is not a record of anything."""
+    assert recordable("user_agent", "   ") == UNRECORDABLE
+
+
+def test_recordable_returns_a_value_the_boundary_accepts() -> None:
+    """The marker is for a value that cannot be written, never a blanket replacement."""
+    assert (
+        recordable("user_agent", " Mozilla/5.0 (Windows NT 10.0) ")
+        == "Mozilla/5.0 (Windows NT 10.0)"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["=cmd|'/c calc'!A1", "-probe", "+44", "@SUM(A1)", "Mozillaé", 'say "hi"'],
+)
+def test_recordable_marks_every_shape_the_boundary_refuses(value: str) -> None:
+    """The whole rule set, not the character rule alone. Two rule sets drift; one does not."""
+    assert recordable("user_agent", value) == UNRECORDABLE
+
+
+def test_recordable_truncates_rather_than_marking_when_it_can() -> None:
+    """A value truncation brings inside the rules is better evidence than a marker.
+
+    The marker is the last resort, not the first answer: what a caller must never be able
+    to do is leave nothing behind at all.
+    """
+    recorded = recordable("user_agent", "M" * 600)
+    assert recorded != UNRECORDABLE
+    assert len(recorded) == validation.FIELD_LIMITS["user_agent"]
+
+
+def test_recordable_marks_a_truncation_that_lands_on_whitespace() -> None:
+    """Truncating at the cap can leave a trailing space, which the boundary also refuses."""
+    at_cap = validation.FIELD_LIMITS["user_agent"]
+    assert recordable("user_agent", "M" * (at_cap - 1) + " " + "M" * 40) == UNRECORDABLE

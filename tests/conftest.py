@@ -56,6 +56,9 @@ def writable_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     target = tmp_path / "data"
     target.mkdir()
     monkeypatch.setenv("DATA_DIR", str(target))
+    # Stated, never inherited. `is_production` defaults to production, so a fixture that
+    # said nothing would exercise a posture no test intends and refuse to boot.
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     return target
 
 

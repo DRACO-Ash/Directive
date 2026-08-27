@@ -95,8 +95,11 @@ class ChainVerdict:
         """Return whether this verdict means tampering, as opposed to a fault of ours.
 
         ``ok`` alone is not enough. A caller writing ``if not verdict.ok: alarm()`` would
-        raise a tamper alarm for a tightened field rule or a mistyped retired key, which is
-        the false alarm the other two flags exist to prevent.
+        raise a tamper alarm for a tightened field rule, a mistyped retired key, or an
+        anchor file that could not be read, which is the false alarm the other THREE flags
+        exist to prevent: ``invalid_under_current_rules``, ``key_unavailable`` and
+        ``anchor_unusable``. An anchor whose STATE shows interference is a different thing
+        and does report as tampering; see `complyops.audit.anchor.AnchorTamperError`.
         """
         return (
             not self.ok

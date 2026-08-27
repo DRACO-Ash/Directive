@@ -261,7 +261,7 @@ def test_a_configured_session_key_is_used_verbatim(monkeypatch: pytest.MonkeyPat
 
 def test_development_generates_an_ephemeral_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SESSION_KEY", raising=False)
-    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     assert len(auth.signing_secret()) == 32
 
 
@@ -309,6 +309,7 @@ def test_the_post_sign_in_redirect_cannot_leave_this_origin(
 ) -> None:
     """An open redirect would let a phishing link bounce a signed-in user off this origin."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     app = create_app()
     with app.test_request_context("/sign-in"):
@@ -340,6 +341,7 @@ def test_the_audit_actor_is_marked_when_self_asserted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     app: Flask = create_app()
     with app.test_request_context("/"):
@@ -357,6 +359,7 @@ def test_an_unusable_signing_key_leaves_the_app_bootable(
     Every mutating route then fails closed, because no entry can be written.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
     app = create_app()
     assert app.extensions["complyops_chain"] is None
@@ -372,6 +375,7 @@ def test_a_mutation_fails_closed_without_an_audit_chain(
     answer is that this end is at fault and retrying later is worth doing.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
     client = create_app().test_client()
     client.post(
@@ -471,6 +475,7 @@ def test_a_full_volume_answers_503_rather_than_an_unhandled_500(
 ) -> None:
     """A register that cannot be written is this end's fault, and the body says nothing more."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     client = create_app().test_client()
@@ -504,6 +509,7 @@ def test_a_refused_register_write_leaves_the_log_unchanged(
     never received. That is the whole point of staging, so it is the thing to assert.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     client = create_app().test_client()
@@ -540,3 +546,76 @@ def test_the_container_runs_one_worker(tmp_path: Path) -> None:
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert "--workers 1" in dockerfile
     assert "--workers 2" not in dockerfile
+
+
+# ============================ the environment is fail-closed ============================
+
+
+def test_an_unset_environment_is_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset means production, and that direction is the whole point.
+
+    The default was `development`, and the variable appeared in neither the environment
+    table nor `.env.example`, so a deploy that followed the documentation exactly ran with
+    the Secure cookie flag off, Entra ID unenforced and an ephemeral session key, silently.
+    A fail-closed control whose default is "off" is not one.
+    """
+    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    assert auth.is_production() is True
+
+
+@pytest.mark.parametrize("value", ["", " ", "dev", "DEVELOPMENT ", "prod", "Production", "0"])
+def test_only_the_exact_word_selects_development(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A typo must not silently buy the weaker posture."""
+    monkeypatch.setenv("COMPLYOPS_ENV", value)
+    assert auth.is_production() is (value.strip().lower() != "development")
+
+
+def test_an_unset_environment_refuses_to_boot_unconfigured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loudly, in both directions. A missing variable is never a silent downgrade."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    for name in ("TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI", "SESSION_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(auth.AuthNotConfiguredError, match="COMPLYOPS_ENV is production"):
+        create_app()
+
+
+def test_the_environment_variable_is_documented(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It governs three fail-closed controls and was named in neither place.
+
+    A reader following `.env.example` or the deployment table would never learn it exists,
+    which is how the guards came to be inert in the documented deploy.
+    """
+    root = Path(__file__).resolve().parents[1]
+    assert "COMPLYOPS_ENV" in (root / ".env.example").read_text(encoding="utf-8")
+    assert "COMPLYOPS_ENV" in (root / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+
+def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal path must record nothing the caller chose.
+
+    Passing the raw actor let a caller submit one the audit boundary refuses, a leading
+    `=`, `-` or `@`, a non-ASCII character or a double quote, and get a 302 with no entry.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    app = create_app()
+    client = app.test_client()
+    token = client.get("/").headers["X-CSRF-Token"]
+
+    for hostile in ("=" * 250, "-" * 250, "@" * 250, "é" * 250, '"' * 250):
+        client.post("/sign-in", data={"actor": hostile, "csrf_token": token})
+
+    entries = app.extensions["complyops_chain"].entries
+    assert len(entries) == 5, "one refusal recorded per attempt"
+    assert all(entry.action == "LOGIN_FAILED" for entry in entries)
+    assert all(entry.actor == "unknown" for entry in entries)
