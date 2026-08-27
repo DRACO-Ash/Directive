@@ -23,7 +23,7 @@ from pathlib import Path
 
 from flask import Blueprint, Response, current_app, jsonify
 
-from .. import config
+from .. import auth, config
 from ..audit.keys import key_is_usable
 from ..version import __version__
 
@@ -40,9 +40,11 @@ DIAGNOSTICS_CACHE_SECONDS = 10.0
 #: bucketed length, never as a value, so a stale value and a correct value are
 #: distinguishable without leaking either and without giving an exact length oracle.
 #:
-#: The `inputs` block moves behind the authorisation check when the auth module lands.
-#: Until then this route must NOT be exempted from the platform sign-on gateway; only
-#: the health paths are (`docs/DEPLOYMENT.md`).
+#: The authentication module has landed, so this block is now behind the application's own
+#: authorisation check, along with the audit-log line. An unauthenticated caller gets the
+#: version, the port and whether storage accepts a write, which is what a platform operator
+#: needs and discloses nothing: the credential-presence map, the resolved data directory and
+#: the audit log's path and entry count are all signed-in only.
 CRITICAL_INPUTS: tuple[str, ...] = (
     "TENANT_ID",
     "CLIENT_ID",
@@ -315,16 +317,17 @@ def diagnostics() -> Response:
     """
     settings = config.Settings.from_environment()
     verdict = cached_storage_verdict(settings.data_dir)
-    return jsonify(
-        {
-            "version": __version__,
-            "buildId": settings.build_id,
-            "port": settings.port,
-            "dataDir": verdict.path,
-            "storageWritable": verdict.writable,
-            "storageErrno": verdict.errno,
-            "logViewEvents": settings.log_view_events,
-            "auditLog": current_app.extensions.get("complyops_audit_status", "not installed"),
-            "inputs": {name: _input_report(name) for name in CRITICAL_INPUTS},
-        }
-    )
+    report: dict[str, object] = {
+        "version": __version__,
+        "buildId": settings.build_id,
+        "port": settings.port,
+        "storageWritable": verdict.writable,
+        "storageErrno": verdict.errno,
+        "logViewEvents": settings.log_view_events,
+        "authenticated": auth.current_actor() is not None,
+    }
+    if auth.current_actor() is not None:
+        report["dataDir"] = verdict.path
+        report["auditLog"] = current_app.extensions.get("complyops_audit_status", "not installed")
+        report["inputs"] = {name: _input_report(name) for name in CRITICAL_INPUTS}
+    return jsonify(report)

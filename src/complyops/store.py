@@ -13,8 +13,8 @@ flushed after. A partial write leaves the previous file intact rather than a tru
 and a rename is only atomic within a filesystem, hence the same directory.
 
 Serialised. One lock per register, held across the read, the change and the write, because
-the container serves two threads per worker. Without it two concurrent edits silently drop
-one of them.
+the container serves several threads per worker. Without it two concurrent edits silently
+drop one of them.
 
 Validated at the boundary. Every field is checked before it is written, never after it is
 read, so a malformed record cannot enter the store at all.
@@ -49,7 +49,11 @@ _locks_guard = threading.Lock()
 
 
 class StoreError(RuntimeError):
-    """Raised when a register cannot be read or written. Always fail closed."""
+    """Raised when a register cannot be read or written. Always fail closed.
+
+    Every filesystem failure in this module becomes one of these, so a caller has a single
+    thing to handle and a full volume answers 503 rather than escaping as an unhandled 500.
+    """
 
 
 def _lock_for(name: str) -> threading.Lock:
@@ -86,23 +90,56 @@ def read(data_dir: str, name: str) -> list[dict[str, Any]]:
     return loaded
 
 
-def write(data_dir: str, name: str, records: list[dict[str, Any]]) -> None:
-    """Replace one register atomically and durably."""
-    target = register_path(data_dir, name)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    document = json.dumps(records, indent=2, sort_keys=True)
+def stage(data_dir: str, name: str, records: list[dict[str, Any]]) -> Path:
+    """Write a register's new contents to a temporary file beside it, and return its path.
 
-    handle, temporary = tempfile.mkstemp(dir=str(target.parent), prefix=f".{name}-", suffix=".tmp")
+    This is the half of a write that can realistically fail: the serialisation, the disk
+    space, the permissions and the flush all happen here. Separating it from the rename
+    lets a caller do it BEFORE writing the audit entry, so a full volume refuses the change
+    with nothing recorded rather than leaving an immutable entry describing a change that
+    never landed. See :meth:`register.stage`.
+    """
+    target = register_path(data_dir, name)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        document = json.dumps(records, indent=2, sort_keys=True)
+        handle, temporary = tempfile.mkstemp(
+            dir=str(target.parent), prefix=f".{name}-", suffix=".tmp"
+        )
+    except (OSError, ValueError) as error:
+        raise StoreError(f"the {name!r} register could not be prepared: {error}") from error
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(document)
             stream.flush()
             os.fsync(stream.fileno())
-        Path(temporary).replace(target)
-    except BaseException:
+    except BaseException as error:
         Path(temporary).unlink(missing_ok=True)
+        if isinstance(error, OSError):
+            raise StoreError(f"the {name!r} register could not be written: {error}") from error
         raise
-    _fsync_directory(target.parent)
+    return Path(temporary)
+
+
+def commit(data_dir: str, name: str, staged: Path) -> None:
+    """Rename a staged file over its register and flush the directory entry.
+
+    A rename within one filesystem, which is why :func:`stage` writes into the target's own
+    directory. This is the narrow window that remains between the audit entry and the
+    stored record; see the deferred table in ``docs/DEPLOYMENT.md``.
+    """
+    target = register_path(data_dir, name)
+    try:
+        staged.replace(target)
+        _fsync_directory(target.parent)
+    except OSError as error:
+        staged.unlink(missing_ok=True)
+        raise StoreError(f"the {name!r} register could not be replaced: {error}") from error
+
+
+def write(data_dir: str, name: str, records: list[dict[str, Any]]) -> None:
+    """Replace one register atomically and durably, staging and committing in one step."""
+    commit(data_dir, name, stage(data_dir, name, records))
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -119,12 +156,23 @@ class register:  # noqa: N801 - a context manager reads better in lower case her
 
     Usage::
 
-        with register(data_dir, "tasks") as rows:
+        holder = register(data_dir, "tasks")
+        with holder as rows:
             rows.append(new_row)
+            holder.stage()          # optional, see below
+            write_the_audit_entry()
 
     The write happens on a clean exit. An exception inside the block leaves the stored
-    register exactly as it was, which is what makes a rejected audit entry safe: the record
-    change and its audit entry either both happen or neither does.
+    register exactly as it was, which is what makes a rejected audit entry safe: a change
+    the log refuses does not reach the register.
+
+    State the guarantee in the direction it actually holds, because the biconditional was
+    claimed once and is false. A refused audit entry means no record change. The reverse is
+    NOT guaranteed: a change whose entry was written and whose store write then failed
+    leaves an immutable entry describing a change that did not land. :meth:`stage` narrows
+    that window to a rename by doing the serialisation, the allocation and the flush before
+    the entry is written, so the realistic failures happen with nothing yet recorded. It
+    does not close it, and the residual case is declared in ``docs/DEPLOYMENT.md``.
     """
 
     def __init__(self, data_dir: str, name: str) -> None:
@@ -133,6 +181,7 @@ class register:  # noqa: N801 - a context manager reads better in lower case her
         self._name = name
         self._lock = _lock_for(f"{os.path.realpath(data_dir)}::{name}")
         self._rows: list[dict[str, Any]] = []
+        self._staged: Path | None = None
 
     def __enter__(self) -> list[dict[str, Any]]:
         """Take the lock and return the register's rows for editing."""
@@ -144,12 +193,29 @@ class register:  # noqa: N801 - a context manager reads better in lower case her
             raise
         return self._rows
 
+    def stage(self) -> None:
+        """Write the edited rows to a temporary file now, leaving only a rename for exit.
+
+        Call this immediately before whatever else must succeed for the change to be
+        legitimate. Raises :class:`StoreError`, which aborts the block with the stored
+        register untouched.
+        """
+        if self._staged is not None:
+            self._staged.unlink(missing_ok=True)
+        self._staged = stage(self._data_dir, self._name, self._rows)
+
     def __exit__(self, kind: object, value: object, traceback: object) -> None:
-        """Write the register back, unless the block raised."""
+        """Commit the staged file, or write the rows outright, unless the block raised."""
         try:
-            if kind is None:
+            if kind is not None:
+                if self._staged is not None:
+                    self._staged.unlink(missing_ok=True)
+            elif self._staged is not None:
+                commit(self._data_dir, self._name, self._staged)
+            else:
                 write(self._data_dir, self._name, self._rows)
         finally:
+            self._staged = None
             self._lock.release()
 
 

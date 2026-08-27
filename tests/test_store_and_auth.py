@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -72,7 +74,7 @@ def test_a_failed_write_leaves_the_previous_register_intact(
         raise OSError("no space left on device")
 
     monkeypatch.setattr(Path, "replace", explode)
-    with pytest.raises(OSError, match="no space left"):
+    with pytest.raises(store.StoreError, match="could not be replaced"):
         store.write(str(tmp_path), "tasks", [{"id": "TSK-0002", "title": "Replacement"}])
     monkeypatch.undo()
 
@@ -371,12 +373,120 @@ def test_a_mutation_fails_closed_without_an_audit_chain(
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
     client = create_app().test_client()
-    client.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"})
-    token = client.get("/api/registers").headers["X-CSRF-Token"]
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+    )
+    # Re-read after signing in: `auth.sign_in` clears the session, which is deliberate
+    # session-fixation defence, so the pre-sign-in token is no longer this session's.
+    token = str(client.get("/api/registers").headers["X-CSRF-Token"])
 
     refused = client.post(
         "/api/registers/tasks", json={"title": "x"}, headers={"X-CSRF-Token": token}
     )
     assert refused.status_code == 503
-    assert "audit chain is unavailable" in refused.get_json()["error"]
+    body = refused.get_json()["error"]
+    assert "the audit log is unavailable" in body
+    assert str(tmp_path) not in body, "no server-side path may reach a client error"
     assert store.read(str(tmp_path), "tasks") == [], "nothing may be stored"
+
+
+# ============================ staging, and its failures ============================
+
+
+def test_staging_writes_the_file_before_the_block_ends(tmp_path: Path) -> None:
+    """The point of staging: the expensive half happens where a caller can still abort."""
+    holder = store.register(str(tmp_path), "tasks")
+    with holder as rows:
+        rows.append({"id": "TSK-0001", "title": "Access review"})
+        holder.stage()
+        assert store.read(str(tmp_path), "tasks") == [], "not committed until exit"
+        staged = list((Path(tmp_path) / "records").glob(".tasks-*.tmp"))
+        assert len(staged) == 1, "the contents are on disk, awaiting a rename"
+    assert len(store.read(str(tmp_path), "tasks")) == 1
+
+
+def test_an_abandoned_block_leaves_no_staged_file(tmp_path: Path) -> None:
+    """A refused audit entry must not leave litter beside the register."""
+    holder = store.register(str(tmp_path), "tasks")
+    with contextlib.suppress(RuntimeError), holder as rows:
+        rows.append({"id": "TSK-0001", "title": "Access review"})
+        holder.stage()
+        raise RuntimeError("the audit entry was refused")
+
+    assert store.read(str(tmp_path), "tasks") == []
+    assert list((Path(tmp_path) / "records").glob(".tasks-*.tmp")) == []
+
+
+def test_staging_twice_leaves_one_file(tmp_path: Path) -> None:
+    """A caller that stages again replaces its own staged copy rather than adding one."""
+    holder = store.register(str(tmp_path), "tasks")
+    with holder as rows:
+        rows.append({"id": "TSK-0001", "title": "First"})
+        holder.stage()
+        rows[0]["title"] = "Second"
+        holder.stage()
+        assert len(list((Path(tmp_path) / "records").glob(".tasks-*.tmp"))) == 1
+    assert store.read(str(tmp_path), "tasks")[0]["title"] == "Second"
+
+
+def test_a_register_that_cannot_be_prepared_raises_a_store_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every filesystem failure in this module is a StoreError, so callers handle one thing."""
+
+    def refuse(**_kwargs: object) -> tuple[int, str]:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(store.tempfile, "mkstemp", refuse)
+    with pytest.raises(store.StoreError, match="could not be prepared"):
+        store.stage(str(tmp_path), "tasks", [{"id": "TSK-0001"}])
+
+
+def test_a_register_that_cannot_be_written_raises_a_store_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And the half-written temporary file is removed rather than left beside the register."""
+    real = os.fsync
+
+    def refuse(descriptor: int) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(os, "fsync", refuse)
+    try:
+        with pytest.raises(store.StoreError, match="could not be written"):
+            store.stage(str(tmp_path), "tasks", [{"id": "TSK-0001"}])
+    finally:
+        monkeypatch.setattr(os, "fsync", real)
+
+    assert list((Path(tmp_path) / "records").glob(".tasks-*.tmp")) == []
+
+
+def test_a_full_volume_answers_503_rather_than_an_unhandled_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A register that cannot be written is this end's fault, and the body says nothing more."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    client = create_app().test_client()
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+    )
+    token = {"X-CSRF-Token": client.get("/api/registers").headers["X-CSRF-Token"]}
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise store.StoreError("the 'tasks' register could not be prepared: [Errno 28]")
+
+    monkeypatch.setattr(store, "stage", refuse)
+    refused = client.post("/api/registers/tasks", json={"title": "x"}, headers=token)
+
+    assert refused.status_code == 503
+    assert refused.get_json()["error"] == "the register is unavailable. See /api/diagnostics."

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from flask import Flask
 from flask.testing import FlaskClient
+from werkzeug.test import TestResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -42,13 +43,27 @@ def client(app: Flask) -> FlaskClient:
 @pytest.fixture
 def signed_in(client: FlaskClient) -> FlaskClient:
     """Return a client that has signed in."""
-    client.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"})
+    sign_in_as(client, "ash.higgins@bluestaq.uk")
     return client
 
 
 def token_for(client: FlaskClient) -> dict[str, str]:
     """Return the cross-site request forgery header for this session."""
     return {"X-CSRF-Token": client.get("/api/registers").headers["X-CSRF-Token"]}
+
+
+def form_token(client: FlaskClient) -> str:
+    """Return this session's request token, minting one if the session has none yet.
+
+    The sign-in and sign-out forms both carry it now, so a test has to fetch it the way a
+    browser does: load a page that renders the token, then submit it.
+    """
+    return str(client.get("/").headers["X-CSRF-Token"])
+
+
+def sign_in_as(client: FlaskClient, actor: str, **extra: str) -> TestResponse:
+    """Sign a client in the way the form does, carrying the request token."""
+    return client.post("/sign-in", data={"actor": actor, "csrf_token": form_token(client), **extra})
 
 
 # ============================ the gate ============================
@@ -74,15 +89,61 @@ def test_a_mutation_without_a_request_token_is_refused(signed_in: FlaskClient) -
 
 
 def test_a_mutation_with_another_sessions_token_is_refused(
-    app: Flask, signed_in: FlaskClient
+    signed_in: FlaskClient, client: FlaskClient
 ) -> None:
-    other = app.test_client()
-    other.post("/sign-in", data={"actor": "someone.else@bluestaq.uk"})
-    stolen = token_for(other)
-    assert (
-        signed_in.post("/api/registers/tasks", json={"title": "x"}, headers=stolen).status_code
-        == 403
+    """A token that is real, well formed, and somebody else's is still refused.
+
+    The victim's OWN token is fetched first, deliberately. Without that the session holds
+    no token at all and `csrf.valid` refuses at the "no expected token" guard, so the test
+    passed with the constant-time comparison replaced by `return True`: it proved the
+    absence of a token, never the comparison.
+    """
+    mine = token_for(signed_in)["X-CSRF-Token"]
+    other = signed_in.application.test_client()
+    sign_in_as(other, "someone.else@bluestaq.uk")
+    theirs = token_for(other)["X-CSRF-Token"]
+    assert theirs != mine
+
+    refused = signed_in.post(
+        "/api/registers/tasks", json={"title": "x"}, headers={"X-CSRF-Token": theirs}
     )
+    assert refused.status_code == 403
+
+
+def test_a_well_formed_but_wrong_token_is_refused(signed_in: FlaskClient) -> None:
+    """The comparison itself, held. This fails if `csrf.valid` ever returns True early."""
+    mine = token_for(signed_in)["X-CSRF-Token"]
+    forged = mine[:-1] + ("A" if mine[-1] != "A" else "B")
+
+    refused = signed_in.post(
+        "/api/registers/tasks", json={"title": "x"}, headers={"X-CSRF-Token": forged}
+    )
+    assert refused.status_code == 403
+    assert records.read(str(signed_in.application.config["COMPLYOPS_DATA_DIR"]), "tasks") == []
+
+
+def test_a_non_ascii_token_is_refused_rather_than_raising(signed_in: FlaskClient) -> None:
+    """Fail closed on a non-ASCII token rather than raising.
+
+    `compare_digest` raises TypeError on a non-ASCII str, and 500 is the wrong answer to a
+    forged token; on the sign-in route it would also skip the audit entry.
+    """
+    refused = signed_in.post(
+        "/api/registers/tasks", json={"title": "x"}, headers={"X-CSRF-Token": "é" * 43}
+    )
+    assert refused.status_code == 403
+
+
+def test_signing_out_needs_a_token(signed_in: FlaskClient) -> None:
+    """Every state-changing route carries one, sign-out included."""
+    assert signed_in.post("/sign-out").status_code == 403
+    assert signed_in.get("/api/registers").status_code == 200, "still signed in"
+
+
+def test_signing_in_needs_a_token(client: FlaskClient) -> None:
+    """Login cross-site request forgery is still cross-site request forgery."""
+    assert client.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"}).status_code == 403
+    assert client.get("/api/registers").status_code == 401
 
 
 def test_signing_out_ends_the_session(signed_in: FlaskClient) -> None:
@@ -237,8 +298,8 @@ def test_the_log_records_field_names_and_never_values(signed_in: FlaskClient) ->
 
 
 def test_a_failed_sign_in_is_recorded(client: FlaskClient) -> None:
-    client.post("/sign-in", data={"actor": ""})
-    client.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"})
+    sign_in_as(client, "")
+    sign_in_as(client, "ash.higgins@bluestaq.uk")
     failures = [
         entry
         for entry in client.get("/api/audit").get_json()["entries"]
@@ -318,7 +379,7 @@ def test_a_configured_tenant_sends_the_operator_to_entra(entra: FlaskClient) -> 
 
 def test_the_self_asserted_path_is_refused_once_entra_is_configured(entra: FlaskClient) -> None:
     """The self-asserted path must never become a way around a real identity provider."""
-    entra.post("/sign-in", data={"actor": "attacker@evil.example"})
+    sign_in_as(entra, "attacker@evil.example")
     assert entra.get("/api/registers").status_code == 401
 
 
@@ -350,7 +411,7 @@ def test_an_already_signed_in_operator_skips_the_sign_in_page(signed_in: FlaskCl
 
 
 def test_an_over_long_self_asserted_actor_is_refused(client: FlaskClient) -> None:
-    client.post("/sign-in", data={"actor": "x" * 400})
+    sign_in_as(client, "x" * 400)
     assert client.get("/api/registers").status_code == 401
 
 
@@ -382,7 +443,7 @@ def test_the_audit_log_survives_a_restart(
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
-    restarted.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"})
+    sign_in_as(restarted, "ash.higgins@bluestaq.uk")
     after = restarted.get("/api/audit").get_json()
 
     assert [entry["entry_hash"] for entry in before["entries"]] == [
@@ -403,7 +464,7 @@ def test_the_chain_verifies_after_a_restart(
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
-    restarted.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"})
+    sign_in_as(restarted, "ash.higgins@bluestaq.uk")
     verdict = restarted.post("/api/audit/verify", headers=token_for(restarted)).get_json()
 
     assert verdict["ok"] is True
@@ -431,14 +492,16 @@ def test_a_truncated_log_leaves_the_audit_path_unavailable(
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
+    sign_in_as(restarted, "ash.higgins@bluestaq.uk")
 
     assert "unavailable" in restarted.get("/api/diagnostics").get_json()["auditLog"]
-    restarted.post("/sign-in", data={"actor": "ash.higgins@bluestaq.uk"})
     refused = restarted.post(
         "/api/registers/tasks", json={"title": "Anything"}, headers=token_for(restarted)
     )
     assert refused.status_code == 503
-    assert "audit chain is unavailable" in refused.get_json()["error"]
+    body = refused.get_json()["error"]
+    assert "the audit log is unavailable" in body
+    assert str(tmp_path) not in body, "no server-side path may reach a client error"
 
 
 def test_a_register_is_untouched_when_the_log_cannot_be_written(
@@ -490,6 +553,192 @@ def test_the_audit_page_size_is_capped(signed_in: FlaskClient) -> None:
         assert signed_in.get(f"/api/audit?limit={limit}").status_code == 200
 
 
-def test_diagnostics_reports_a_healthy_log(client: FlaskClient) -> None:
+def test_diagnostics_reports_a_healthy_log(signed_in: FlaskClient) -> None:
     """The read-out names the state of the log, which is what an operator needs first."""
-    assert "chain intact" in client.get("/api/diagnostics").get_json()["auditLog"]
+    assert "chain intact" in signed_in.get("/api/diagnostics").get_json()["auditLog"]
+
+
+def test_the_audit_log_line_is_not_disclosed_unauthenticated(client: FlaskClient) -> None:
+    """It carries a filesystem path and an entry count, so it is signed-in only."""
+    assert "auditLog" not in client.get("/api/diagnostics").get_json()
+
+
+# ============================ verification reads the volume ============================
+
+
+def test_verification_reads_the_volume_not_this_process(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """The control has to be able to FAIL on an attacker-reachable input.
+
+    It could not. Reading the process's own entries against the process's own anchor made
+    both sides the same memory, so the check passed while the file on disk was truncated to
+    one line and the anchor was deleted. Everything is now re-read from the volume.
+    """
+    for number in range(3):
+        signed_in.post(
+            "/api/registers/tasks",
+            json={"title": f"Task {number}"},
+            headers=token_for(signed_in),
+        )
+    assert signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()["ok"]
+
+    target = Path(tmp_path) / "audit" / "log.jsonl"
+    target.write_text(target.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert verdict["tampered"] is True
+
+
+def test_verification_fails_when_the_anchor_is_deleted(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """A missing anchor means nothing can be verified, which is not the same as intact."""
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    for name in ("audit-anchor.json", "audit-initialised"):
+        (Path(tmp_path) / name).unlink()
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert "no anchor" in verdict["note"]
+
+
+def test_the_export_pack_is_built_from_the_volume(tmp_path: Path, signed_in: FlaskClient) -> None:
+    """The pack is the off-volume corroboration, so it must reflect the volume.
+
+    A pack assembled from this process's memory would corroborate the volume against
+    nothing at all.
+    """
+    signed_in.post(
+        "/api/registers/risks", json={"title": "Supplier assurance"}, headers=token_for(signed_in)
+    )
+    target = Path(tmp_path) / "audit" / "log.jsonl"
+    target.write_text(target.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+
+    pack = signed_in.get("/api/export").get_json()
+    assert len(pack["auditEntries"]) == 1, "read from the volume, which now holds one entry"
+    assert pack["auditAnchor"]["length"] == 2, "and the anchor still records two"
+
+
+# ============================ an actor that cannot be recorded ============================
+
+
+def test_a_sign_in_whose_actor_cannot_be_audited_is_refused(client: FlaskClient) -> None:
+    """An unrecorded sign-in is the attribution gap in-app authentication exists to close.
+
+    The audit field rules are printable ASCII by allowlist, so an actor carrying a non-ASCII
+    character cannot be written. That used to be swallowed and the sign-in succeeded, which
+    left an operator acting on the registers with no AUD-001 authentication record at all.
+    """
+    landed = sign_in_as(client, "renée@bluestaq.uk")
+
+    assert landed.headers["Location"].endswith("/sign-in")
+    assert client.get("/api/registers").status_code == 401
+
+
+def test_the_refusal_is_itself_recorded(app: Flask, client: FlaskClient) -> None:
+    """AUD-001 requires the failed authentication event, and it must be recordable."""
+    sign_in_as(client, "renée@bluestaq.uk")
+
+    entries = app.extensions["complyops_chain"].entries
+    assert [entry.action for entry in entries] == ["LOGIN_FAILED"]
+    assert entries[0].outcome == "FAILURE"
+
+
+def test_an_over_long_request_body_is_refused(signed_in: FlaskClient) -> None:
+    """Werkzeug refuses it before any handler sees it, so no route defends itself."""
+    oversized = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "x", "notes": "y" * (300 * 1024)},
+        headers=token_for(signed_in),
+    )
+    assert oversized.status_code == 413
+
+
+def test_an_unknown_field_name_is_not_mirrored_back(signed_in: FlaskClient) -> None:
+    """A client error is not a mirror. The name is attacker-supplied and unbounded."""
+    refused = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "Access review", "z" * 4000: "x"},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400
+    assert len(refused.get_json()["error"]) < 200
+
+
+def test_a_no_op_state_change_claims_no_transition(signed_in: FlaskClient) -> None:
+    """Writing OPEN to OPEN into an immutable entry is a transition that never happened."""
+    created = signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    ).get_json()["record"]
+    signed_in.patch(
+        f"/api/registers/tasks/{created['id']}",
+        json={"state": created["state"]},
+        headers=token_for(signed_in),
+    )
+
+    latest = signed_in.get("/api/audit").get_json()["entries"][0]
+    assert latest["old_state"] == ""
+    assert latest["new_state"] == ""
+
+
+def test_verification_reports_a_volume_it_cannot_read(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """A log that cannot be read is a fault to report, never a silent pass."""
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    (Path(tmp_path) / "audit" / "log.jsonl").write_text("{not json}\n", encoding="utf-8")
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert "could not be read" in verdict["note"]
+    assert str(tmp_path) not in verdict["note"], "no server-side path in a client body"
+
+
+def test_verification_reports_a_volume_that_disagrees_with_this_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signed_in: FlaskClient
+) -> None:
+    """A restored older anchor with a matching truncation, caught while the process runs.
+
+    This is the attack `docs/DEPLOYMENT.md` records as surviving a RESTART: the refusal to
+    move backwards lives in process memory. Inside one process it is caught, and the finding
+    is reported as tampering rather than as an unreadable file.
+    """
+    signed_in.post("/api/registers/tasks", json={"title": "First"}, headers=token_for(signed_in))
+    keep_log = (Path(tmp_path) / "audit" / "log.jsonl").read_bytes()
+    keep_anchor = (Path(tmp_path) / "audit-anchor.json").read_bytes()
+
+    signed_in.post("/api/registers/tasks", json={"title": "Second"}, headers=token_for(signed_in))
+    (Path(tmp_path) / "audit" / "log.jsonl").write_bytes(keep_log)
+    (Path(tmp_path) / "audit-anchor.json").write_bytes(keep_anchor)
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert verdict["tampered"] is True
+    assert "older than one already seen" in verdict["note"]
+    assert str(tmp_path) not in verdict["note"], "no server-side path in a client body"
+
+
+def test_an_unknown_register_creates_nothing(signed_in: FlaskClient) -> None:
+    """The action name falls back, and the register check still refuses the write."""
+    refused = signed_in.post(
+        "/api/registers/nonsense", json={"title": "x"}, headers=token_for(signed_in)
+    )
+    assert refused.status_code == 400
+    assert "is not a register" in refused.get_json()["error"]
+
+
+def test_a_patch_body_that_is_not_an_object_is_refused(signed_in: FlaskClient) -> None:
+    """Both mutating routes check the body's shape, not only the create route."""
+    created = signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    ).get_json()["record"]
+    refused = signed_in.patch(
+        f"/api/registers/tasks/{created['id']}", json=[1, 2, 3], headers=token_for(signed_in)
+    )
+    assert refused.status_code == 400

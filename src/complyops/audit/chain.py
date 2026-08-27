@@ -176,11 +176,11 @@ class AuditChain:
         and the head is left untouched, so a rejected write cannot half-advance the
         chain.
 
-        The lock makes this atomic within one process. Across processes, and once the
-        entry is persisted rather than returned, the head read and the write must become
-        one operation holding an inter-process lock on the storage volume, or the two
-        gunicorn workers can still fork the chain. TBC, re-verify when the write path
-        lands.
+        The lock makes this atomic within one process, and this method does not persist
+        the entry: :class:`complyops.audit.journal.JournalChain` wraps it and writes the
+        line and the anchor. Across processes the head read and that write would have to
+        become one operation under an inter-process lock on the volume, so until that
+        exists the container runs a SINGLE worker and no second process appends.
         """
         snapshot = normalise_fields(fields)
         with self._lock:

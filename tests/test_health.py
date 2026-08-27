@@ -201,12 +201,12 @@ def test_the_verdict_log_line_states_the_outcome(tmp_path: Path) -> None:
 
 
 def test_diagnostics_reports_presence_and_length_never_the_value(
-    client, monkeypatch: pytest.MonkeyPatch
+    signed_in_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     injected = "a-client-credential-value-that-must-not-leak"
     monkeypatch.setenv("CLIENT_SECRET", injected)
     monkeypatch.setenv("BUILD_ID", "sha-abc123")
-    response = client.get("/api/diagnostics")
+    response = signed_in_client.get("/api/diagnostics")
     body = response.get_json()
 
     assert response.status_code == 200
@@ -296,9 +296,38 @@ def test_the_cache_does_not_serve_a_verdict_for_a_different_path(tmp_path: Path)
     assert other.path != first.path
 
 
-def test_diagnostics_covers_every_critical_input(client) -> None:
-    body = client.get("/api/diagnostics").get_json()
+def test_diagnostics_covers_every_critical_input(signed_in_client) -> None:
+    body = signed_in_client.get("/api/diagnostics").get_json()
     assert set(body["inputs"]) == set(health.CRITICAL_INPUTS)
+
+
+def test_the_unauthenticated_read_out_discloses_nothing(client) -> None:
+    """An operator needs the version, the port and whether storage works. Nothing else.
+
+    The credential-presence map, the resolved data directory and the audit log's path and
+    entry count are all signed-in only: this route is unauthenticated and reachable by
+    anybody who can reach the pod.
+    """
+    body = client.get("/api/diagnostics").get_json()
+    assert body["authenticated"] is False
+    assert set(body) == {
+        "version",
+        "buildId",
+        "port",
+        "storageWritable",
+        "storageErrno",
+        "logViewEvents",
+        "authenticated",
+    }
+
+
+def test_signing_in_reveals_the_operator_half(signed_in_client) -> None:
+    """And the half that appears is the half an operator needs to diagnose a fault."""
+    body = signed_in_client.get("/api/diagnostics").get_json()
+    assert body["authenticated"] is True
+    assert "dataDir" in body
+    assert "auditLog" in body
+    assert "inputs" in body
 
 
 def test_the_probe_timeout_is_shorter_than_a_platform_probe() -> None:
@@ -316,10 +345,10 @@ def test_the_probe_reports_the_errno_when_a_path_component_is_a_file(tmp_path: P
     assert verdict.detail == "ENOTDIR"
 
 
-def test_the_audit_signing_key_is_among_the_reported_inputs(client) -> None:
+def test_the_audit_signing_key_is_among_the_reported_inputs(signed_in_client) -> None:
     """The deployment notes rest the recovery path for that secret on this read-out."""
     assert "AUDIT_HMAC_KEY" in health.CRITICAL_INPUTS
-    assert "AUDIT_HMAC_KEY" in client.get("/api/diagnostics").get_json()["inputs"]
+    assert "AUDIT_HMAC_KEY" in signed_in_client.get("/api/diagnostics").get_json()["inputs"]
 
 
 def test_the_probe_is_single_flight_so_one_thread_serves_every_waiting_caller(

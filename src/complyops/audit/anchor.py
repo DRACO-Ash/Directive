@@ -566,8 +566,10 @@ def _check_not_rolled_back(target: Path, data_dir: str, length: int) -> None:
     the annual prune AUD-001 requires. That leaves a real gap, stated rather than implied:
     an actor who replaces a genuine anchor with an older genuine one of the SAME total but
     a shorter active log is not caught by this check. See the residual risk in
-    `docs/DEPLOYMENT.md`, and note the mark is per process while the container runs two
-    workers, so it is not shared between them.
+    `docs/DEPLOYMENT.md`, and note the mark is held in PROCESS memory: a restart clears it,
+    and restarts are routine on this platform, so it narrows the window rather than closing
+    it. The container runs a single worker, so at least no second process starts without
+    it.
     """
     seen = _seen_length(data_dir)
     if length < seen:

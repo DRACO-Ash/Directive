@@ -142,8 +142,15 @@ def new_state() -> str:
 
 
 def state_matches(expected: str | None, received: str | None) -> bool:
-    """Compare two sign-in state values in constant time, failing closed on either missing."""
+    """Compare two sign-in state values in constant time, failing closed on either missing.
+
+    Non-ASCII fails closed rather than raising: `compare_digest` raises TypeError on a
+    non-ASCII str, and this runs on an unauthenticated route, so an unhandled 500 would
+    also skip the LOGIN_FAILED entry the refusal path writes.
+    """
     if not expected or not received:
+        return False
+    if not expected.isascii() or not received.isascii():
         return False
     return hmac.compare_digest(expected, received)
 
@@ -364,8 +371,8 @@ def claims_from_id_token(id_token: str, *, nonce: str, now: float | None = None)
         raise AuthError("the identity token names another issuer")
     if claims.get("aud") != config.env("CLIENT_ID"):
         raise AuthError("the identity token was issued for another application")
-    if not isinstance(claims.get("nonce"), str) or not hmac.compare_digest(
-        str(claims.get("nonce")), nonce
+    if not state_matches(
+        nonce, claims.get("nonce") if isinstance(claims.get("nonce"), str) else None
     ):
         raise AuthError("the identity token does not carry this sign-in's nonce")
 

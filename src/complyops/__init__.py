@@ -22,6 +22,9 @@ from .views.auth_routes import auth_bp
 from .views.console import console_bp
 from .views.health import probe_storage
 
+#: The largest request body any route accepts.
+MAXIMUM_REQUEST_BYTES = 256 * 1024
+
 __all__ = ["__version__", "create_app"]
 
 
@@ -34,6 +37,10 @@ def create_app() -> Flask:
     # you do not need is surface you do not defend. `send_from_directory` refuses traversal,
     # and the directory holds two authored files and nothing generated.
     app = Flask(__name__, static_folder="static", static_url_path="/static")
+    # A byte cap on every request body. Werkzeug refuses a larger one with 413 before any
+    # handler sees it, so no route has to defend itself against an unbounded payload. Well
+    # above the largest legitimate record, which is a 4000-character note.
+    app.config["MAX_CONTENT_LENGTH"] = MAXIMUM_REQUEST_BYTES
     # Flask 3 reads app.json.sort_keys. The older JSON_SORT_KEYS config key is accepted
     # silently and does nothing, so setting it would have been dead configuration. A
     # test asserts the result, so a provider change cannot make this a silent no-op.

@@ -12,7 +12,8 @@ from __future__ import annotations
 from flask import Blueprint, current_app, redirect, render_template, request, session, url_for
 from werkzeug.wrappers.response import Response
 
-from .. import auth, records
+from .. import auth, csrf, records
+from ..audit import AuditFieldError
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -42,16 +43,25 @@ def _user_agent() -> str:
     return (request.headers.get("User-Agent") or "unknown")[:512]
 
 
-def _record_authentication(action: str, actor: str, outcome: str) -> None:
-    """Write one authentication audit entry, and never fail the request because of it.
+def _record_authentication(action: str, actor: str, outcome: str) -> bool:
+    """Write one authentication audit entry. Returns whether the ACTOR was recordable.
 
-    A sign-in that succeeded must not be reported as failed because the log was
-    unavailable, and a failure to log is itself worth surfacing, so it is logged
-    server-side rather than shown to the caller.
+    The two failure modes are different and conflating them was a real hole. An
+    unrecordable ACTOR is a property of this sign-in and will not fix itself: an Entra
+    `preferred_username` carrying a non-ASCII character used to be swallowed here, so the
+    operator signed in with no AUD-001 authentication record at all, which defeats the
+    whole reason authentication stays in this application. That now returns False and the
+    caller refuses the sign-in.
+
+    An unavailable LOG is transient infrastructure, and refusing every sign-in during a
+    volume fault would lock the operator out of the diagnostics that explain it. The
+    sign-in proceeds, loudly logged, and the session can still change nothing: every
+    mutating route already fails closed without a chain.
     """
     chain = current_app.extensions.get("complyops_chain")
     if chain is None:
-        return
+        current_app.logger.error("authentication event not recorded: no audit chain")
+        return True
     try:
         chain.append(
             {
@@ -68,8 +78,12 @@ def _record_authentication(action: str, actor: str, outcome: str) -> None:
                 "new_state": "",
             }
         )
-    except Exception as error:
-        current_app.logger.warning("authentication audit entry refused: %s", type(error).__name__)
+    except AuditFieldError as error:
+        current_app.logger.warning("authentication actor is not recordable: %s", error)
+        return False
+    except Exception:
+        current_app.logger.exception("authentication event not recorded")
+    return True
 
 
 @auth_bp.get("/sign-in")
@@ -95,6 +109,7 @@ def sign_in_page() -> str | Response:
 
 
 @auth_bp.post("/sign-in")
+@csrf.required
 def sign_in_submit() -> Response:
     """Accept a self-asserted actor, in development only.
 
@@ -111,7 +126,9 @@ def sign_in_submit() -> Response:
         return redirect(url_for("auth.sign_in_page"))
 
     auth.sign_in(actor, verified=False)
-    _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS")
+    if not _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS"):
+        auth.sign_out()
+        return _refuse("the actor could not be recorded on an audit entry")
     return auth.redirect_after_sign_in(request.form.get("next"))
 
 
@@ -144,18 +161,29 @@ def entra_callback() -> Response:
         return _refuse(str(error))
 
     auth.sign_in(actor, verified=True)
-    _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS")
+    if not _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS"):
+        # A verified identity this log cannot name is not one this application will accept.
+        # AUD-001 requires the user principal name on an authentication event, and an
+        # unrecorded sign-in is exactly the attribution gap in-app authentication exists to
+        # close. `preferred_username` carrying a non-ASCII character lands here.
+        auth.sign_out()
+        return _refuse("the actor could not be recorded on an audit entry")
     return auth.redirect_after_sign_in(None)
 
 
 def _refuse(reason: str) -> Response:
-    """Audit a failed sign-in, log why server-side, and send the caller back generically."""
+    """Audit a failed sign-in, log why server-side, and send the caller back generically.
+
+    The failure is recorded against a placeholder actor, because the reason this path is
+    reached may be that the real one cannot be written at all.
+    """
     current_app.logger.warning("sign-in refused: %s", reason)
     _record_authentication("LOGIN_FAILED", "unknown", "FAILURE")
     return redirect(url_for("auth.sign_in_page"))
 
 
 @auth_bp.post("/sign-out")
+@csrf.required
 def sign_out() -> Response:
     """End the session."""
     actor = auth.audit_actor()

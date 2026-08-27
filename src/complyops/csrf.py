@@ -56,6 +56,11 @@ def valid() -> bool:
     provided = submitted()
     if not isinstance(expected, str) or not expected or not provided:
         return False
+    # `compare_digest` raises TypeError on a non-ASCII str, and an unhandled 500 on a
+    # forged token is the wrong answer to a forged token. A token this application issued
+    # is always URL-safe base64, so a non-ASCII one is wrong by inspection.
+    if not provided.isascii() or not expected.isascii():
+        return False
     return hmac.compare_digest(expected, provided)
 
 
