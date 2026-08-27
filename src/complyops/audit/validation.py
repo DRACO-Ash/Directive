@@ -162,7 +162,11 @@ def recordable(name: str, value: str) -> str:
     agent. Never for the actor: an actor is the subject of the record, so a name that cannot
     be recorded refuses the sign-in instead.
     """
-    trimmed = value.strip()[: FIELD_LIMITS.get(name, 0)]
+    # FIELD_LIMITS[name], never .get(name, 0). A typo at a call site would otherwise slice
+    # to nothing, `_check_one` would accept the empty string as an optional field, and the
+    # AUD-001-required address or user agent would be blanked to the marker on every entry
+    # written thereafter, irreversibly, with a green suite. Reject, never coerce.
+    trimmed = value.strip()[: FIELD_LIMITS[name]]
     try:
         _check_one(name, trimmed)
     except AuditFieldError:

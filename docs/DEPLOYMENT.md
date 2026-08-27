@@ -36,6 +36,7 @@ The correct console state for a code-defaults app is an EMPTY environment tab fo
 |---|---|---|
 | `PORT` | Platform-injected | `[delete]` from the console. Set at the pod level. |
 | `STORAGE_MOUNT_PATH` | Platform-injected by the FILE_STORAGE add-on | `[delete]` from the console. |
+| `COMPLYOPS_ENV` | Operator-set, not secret | **Set this to `production`, explicitly.** It governs three fail-closed controls: the `Secure` flag on the session cookie, whether Entra ID is enforced at boot, and whether `SESSION_KEY` is required. `development` selects the local mode; anything else, an unset variable included, is production. It was previously absent from this table while defaulting to `development`, so a deploy following this table exactly ran with all three guards off. The default is now the safe direction, and the row exists so nobody has to rely on it. |
 | `TENANT_ID` | Operator-set, not secret | The Bluestaq Ltd Entra ID tenant identifier. |
 | `CLIENT_ID` | Operator-set, not secret | The comply-ops application registration identifier. |
 | `REDIRECT_URI` | Operator-set, not secret | `https://comply-ops.apps.bluestaq.com/auth/callback` |

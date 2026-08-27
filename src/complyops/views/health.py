@@ -307,6 +307,22 @@ def input_report(name: str) -> dict[str, object]:
     return report
 
 
+def _audit_line() -> str:
+    """Return the state of the audit chain NOW, not the state it booted in.
+
+    The boot status alone was stale by construction: every mutation that fails answers 503
+    saying "See /api/diagnostics", and this read-out went on reporting "chain intact" while
+    the chain had wedged and nothing could be written. A recovery channel that does not
+    report the fault it is named in is not one.
+    """
+    status = str(current_app.extensions.get("complyops_audit_status", "not installed"))
+    chain = current_app.extensions.get("complyops_chain")
+    wedged = getattr(chain, "wedged", None)
+    if wedged:
+        return f"wedged since boot: {wedged}. Restart once the volume fault is fixed."
+    return status
+
+
 @health_bp.get("/api/diagnostics")
 def diagnostics() -> Response:
     """Report booleans, counts, and lengths. Never a configured value.
@@ -328,6 +344,6 @@ def diagnostics() -> Response:
     }
     if auth.current_actor() is not None:
         report["dataDir"] = verdict.path
-        report["auditLog"] = current_app.extensions.get("complyops_audit_status", "not installed")
+        report["auditLog"] = _audit_line()
         report["inputs"] = {name: input_report(name) for name in CRITICAL_INPUTS}
     return jsonify(report)

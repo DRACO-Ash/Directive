@@ -15,9 +15,14 @@ Two modes, and the difference between them is enforced, not documented:
 ● **Configured.** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `REDIRECT_URI` are all set,
   and sign-in goes to Entra ID through the OAuth 2.0 authorisation code flow with Proof Key
   for Code Exchange (PKCE).
-● **Local development.** None of them is set, `COMPLYOPS_ENV` is not `production`, and the
-  app is reachable only from the loopback address. The operator names themselves at sign-in
-  and every audit entry records that the actor was self-asserted.
+● **Local development.** None of them is set, `COMPLYOPS_ENV` is exactly `development`,
+  and the app is reachable only from the loopback address. The operator names themselves at
+  sign-in and every audit entry records that the actor was self-asserted.
+
+`COMPLYOPS_ENV` must be set to `development` to get the second mode. Anything else, an
+unset variable included, is production. That default is deliberate and it is the fail-closed
+direction: an unset variable costs a local developer one line, and the other way round it
+silently cost the deployed application its Secure cookie flag and its identity provider.
 
 The second mode REFUSES TO START in production. A build that quietly degrades to
 "anybody may sign in as anybody" the moment a variable is missing is worse than one that
@@ -62,9 +67,26 @@ def entra_is_configured() -> bool:
     )
 
 
+#: The value that selects local development. Anything else, including an unset variable,
+#: is production.
+DEVELOPMENT = "development"
+
+
 def is_production() -> bool:
-    """Return whether this process is running in production."""
-    return config.env("COMPLYOPS_ENV", "development").lower() == "production"
+    """Return whether this process is running in production. Unset means YES.
+
+    The default was `development`, and it was documented in neither the environment table
+    nor `.env.example`, so a deploy that followed the documentation exactly ran with
+    `SESSION_COOKIE_SECURE` off, Entra ID unenforced and an ephemeral session key, all
+    silently. Every one of those guards is a fail-closed control, and a fail-closed control
+    whose default is "off" is not one.
+
+    So the default is now production. A missing variable costs a local developer one line
+    in their `.env`; the other way round it cost the deployed application its session
+    cookie's Secure flag and its identity provider. The failure is loud in both directions:
+    unconfigured production refuses to boot with a message naming what to set.
+    """
+    return config.env("COMPLYOPS_ENV", "production").strip().lower() != DEVELOPMENT
 
 
 def check_startup() -> None:

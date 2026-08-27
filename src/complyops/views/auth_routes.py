@@ -123,8 +123,12 @@ def sign_in_submit() -> Response:
 
     actor = (request.form.get("actor") or "").strip()
     if not actor or len(actor) > MAXIMUM_ACTOR_LENGTH:
-        _record_authentication("LOGIN_FAILED", actor or "unknown", "FAILURE")
-        return redirect(url_for("auth.sign_in_page"))
+        # A fixed placeholder, never the caller's own value. Passing the raw actor here let
+        # a caller suppress their own LOGIN_FAILED entry by submitting one the audit
+        # boundary refuses: a leading `=`, `-` or `@`, a non-ASCII character, or a double
+        # quote. The refusal path must always leave a record, so it records nothing the
+        # caller chose. `_refuse` below already does this.
+        return _refuse("the submitted actor is empty or over the length cap")
 
     auth.sign_in(actor, verified=False)
     if not _record_authentication("LOGIN", auth.audit_actor(), "SUCCESS"):
