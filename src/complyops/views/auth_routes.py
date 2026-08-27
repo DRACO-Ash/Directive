@@ -14,6 +14,7 @@ from werkzeug.wrappers.response import Response
 
 from .. import auth, csrf, records
 from ..audit import AuditFieldError
+from ..audit.validation import is_recordable
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -27,6 +28,30 @@ NONCE_KEY = "complyops_signin_nonce"
 MAXIMUM_ACTOR_LENGTH = 200
 
 
+#: What is recorded when a caller's context cannot be represented inside the audit field
+#: rules. NOT a transliteration of the value, which the hard rule forbids: it is an honest
+#: statement that the header could not be recorded, which is itself worth knowing.
+UNRECORDABLE = "unrecordable"
+
+
+def recordable(value: str, cap: int) -> str:
+    """Return a value fit for an audit field, or a marker saying it was not.
+
+    This exists because of a real hole. An unauthenticated caller could choose a
+    `User-Agent` containing any byte from 0x80 to 0xFF, Werkzeug decodes headers as
+    latin-1, the audit boundary rejects the resulting non-ASCII value, and the whole entry
+    was then discarded, including the LOGIN_FAILED entry the refusal path writes. A caller
+    could probe the callback route leaving no record at all, which deletes exactly the
+    source address and user agent AUD-001 collects for security monitoring.
+
+    A caller must never be able to veto their own audit entry. The actor is different and
+    still refuses the sign-in outright: an actor is the subject of the record, and context
+    is not.
+    """
+    trimmed = value[:cap]
+    return trimmed if is_recordable(trimmed) else UNRECORDABLE
+
+
 def _client_ip() -> str:
     """Return the caller's address as the audit entry should record it.
 
@@ -35,12 +60,12 @@ def _client_ip() -> str:
     recording the proxy's own address. The platform terminates at a known ingress, so the
     resolved address is what the container actually saw.
     """
-    return (request.remote_addr or "unknown")[:45]
+    return recordable(request.remote_addr or "unknown", 45)
 
 
 def _user_agent() -> str:
     """Return the caller's user agent, capped to the audit field's limit."""
-    return (request.headers.get("User-Agent") or "unknown")[:512]
+    return recordable(request.headers.get("User-Agent") or "unknown", 512)
 
 
 def _record_authentication(action: str, actor: str, outcome: str) -> bool:
@@ -178,7 +203,12 @@ def _refuse(reason: str) -> Response:
     reached may be that the real one cannot be written at all.
     """
     current_app.logger.warning("sign-in refused: %s", reason)
-    _record_authentication("LOGIN_FAILED", "unknown", "FAILURE")
+    if not _record_authentication("LOGIN_FAILED", "unknown", "FAILURE"):
+        # `recordable` already stops a caller's own headers vetoing this entry and the
+        # actor here is a fixed placeholder, so reaching this line means the boundary
+        # refused something no caller controls. There is nothing left to substitute, so it
+        # is logged at error rather than retried with the same values.
+        current_app.logger.error("the sign-in refusal itself could not be recorded")
     return redirect(url_for("auth.sign_in_page"))
 
 

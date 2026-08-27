@@ -134,3 +134,30 @@ def _log_boot_verdict(app: Flask) -> None:
         app.logger.info("boot: %s", verdict.log_line())
     else:
         app.logger.warning("boot: %s", verdict.log_line())
+
+    _log_input_presence(app)
+
+
+def _log_input_presence(app: Flask) -> None:
+    """Write the credential presence map to the log, as booleans and length bands only.
+
+    This is the recovery channel for an operator who cannot sign in. The same map is on
+    `/api/diagnostics`, but that half is signed-in only, and `entra_is_configured` tests
+    presence rather than correctness: a PRESENT BUT WRONG `CLIENT_SECRET` disables the
+    self-asserted sign-in path while the real one cannot complete, so nobody can reach the
+    read-out that would explain it. The pod log is readable from the App Store console
+    without authenticating to this application, which is exactly what that case needs.
+
+    Never a value and never an exact length, the same rule the route follows.
+    """
+    from .views.health import CRITICAL_INPUTS, input_report  # noqa: PLC0415 - avoids a cycle
+
+    try:
+        summary = ", ".join(
+            f"{name}={'set' if report['present'] else 'MISSING'}({report['lengthBucket']})"
+            for name, report in ((name, input_report(name)) for name in CRITICAL_INPUTS)
+        )
+    except Exception:
+        app.logger.exception("boot: the input presence map could not be built")
+        return
+    app.logger.info("boot: inputs %s", summary)

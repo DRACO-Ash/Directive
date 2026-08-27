@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from complyops import create_app
 from complyops.version import __version__
 from complyops.views import health
 
@@ -416,3 +417,41 @@ def test_readiness_and_diagnostics_survive_a_refusal_to_start_a_thread(
     assert client.get("/readyz").status_code == 503
     assert client.get("/api/diagnostics").status_code == 200
     assert client.get("/livez").status_code == 200
+
+
+def test_the_boot_log_carries_the_input_presence_map(
+    writable_data_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """The recovery channel for an operator who cannot sign in.
+
+    `docs/DEPLOYMENT.md` now rests the present-but-wrong-credential recovery on this line,
+    so it has to exist and it has to be readable without authenticating.
+    """
+    injected = "a-client-credential-value-that-must-not-leak"
+    monkeypatch.setenv("CLIENT_SECRET", injected)
+    monkeypatch.delenv("TENANT_ID", raising=False)
+    with caplog.at_level("INFO"):
+        create_app()
+
+    lines = [record.getMessage() for record in caplog.records if "inputs " in record.getMessage()]
+    assert lines, "the boot log must carry the presence map"
+    assert "CLIENT_SECRET=set" in lines[0]
+    assert "TENANT_ID=MISSING" in lines[0]
+    assert injected not in lines[0], "never a value"
+    assert str(len(injected)) not in lines[0], "never an exact length"
+
+
+def test_the_presence_map_never_prevents_boot(
+    writable_data_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """Nothing in the boot narrative may take down the endpoint that would explain a fault."""
+
+    def explode(name: str) -> dict[str, object]:
+        raise RuntimeError("the report could not be built")
+
+    monkeypatch.setattr(health, "input_report", explode)
+    with caplog.at_level("INFO"):
+        client = create_app().test_client()
+
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/api/diagnostics").status_code == 200

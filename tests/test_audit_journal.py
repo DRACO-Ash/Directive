@@ -9,6 +9,7 @@ alarm. Every refusal below is asserted as a refusal, not as a fallback.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -359,3 +360,45 @@ def test_a_log_byte_that_is_not_utf_8_fails_closed_as_a_journal_error(tmp_path: 
 
     with pytest.raises(JournalError, match="could not be read"):
         read_entries(str(tmp_path))
+
+
+def test_the_repair_refuses_a_tail_on_a_corrupted_prefix(tmp_path: Path) -> None:
+    """The third guard on the only function that overwrites the trusted anchor.
+
+    An edited early entry with a genuine current-key tail appended after it: the tail
+    chains cleanly from the tail's own predecessor, so only verifying the PREFIX against
+    the stored anchor catches it.
+    """
+    chain = written(tmp_path, 3)
+    genuine = read_anchor(str(tmp_path), KEY)
+    stray = AuditChain(chain.anchor(), key=KEY, key_id="k1").append(fields(4))
+    append_entry(str(tmp_path), stray)
+
+    target = log_path(str(tmp_path))
+    lines = target.read_text(encoding="utf-8").splitlines()
+    row = json.loads(lines[0])
+    row["actor"] = "someone.else@bluestaq.uk"
+    lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":"))
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(JournalError, match="does not verify"):
+        resume(str(tmp_path), key=KEY, key_id="k1", keys=KEYS)
+    assert read_anchor(str(tmp_path), KEY) == genuine, "the genuine anchor must survive"
+
+
+def test_a_log_write_that_fails_is_a_journal_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OSError to JournalError conversion on the append itself, not only on the read."""
+    written(tmp_path, 1)
+    real = os.write
+
+    def refuse(descriptor: int, payload: bytes) -> int:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(os, "write", refuse)
+    try:
+        with pytest.raises(JournalError, match="could not be written"):
+            append_entry(str(tmp_path), opened(tmp_path).entries[0])
+    finally:
+        monkeypatch.setattr(os, "write", real)

@@ -200,10 +200,19 @@ def redirect_after_sign_in(target: str | None) -> Response:
 
     An open redirect would let a phishing link bounce a signed-in user off this origin, so
     only a same-site absolute path is honoured.
+
+    Control characters and backslashes are rejected before the `//` check, and that order
+    matters: Werkzeug strips a control character when it serialises the header, so
+    `/<TAB>/evil.example` passed the check as a single-slash path and went out as
+    `//evil.example`, which is a protocol-relative redirect off this origin.
     """
-    if target and target.startswith("/") and not target.startswith("//"):
-        return redirect(target)
-    return redirect(url_for("console.dashboard"))
+    if not target or not target.startswith("/"):
+        return redirect(url_for("console.dashboard"))
+    if "\\" in target or any(character < " " or character == "\x7f" for character in target):
+        return redirect(url_for("console.dashboard"))
+    if target.startswith("//"):
+        return redirect(url_for("console.dashboard"))
+    return redirect(target)
 
 
 #: The Entra ID host. A constant rather than configuration, so a misconfigured value can

@@ -13,10 +13,11 @@ from werkzeug.wrappers.response import Response
 
 from .. import auth, csrf, records, store
 from ..audit import AuditFieldError, ChainVerdict, verify_log
-from ..audit.anchor import AnchorError, read_anchor
+from ..audit.anchor import AnchorError, AnchorRollbackError, read_anchor
 from ..audit.journal import JournalChain, JournalError, read_entries
 from ..records import RecordError
 from ..store import StoreError
+from .auth_routes import recordable
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -47,12 +48,16 @@ def _chain() -> JournalChain:
 
 def _client_ip() -> str:
     """Return the caller's address, from the connection rather than a header."""
-    return (request.remote_addr or "unknown")[:45]
+    return recordable(request.remote_addr or "unknown", 45)
 
 
 def _user_agent() -> str:
-    """Return the caller's user agent, capped to the audit field's limit."""
-    return (request.headers.get("User-Agent") or "unknown")[:512]
+    """Return the caller's user agent, or a marker if it cannot be recorded.
+
+    A caller must never be able to veto their own audit entry by choosing a header the
+    audit boundary refuses. See `auth_routes._recordable`.
+    """
+    return recordable(request.headers.get("User-Agent") or "unknown", 512)
 
 
 @api_bp.errorhandler(RecordError)
@@ -82,6 +87,19 @@ def _journal_error(error: JournalError) -> tuple[Response, int]:
     """
     current_app.logger.error("audit log unavailable: %s", error)
     return jsonify({"error": VOLUME_FAULT}), 503
+
+
+@api_bp.errorhandler(AnchorError)
+def _anchor_error(error: AnchorError) -> tuple[Response, int]:
+    """Return an unusable anchor as a server fault rather than an unhandled 500.
+
+    `/api/export` reads the anchor from the volume, so a corrupt or rolled-back one used to
+    escape as a traceback page. That is the wrong status and the wrong disclosure, and it
+    broke the export at exactly the moment tampering had been detected, which is the moment
+    the pack matters most.
+    """
+    current_app.logger.error("the stored anchor is unusable: %s", error)
+    return jsonify({"error": "the audit anchor is unusable. See /api/diagnostics."}), 503
 
 
 @api_bp.errorhandler(StoreError)
@@ -242,15 +260,23 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
         )
     try:
         anchor = read_anchor(directory, chain.signing_key)
-    except AnchorError:
-        # Reported separately from a read fault, because it is not one. `read_anchor`
-        # raises here when the anchor on the volume records fewer entries than this process
-        # has already seen, which means an older anchor was restored. That is the rollback
-        # this control exists to notice, so it must not read as "the file was unreadable".
-        current_app.logger.exception("verification refused the stored anchor")
+    except AnchorRollbackError:
+        # A genuine older anchor was put back. That is tampering, and it is the one anchor
+        # fault that means so: every other one says the file is unreadable, oversized,
+        # malformed or unauthenticated, which is a fault to diagnose rather than an attack
+        # to report. Conflating them showed a corrupt file to an assessor as an attack.
+        current_app.logger.exception("verification refused a rolled-back anchor")
         return ChainVerdict(
             ok=False, checked=len(entries), reason="an older anchor was restored"
         ), "The anchor on the volume is older than one already seen. See /api/diagnostics."
+    except AnchorError:
+        current_app.logger.exception("verification could not use the stored anchor")
+        return ChainVerdict(
+            ok=False,
+            checked=len(entries),
+            invalid_under_current_rules=True,
+            reason="the anchor on the volume is not usable",
+        ), "The anchor on the volume could not be read or authenticated. See /api/diagnostics."
 
     if anchor is None:
         return ChainVerdict(
