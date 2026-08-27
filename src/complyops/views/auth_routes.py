@@ -45,7 +45,9 @@ def _user_agent() -> str:
     return recordable("user_agent", request.headers.get("User-Agent") or "unknown")
 
 
-def _record_authentication(action: str, actor: str, outcome: str, *, collapsed: int = 0) -> bool:
+def _record_authentication(
+    action: str, actor: str, outcome: str, *, collapsed: int = 0, source_ip: str | None = None
+) -> bool:
     """Write one authentication audit entry. Returns whether the ACTOR was recordable.
 
     The two failure modes are different and conflating them was a real hole. An
@@ -73,7 +75,7 @@ def _record_authentication(action: str, actor: str, outcome: str, *, collapsed: 
                 "resource": "session",
                 "resource_id": "sign-in",
                 "outcome": outcome,
-                "source_ip": _client_ip(),
+                "source_ip": recordable("source_ip", source_ip) if source_ip else _client_ip(),
                 "user_agent": _user_agent(),
                 "fields_changed": "",
                 "old_state": "",
@@ -195,9 +197,16 @@ def _refuse(reason: str) -> Response:
     """
     current_app.logger.warning("sign-in refused: %s", reason)
     decision = refusals.note(_client_ip())
-    if decision.collapsed:
+    for collapsed in decision.collapsed:
+        # One entry per address, not one total. A summary that merged several addresses
+        # would collapse the attribution as well as the rows, which is the opposite of what
+        # this is for.
         _record_authentication(
-            "LOGIN_FAILED_REPEATED", "unknown", "FAILURE", collapsed=decision.collapsed
+            "LOGIN_FAILED_REPEATED",
+            "unknown",
+            "FAILURE",
+            collapsed=collapsed.count,
+            source_ip=collapsed.address,
         )
     if not decision.record:
         return redirect(url_for("auth.sign_in_page"))

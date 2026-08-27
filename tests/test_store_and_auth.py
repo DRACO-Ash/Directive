@@ -614,8 +614,11 @@ def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
 
     # Short values as well as long ones. Every hostile value was 250 characters, so all of
     # them tripped the length cap and the character-class refusal was never exercised.
-    hostile = ("=ash", "-ash", "@ash", "+ash", "renée", 'a"b', "=" * 250, "é" * 250)
-    for actor in hostile[: refusals.RECORDED_PER_WINDOW]:
+    # Exactly the number the collapse records individually. Every other shape is covered
+    # one at a time by `test_no_actor_shape_suppresses_its_own_refusal`; carrying a longer
+    # tuple here read as coverage that was not happening.
+    hostile = ("=ash", "renée", "=" * 250)
+    for actor in hostile:
         # A fresh token each time: a hostile actor short enough to pass the length cap
         # reaches `auth.sign_in`, which clears the session, so the previous token is stale.
         client.post(

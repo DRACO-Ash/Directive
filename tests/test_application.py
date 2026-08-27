@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -1152,3 +1153,72 @@ def test_the_diagnostics_read_out_reports_a_wedged_chain(
 
     assert "wedged since boot: OSError" in line
     assert "/data/audit/log.jsonl" not in line, "the path stays in the pod log"
+
+
+@pytest.mark.parametrize("shape", ["a directory", "a symlink to nothing", "a named pipe"])
+def test_an_anchor_replaced_by_something_that_is_not_a_file(
+    tmp_path: Path, signed_in: FlaskClient, shape: str
+) -> None:
+    """One command, no key, and the softer verdict was back.
+
+    Leaving the access fault keyed on the exception type reintroduced the hole the state
+    rule was written to close: `mkdir audit-anchor.json` beside a valid marker raised
+    IsADirectoryError and reported as a fault to diagnose. The named pipe was worse than a
+    wrong verdict: `read_text` blocked forever on the boot path, so the worker never
+    finished loading, nothing answered the health paths, and the pod restart-looped.
+    """
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    target = Path(tmp_path) / "audit-anchor.json"
+    target.unlink()
+    if shape == "a directory":
+        target.mkdir()
+    elif shape == "a symlink to nothing":
+        target.symlink_to(Path(tmp_path) / "does-not-exist")
+    else:
+        os.mkfifo(target)
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["tampered"] is True, shape
+    assert verdict["anchorUnusable"] is False, shape
+
+
+def test_a_named_pipe_in_place_of_the_log_does_not_hang_the_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signed_in: FlaskClient
+) -> None:
+    """The hard rule: nothing in this path may prevent boot or block indefinitely."""
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    target = Path(tmp_path) / "audit" / "log.jsonl"
+    target.unlink()
+    os.mkfifo(target)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    restarted = create_app().test_client()
+
+    assert restarted.get("/healthz").status_code == 200, "the pod must still serve"
+    sign_in_as(restarted, "ash.higgins@bluestaq.uk")
+    assert "not a regular file" in restarted.get("/api/diagnostics").get_json()["auditLog"]
+
+
+def test_a_read_fault_with_no_marker_stays_a_fault(tmp_path: Path, signed_in: FlaskClient) -> None:
+    """Without the marker there is nothing saying the log was used, so it is a fault.
+
+    The recorded limit of the state rule, asserted so it cannot quietly become an alarm.
+    """
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    (Path(tmp_path) / "audit-anchor.json").unlink()
+    (Path(tmp_path) / "audit-anchor.json").mkdir()
+    (Path(tmp_path) / "audit-initialised").unlink()
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["tampered"] is False
+    assert verdict["anchorUnusable"] is True
+    assert "not a regular file" in verdict["summary"] or "could not be read" in verdict["summary"]

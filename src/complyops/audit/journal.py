@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -109,6 +110,12 @@ def read_entries(data_dir: str) -> list[AuditEntry]:
     if not target.exists():
         return []
     try:
+        # `lstat` before opening, for the same reason the anchor does it: a FIFO in place of
+        # the log would block this call forever, and `resume` runs from the app factory, so
+        # the worker would never finish loading and the pod would restart-loop with no
+        # diagnostics reachable. A symlink is refused as itself rather than followed.
+        if not stat.S_ISREG(target.lstat().st_mode):
+            raise JournalError(f"the audit log at {target} is not a regular file")
         if target.stat().st_size > MAXIMUM_LOG_BYTES:
             raise JournalError(f"the audit log at {target} is implausibly large")
         text = target.read_text(encoding="utf-8")
