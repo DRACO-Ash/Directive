@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 
 from complyops.audit import anchor as anchor_module
-from complyops.audit.anchor import Anchor, AnchorError, read_anchor, write_anchor
+from complyops.audit.anchor import (
+    Anchor,
+    AnchorError,
+    AnchorTamperError,
+    marker_path,
+    read_anchor,
+    write_anchor,
+)
 from complyops.audit.hashing import GENESIS_HASH
 from conftest import TEST_KEY, TEST_KEY_ID
 
@@ -1019,3 +1026,53 @@ def test_the_marker_is_not_consulted_without_a_key(tmp_path: Path) -> None:
     """No key means cannot verify, which fails closed as "no valid marker"."""
     write_anchor(str(tmp_path), Anchor.genesis(TEST_KEY_ID), TEST_KEY)
     assert anchor_module._marker_is_valid(str(tmp_path), b"") is False
+
+
+def test_an_access_fault_beside_a_marker_is_interference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read that failed is interference, whatever kind of failure it was.
+
+    The classification arm for OSError was split back out once and survived the suite,
+    because `_refuse_irregular` catches the shapes a test can easily create (a directory, a
+    pipe, a symlink) before the open ever happens. A permissions or device fault reaching
+    the open itself is only producible by injection here, since the suite runs as root and
+    root ignores the mode bits, so it is injected rather than left uncovered.
+    """
+    key = bytes(range(32))
+    write_anchor(str(tmp_path), Anchor(head="a" * 64, length=1, key_id="k1", total_length=1), key)
+
+    real = Path.read_text
+
+    def refuse(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "audit-anchor.json":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+    with pytest.raises(AnchorTamperError, match="could not be read although"):
+        read_anchor(str(tmp_path), key)
+
+
+def test_an_access_fault_with_no_marker_stays_a_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the marker nothing says the log was used, so it is a fault to diagnose.
+
+    The recorded limit of the state rule, asserted so it cannot quietly become an alarm.
+    """
+    key = bytes(range(32))
+    write_anchor(str(tmp_path), Anchor(head="a" * 64, length=1, key_id="k1", total_length=1), key)
+    marker_path(str(tmp_path)).unlink()
+
+    real = Path.read_text
+
+    def refuse(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "audit-anchor.json":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+    with pytest.raises(AnchorError, match="could not be read") as raised:
+        read_anchor(str(tmp_path), key)
+    assert not isinstance(raised.value, AnchorTamperError)
