@@ -1100,23 +1100,39 @@ def test_a_mistyped_retired_key_is_a_verdict_not_an_exception(
     assert verdict["tampered"] is False, "a configuration fault is not evidence of tampering"
 
 
+@pytest.mark.parametrize(
+    ("shape", "content"),
+    [
+        ("emptied", ""),
+        ("two bytes of valid JSON", "{}"),
+        ("a JSON array", "[]"),
+        ("unparseable", "{ not an anchor"),
+        ("binary", "\x00\xff\x00"),
+        ("a bumped schema version", '{"schemaVersion": 99}'),
+        ("a plausible but unusable document", '{"head": "x", "length": 1, "keyId": "k1"}'),
+    ],
+)
 def test_a_corrupt_anchor_beside_a_marker_is_reported_as_interference(
-    tmp_path: Path, signed_in: FlaskClient
+    tmp_path: Path, signed_in: FlaskClient, shape: str, content: str
 ) -> None:
-    """Emptying the anchor is cheaper than deleting it, and must not buy a softer verdict.
+    """Every one-write content fault, not just the one that happens to raise ValueError.
 
-    Reporting the two differently let the cheaper attack downgrade its own finding from
-    tampering to a fault to diagnose, on the read-out an assessor is shown.
+    Keying the classification off the exception TYPE covered an emptied file and missed
+    every other shape: `{}`, `[]`, a bumped schema version, a malformed key id all raise
+    `AnchorError` from the parser, so overwriting the anchor with two bytes reported as a
+    fault to diagnose while emptying it reported as tampering. Same attacker, same single
+    write, opposite labels, and the cheaper attack bought the softer verdict. The rule is
+    the marker, not the exception.
     """
     signed_in.post(
         "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
     )
-    (Path(tmp_path) / "audit-anchor.json").write_text("", encoding="utf-8")
+    (Path(tmp_path) / "audit-anchor.json").write_text(content, encoding="utf-8", errors="replace")
 
     verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
-    assert verdict["tampered"] is True
-    assert verdict["anchorUnusable"] is False
-    assert "was removed" in verdict["summary"] or "not authenticated" in verdict["summary"]
+    assert verdict["tampered"] is True, shape
+    assert verdict["anchorUnusable"] is False, shape
+    assert str(tmp_path) not in verdict["summary"], shape
 
 
 def test_the_diagnostics_read_out_reports_a_wedged_chain(
@@ -1127,16 +1143,12 @@ def test_the_diagnostics_read_out_reports_a_wedged_chain(
     The boot status alone was stale by construction: it went on saying "chain intact" while
     the chain had wedged and nothing could be written.
     """
-
-    def refuse(entry_fields: object) -> None:
-        raise JournalError("the audit log could not be written")
-
     chain = app.extensions["complyops_chain"]
-    original = chain.append
-    chain.append = refuse  # type: ignore[method-assign]
-    chain._wedged = "OSError: no space left on device"
+    chain._wedged = "OSError: no space left on device at /data/audit/log.jsonl"
     try:
-        assert "wedged since boot" in signed_in.get("/api/diagnostics").get_json()["auditLog"]
+        line = signed_in.get("/api/diagnostics").get_json()["auditLog"]
     finally:
-        chain.append = original  # type: ignore[method-assign]
         chain._wedged = None
+
+    assert "wedged since boot: OSError" in line
+    assert "/data/audit/log.jsonl" not in line, "the path stays in the pod log"

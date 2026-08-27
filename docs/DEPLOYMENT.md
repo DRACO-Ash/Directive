@@ -73,12 +73,19 @@ Two mitigations are in place, and the first one has a limit that must be stated 
 The recovery for that case is the container log, and specifically one line in it. Every boot writes three:
 
 ```
-boot: inputs TENANT_ID=set(32+), CLIENT_ID=set(32+), CLIENT_SECRET=MISSING(0), ...
+boot: inputs TENANT_ID=set(32+), CLIENT_ID=set(32+), AUDIT_HMAC_KEY=MISSING(0), ...
 boot: audit log resumed, chain intact across 41 entries
 boot: storage accepted a write at /data
 ```
 
-The first is the one this section rests on. It carries the same presence map as the signed-in half of `/api/diagnostics`, as a boolean and a length band per input, never a value and never an exact length. It is emitted from the application factory rather than from the storage narrative, so a storage probe failure cannot suppress it, and nothing in it can prevent boot. `TBC, re-verify` with the platform team that pod logs are readable from the App Store console without authenticating to the application; that is the assumption this recovery path rests on and it has not been confirmed here.
+The first is the one this section rests on, and it is written BEFORE anything that can
+refuse to boot, so it survives a refusal. Be precise about the two shapes of failure. A
+missing Entra ID variable or a missing `SESSION_KEY` REFUSES TO BOOT, loudly, with a message
+naming what to set; the presence map is still written first, and it is what names which of
+the four the pod actually received, because the refusal message names all of them. A missing
+or wrong `AUDIT_HMAC_KEY`, as illustrated above, boots and serves: the audit path is
+unavailable, every register mutation answers 503, and this line is how an operator sees
+why. It carries the same presence map as the signed-in half of `/api/diagnostics`, as a boolean and a length band per input, never a value and never an exact length. It is emitted from the application factory rather than from the storage narrative, so a storage probe failure cannot suppress it, and nothing in it can prevent boot. `TBC, re-verify` with the platform team that pod logs are readable from the App Store console without authenticating to the application; that is the assumption this recovery path rests on and it has not been confirmed here.
 
 If an operator cannot sign in: read the pod log, correct the value on the environment channel, and restart. Recorded plainly rather than left to be discovered during an outage.
 
@@ -221,6 +228,7 @@ so a reviewer can tell a deferral from an oversight and can see which claims mov
 | --- | --- | --- |
 | Cross-process append and anchor serialisation | **Still open, and now reachable.** The append lock, the register lock and the rollback high-water mark are all per process. V2.0 had no write path, so the gap was theoretical; V2.1 has one, so two processes editing the same register or appending concurrently WOULD lose an edit or fork the chain. The Dockerfile therefore pins `--workers 1 --threads 8` so that no second process exists, which is a mitigation and not a fix: any other process on the same volume, a maintenance script included, reopens it. Closing it needs an inter-process lock on the volume. | `src/complyops/store.py`, `src/complyops/audit/chain.py` |
 | An audit entry for a record change that did not land | **Narrowed, not closed.** `records.mutate` stages the register before writing the entry and commits it after, so the serialisation, the disk space and the flush all happen with nothing yet recorded, and only a rename remains. A failure of that rename leaves an immutable entry saying `SUCCESS` for a change the register does not hold. The register is the source of truth for what exists; the log is the account of what was attempted and accepted. Closing it needs a two-phase commit across two files. | `src/complyops/store.py` |
+| Rate limiting on the unauthenticated sign-in paths | **Partly closed, and the rest is named here rather than left to be found.** AUD-001 requires a record of every failed authentication, and `/sign-in` and `/auth/callback` are unauthenticated by necessity, so each refusal writes one durable fsynced entry. A bare loop could therefore fill the log toward its 64 MiB refusal cap and leave the audit path unavailable at the next restart, with every register mutation answering 503 until an operator does surgery on the volume. `views/refusals.py` now records the first few refusals per source address per window and collapses the rest into one counted entry, which bounds the single-address case and is better evidence besides. A flood spread across MANY source addresses still writes one entry per address per window. Closing that needs a real limiter at the edge or in front of the process. | `src/complyops/views/refusals.py` |
 | Spreadsheet safety of the exported pack | **Still open, and narrowed.** The pack `/api/export` produces is JSON, so no cell is interpreted as a formula and the risk does not arise for it. AUD-001's annual export to Library 08 is specified as CSV, and a CSV exporter must quote every field and prefix any cell starting `=+-@`. There is still no CSV exporter. | `src/complyops/views/api.py` |
 
 Closed since V2.0, each with the test that holds it closed:

@@ -18,6 +18,7 @@ from complyops import auth, create_app, records, store
 from complyops.audit.journal import read_entries
 from complyops.records import RecordError
 from complyops.store import StoreError
+from complyops.views import refusals
 
 SUITE_KEY = bytes(range(32)).hex()
 
@@ -610,12 +611,40 @@ def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     app = create_app()
     client = app.test_client()
-    token = client.get("/").headers["X-CSRF-Token"]
 
-    for hostile in ("=" * 250, "-" * 250, "@" * 250, "é" * 250, '"' * 250):
-        client.post("/sign-in", data={"actor": hostile, "csrf_token": token})
+    # Short values as well as long ones. Every hostile value was 250 characters, so all of
+    # them tripped the length cap and the character-class refusal was never exercised.
+    hostile = ("=ash", "-ash", "@ash", "+ash", "renée", 'a"b', "=" * 250, "é" * 250)
+    for actor in hostile[: refusals.RECORDED_PER_WINDOW]:
+        # A fresh token each time: a hostile actor short enough to pass the length cap
+        # reaches `auth.sign_in`, which clears the session, so the previous token is stale.
+        client.post(
+            "/sign-in",
+            data={"actor": actor, "csrf_token": client.get("/").headers["X-CSRF-Token"]},
+        )
 
     entries = app.extensions["complyops_chain"].entries
-    assert len(entries) == 5, "one refusal recorded per attempt"
+    assert len(entries) == refusals.RECORDED_PER_WINDOW, "one refusal recorded per attempt"
     assert all(entry.action == "LOGIN_FAILED" for entry in entries)
-    assert all(entry.actor == "unknown" for entry in entries)
+    assert all(entry.actor == "unknown" for entry in entries), "never the caller's own value"
+
+
+@pytest.mark.parametrize("actor", ["=ash", "-ash", "@ash", "+ash", "renée", 'a"b', "é" * 250])
+def test_no_actor_shape_suppresses_its_own_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str
+) -> None:
+    """Each shape on its own, so the character-class branch is exercised, not just the cap."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    app = create_app()
+    client = app.test_client()
+
+    client.post(
+        "/sign-in", data={"actor": actor, "csrf_token": client.get("/").headers["X-CSRF-Token"]}
+    )
+
+    entries = app.extensions["complyops_chain"].entries
+    assert [entry.action for entry in entries] == ["LOGIN_FAILED"], actor
+    assert entries[0].actor == "unknown"

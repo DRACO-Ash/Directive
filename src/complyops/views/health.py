@@ -319,7 +319,13 @@ def _audit_line() -> str:
     chain = current_app.extensions.get("complyops_chain")
     wedged = getattr(chain, "wedged", None)
     if wedged:
-        return f"wedged since boot: {wedged}. Restart once the volume fault is fixed."
+        # The TYPE only. The full message carries the log's absolute path and the OS error
+        # string, and this read-out is a client response even behind the sign-in gate. The
+        # detail is in the pod log, which is where the recovery instruction points anyway.
+        return (
+            f"wedged since boot: {wedged.split(':')[0]}. See the pod log, then restart once "
+            f"the volume fault is fixed."
+        )
     return status
 
 

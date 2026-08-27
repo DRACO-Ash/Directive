@@ -15,9 +15,12 @@ Two modes, and the difference between them is enforced, not documented:
 ● **Configured.** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `REDIRECT_URI` are all set,
   and sign-in goes to Entra ID through the OAuth 2.0 authorisation code flow with Proof Key
   for Code Exchange (PKCE).
-● **Local development.** None of them is set, `COMPLYOPS_ENV` is exactly `development`,
-  and the app is reachable only from the loopback address. The operator names themselves at
-  sign-in and every audit entry records that the actor was self-asserted.
+● **Local development.** None of them is set and `COMPLYOPS_ENV` is exactly `development`.
+  The operator names themselves at sign-in and every audit entry records that the actor was
+  self-asserted. Binding to the loopback address is the OPERATOR's responsibility and is
+  not enforced here: `wsgi.py` binds `0.0.0.0` because the platform probe requires it, and
+  no handler checks `remote_addr`. Said plainly because this list is otherwise a list of
+  things the code enforces.
 
 `COMPLYOPS_ENV` must be set to `development` to get the second mode. Anything else, an
 unset variable included, is production. That default is deliberate and it is the fail-closed

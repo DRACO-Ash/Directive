@@ -15,6 +15,7 @@ from werkzeug.wrappers.response import Response
 from .. import auth, csrf, records
 from ..audit import AuditFieldError
 from ..audit.validation import recordable
+from . import refusals
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -44,7 +45,7 @@ def _user_agent() -> str:
     return recordable("user_agent", request.headers.get("User-Agent") or "unknown")
 
 
-def _record_authentication(action: str, actor: str, outcome: str) -> bool:
+def _record_authentication(action: str, actor: str, outcome: str, *, collapsed: int = 0) -> bool:
     """Write one authentication audit entry. Returns whether the ACTOR was recordable.
 
     The two failure modes are different and conflating them was a real hole. An
@@ -76,7 +77,11 @@ def _record_authentication(action: str, actor: str, outcome: str) -> bool:
                 "user_agent": _user_agent(),
                 "fields_changed": "",
                 "old_state": "",
-                "new_state": "",
+                # A collapsed count rides in `new_state` because it is the only field with
+                # room for it under the boundary rules, and it reads correctly there: the
+                # entry's state IS "this many more of the same". Upper snake with digits,
+                # inside the 32-character cap.
+                "new_state": f"REPEATED_{collapsed}" if collapsed else "",
             }
         )
     except AuditFieldError as error:
@@ -181,8 +186,21 @@ def _refuse(reason: str) -> Response:
 
     The failure is recorded against a placeholder actor, because the reason this path is
     reached may be that the real one cannot be written at all.
+
+    Repeats from one source address are collapsed. These routes are unauthenticated by
+    necessity and every refusal writes one durable fsynced entry, so a bare loop against
+    `/auth/callback` could fill the log to its refusal cap and leave the audit path
+    unavailable at the next restart. AUD-001 wants the record, so the entries are counted
+    rather than dropped, and a count is better evidence than a hundred identical rows.
     """
     current_app.logger.warning("sign-in refused: %s", reason)
+    decision = refusals.note(_client_ip())
+    if decision.collapsed:
+        _record_authentication(
+            "LOGIN_FAILED_REPEATED", "unknown", "FAILURE", collapsed=decision.collapsed
+        )
+    if not decision.record:
+        return redirect(url_for("auth.sign_in_page"))
     if not _record_authentication("LOGIN_FAILED", "unknown", "FAILURE"):
         # `recordable` already stops a caller's own headers vetoing this entry and the
         # actor here is a fixed placeholder, so reaching this line means the boundary

@@ -14,6 +14,7 @@ import pytest
 from flask.logging import has_level_handler
 
 from complyops import create_app
+from complyops.auth import AuthNotConfiguredError
 from complyops.version import __version__
 from complyops.views import health
 
@@ -491,3 +492,40 @@ def test_the_presence_map_never_prevents_boot(
 
     assert client.get("/healthz").status_code == 200
     assert client.get("/api/diagnostics").status_code == 200
+
+
+def test_the_presence_map_survives_a_refused_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production refuses to boot unconfigured, and that must not hide WHICH value is missing.
+
+    `_install_application` raises before serving, so running the presence map after it
+    meant the one deploy case `docs/DEPLOYMENT.md` illustrates, a missing Entra value,
+    emitted no `boot: inputs` line at all. The refusal names all four variables; the log
+    names which one the pod actually received.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "production")
+    for name in ("TENANT_ID", "CLIENT_ID", "REDIRECT_URI"):
+        monkeypatch.setenv(name, "x" * 40)
+    monkeypatch.delenv("CLIENT_SECRET", raising=False)
+
+    captured: list[str] = []
+
+    class Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            """Keep the message."""
+            captured.append(record.getMessage())
+
+    collector = Collector(level=logging.NOTSET)
+    logging.getLogger("complyops").addHandler(collector)
+    try:
+        with pytest.raises(AuthNotConfiguredError, match="Entra ID is not configured"):
+            create_app()
+    finally:
+        logging.getLogger("complyops").removeHandler(collector)
+
+    lines = [line for line in captured if "inputs " in line]
+    assert lines, "the presence map must survive a refused boot"
+    assert "CLIENT_SECRET=MISSING(0)" in lines[0]
+    assert "TENANT_ID=set" in lines[0]
