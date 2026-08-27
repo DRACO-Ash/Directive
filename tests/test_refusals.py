@@ -54,7 +54,7 @@ def test_the_first_few_refusals_are_recorded_individually() -> None:
     decisions = [refusals.note("10.0.0.1", now=float(index)) for index in range(10)]
 
     assert sum(decision.record for decision in decisions) == refusals.RECORDED_PER_WINDOW
-    assert all(decision.collapsed == 0 for decision in decisions)
+    assert all(decision.collapsed == () for decision in decisions)
 
 
 def test_the_tail_is_reported_when_the_window_closes() -> None:
@@ -65,7 +65,7 @@ def test_the_tail_is_reported_when_the_window_closes() -> None:
     after = refusals.note("10.0.0.1", now=refusals.WINDOW_SECONDS + 1)
 
     assert after.record is True, "a new window records individually again"
-    assert after.collapsed == 10 - refusals.RECORDED_PER_WINDOW
+    assert after.collapsed == (refusals.Collapsed("10.0.0.1", 10 - refusals.RECORDED_PER_WINDOW),)
 
 
 def test_one_address_cannot_collapse_another() -> None:
@@ -84,14 +84,77 @@ def test_the_tracker_itself_is_bounded() -> None:
     assert len(refusals._windows) <= refusals.MAXIMUM_TRACKED
 
 
-def test_the_least_recently_seen_address_is_the_one_dropped() -> None:
-    """A live attacker must not be able to evict the record of a quiet one they replaced."""
-    refusals.note("10.0.0.1", now=0.0)
-    for index in range(refusals.MAXIMUM_TRACKED + 10):
-        address = f"10.9.{index // 256}.{index % 256}"
-        refusals.note(address, now=float(index + 1))
+def test_the_least_recently_seen_survives_an_address_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The active caller survives an address churn; the genuinely stale one is dropped.
 
-    assert "10.0.0.1" not in refusals._windows
+    Least recently SEEN, not first inserted, and the distinction is the whole bound.
+
+    Noting each address once in increasing time order makes insertion order and recency
+    order identical, so a first-inserted policy satisfies that shape exactly and the
+    previous test could not tell them apart. Under insertion order a sustained flooder is
+    evicted once it is the oldest ENTRY even though it is the most active caller, its
+    counter resets, and its next refusal buys a fresh window of individual rows.
+    """
+    monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 8)
+    refusals.note("sustained", now=0.0)
+    for index in range(6):
+        refusals.note(f"quiet-{index}", now=float(index + 1))
+    # The flooder keeps calling, so it is the most recently seen and the least recently
+    # inserted at the same time. Only one policy keeps it.
+    for index in range(6, 20):
+        refusals.note(f"churn-{index}", now=float(index + 101))
+        refusals.note("sustained", now=float(index + 101.5))
+
+    assert "sustained" in refusals._windows, "the active caller must not be evicted"
+    assert "quiet-0" not in refusals._windows, "the genuinely stale one goes"
+
+
+def test_an_evicted_count_is_handed_back_rather_than_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Otherwise churning through addresses erases a victim's count silently.
+
+    Measured before this: 50 refusals from a victim, then 1029 other addresses, and 47
+    refusals vanished with no summary entry written anywhere.
+    """
+    monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 4)
+    for index in range(20):
+        refusals.note("victim", now=float(index))
+    pending = refusals._windows["victim"].suppressed
+    assert pending == 20 - refusals.RECORDED_PER_WINDOW
+
+    handed_back: list[refusals.Collapsed] = []
+    for index in range(12):
+        handed_back.extend(refusals.note(f"churn-{index}", now=float(index + 21)).collapsed)
+
+    assert refusals.Collapsed("victim", pending) in handed_back
+
+
+def test_a_burst_that_stops_is_flushed_by_any_later_refusal() -> None:
+    """The caller must not decide whether their own burst is recorded.
+
+    The count used to be emitted only by a later refusal from the SAME address, so an
+    attacker who stopped left 497 of 500 refusals counted nowhere durable.
+    """
+    # Inside one window: spreading 500 calls over 500 seconds rolls the window mid-burst
+    # and resets the count, which is correct behaviour and not what this test is about.
+    for index in range(500):
+        refusals.note("10.0.0.1", now=index * 0.1)
+
+    later = refusals.note("10.0.0.9", now=refusals.WINDOW_SECONDS + 600.0)
+
+    assert refusals.Collapsed("10.0.0.1", 500 - refusals.RECORDED_PER_WINDOW) in later.collapsed
+
+
+def test_a_sweep_leaves_a_live_window_alone() -> None:
+    """Only EXPIRED windows are swept, or a busy address would be flushed mid-window."""
+    refusals.note("10.0.0.1", now=0.0)
+    refusals.note("10.0.0.2", now=1.0)
+
+    assert refusals.note("10.0.0.3", now=2.0).collapsed == ()
+    assert "10.0.0.1" in refusals._windows
 
 
 # ============================ through the routes ============================
@@ -154,3 +217,45 @@ def test_a_successful_sign_in_is_never_collapsed(app: Flask, client: FlaskClient
     entries = app.extensions["complyops_chain"].entries
     assert entries[-1].action == "LOGIN"
     assert entries[-1].actor.startswith("ash.higgins@bluestaq.uk")
+
+
+def test_a_burst_that_stops_reaches_the_log_through_another_caller(
+    app: Flask, client: FlaskClient
+) -> None:
+    """End to end: the flush has to produce a real entry, not just a Decision."""
+    for _ in range(30):
+        probe(client)
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+
+    other = app.test_client()
+    other.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.9.9.9"})
+
+    summary = [
+        entry
+        for entry in app.extensions["complyops_chain"].entries
+        if entry.action == "LOGIN_FAILED_REPEATED"
+    ]
+    assert summary, "another caller's refusal must flush the stopped burst"
+    assert summary[0].new_state == f"REPEATED_{30 - refusals.RECORDED_PER_WINDOW}"
+    assert summary[0].source_ip == "127.0.0.1", "attributed to the address it came from"
+
+
+def test_a_summary_entry_is_attributed_to_its_own_address(app: Flask, client: FlaskClient) -> None:
+    """A merged total would collapse the attribution as well as the rows."""
+    for address in ("10.1.1.1", "10.2.2.2"):
+        for _ in range(10):
+            client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": address})
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.3.3.3"})
+
+    summaries = {
+        entry.source_ip: entry.new_state
+        for entry in app.extensions["complyops_chain"].entries
+        if entry.action == "LOGIN_FAILED_REPEATED"
+    }
+    assert summaries == {
+        "10.1.1.1": f"REPEATED_{10 - refusals.RECORDED_PER_WINDOW}",
+        "10.2.2.2": f"REPEATED_{10 - refusals.RECORDED_PER_WINDOW}",
+    }

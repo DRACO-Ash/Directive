@@ -2,34 +2,44 @@
 
 AUD-001 requires a record of every failed authentication, and the sign-in and callback
 routes are unauthenticated by necessity, so a bare `GET /auth/callback` writes one durable
-fsynced entry. Measured: ten requests, ten entries at about 425 bytes each. At the log's
+fsynced entry. Measured: 2000 requests, 2000 entries at about 425 bytes each. At the log's
 64 MiB refusal cap that is roughly 158,000 requests to make `read_entries` refuse the whole
 log as implausibly large at the next restart, which leaves the audit path unavailable and
-every register mutation answering 503 until an operator does surgery on the volume. No
-rate limiter exists in this process.
+every register mutation answering 503 until an operator does surgery on the volume. No rate
+limiter exists in this process.
 
 Dropping the entries is not the fix, because AUD-001 asks for the record. Collapsing them
 is, and it is better evidence as well: a hundred identical refusals from one address is
-more legible as one refusal and a count than as a hundred rows an assessor has to page
-through.
+more legible as one refusal and a count than as a hundred rows an assessor pages through.
+The same 2000 requests now write three entries.
 
-So the first few refusals from an address in a window are recorded individually, and the
-rest are counted. The count is emitted as one entry when the window closes or when the next
-refusal arrives after it, so a flood that stops still leaves its tail recorded on the next
-refusal from that address rather than vanishing.
+So the first few refusals from an address in a window are recorded individually and the
+rest are counted. Every call SWEEPS every expired window, not just the caller's, and hands
+back what it found, so a burst that stops is flushed by the next refusal from ANY address
+rather than waiting for the same one to come back. An evicted address hands its pending
+count back the same way instead of losing it.
 
-What this does NOT close, stated because the reach is easy to overstate: a flood spread
-across many source addresses still writes one entry per address per window. Narrowing that
-needs a real rate limiter at the edge or in front of the process, which is the deferred
-control in `docs/DEPLOYMENT.md`. This bounds the single-address case, which is the cheap
-one, and it bounds the tracker itself so it cannot become the exhaustion instead.
+Three limits, stated because each was claimed away once already.
+
+A flood spread across MANY source addresses still writes one entry per address per window.
+At the tracker's cap that is about 4096 entries and 1.66 MiB per five-minute window, so the
+64 MiB cap is roughly 3.2 hours away. Narrowing that needs a real rate limiter at the edge
+or in front of the process, which is the deferred control in `docs/DEPLOYMENT.md`.
+
+There is no timer and no shutdown flush. A count pending when the process is KILLED is
+lost, because the sweep only runs when something calls in. Closing that needs a scheduler
+this application does not have.
+
+And the bound is per source address, so it is only as good as `remote_addr`. If the
+platform ingress presents its own address rather than the client's, every caller shares one
+bucket. `TBC, re-verify` with the platform team.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 #: How many refusals from one source address are recorded individually per window.
 RECORDED_PER_WINDOW = 3
@@ -51,7 +61,7 @@ class _Window:
     started: float
     recorded: int = 0
     suppressed: int = 0
-    seen: float = field(default=0.0)
+    seen: float = 0.0
 
 
 _windows: dict[str, _Window] = {}
@@ -65,32 +75,44 @@ def reset() -> None:
 
 
 @dataclass(frozen=True)
+class Collapsed:
+    """A count of refusals from one address that were not recorded individually."""
+
+    address: str
+    count: int
+
+
+@dataclass(frozen=True)
 class Decision:
     """What to write for one refusal."""
 
     record: bool
-    #: A count of refusals collapsed into a summary entry, or zero for none to report.
-    collapsed: int = 0
+    #: Counts that closed or were evicted, each with the address it belongs to. Written as
+    #: one summary entry apiece, so attribution survives the collapse.
+    collapsed: tuple[Collapsed, ...] = ()
 
 
 def note(address: str, now: float | None = None) -> Decision:
     """Record that one refusal happened, and say what should be written for it.
 
-    Returns ``record`` for an individual entry and ``collapsed`` for a count that a closed
-    window left behind. Both can be set: the first refusal of a new window is recorded AND
-    reports the previous window's tail.
+    Sweeps EVERY expired window, not only this address's. A burst that stops used to leave
+    its count alive in memory and nothing else: it was emitted only by a later refusal from
+    the same address, so an unauthenticated caller decided whether their own burst was
+    recorded. Measured before the sweep: 500 refusals, three rows, 497 counted nowhere
+    durable. Any refusal from any address now flushes them.
     """
     moment = time.monotonic() if now is None else now
     with _guard:
-        window = _windows.get(address)
-        collapsed = 0
+        collapsed = _sweep(moment, keep=address)
 
+        window = _windows.get(address)
         if window is None:
-            _evict_if_full()
+            collapsed += _evict_if_full()
             window = _Window(started=moment)
             _windows[address] = window
         elif moment - window.started >= WINDOW_SECONDS:
-            collapsed = window.suppressed
+            if window.suppressed:
+                collapsed += (Collapsed(address, window.suppressed),)
             window.started = moment
             window.recorded = 0
             window.suppressed = 0
@@ -103,14 +125,39 @@ def note(address: str, now: float | None = None) -> Decision:
         return Decision(record=False, collapsed=collapsed)
 
 
-def _evict_if_full() -> None:
-    """Drop the least recently seen address when the tracker is at capacity.
+def _sweep(moment: float, *, keep: str) -> tuple[Collapsed, ...]:
+    """Return and clear the counts of every expired window except the caller's own.
 
-    Called under the lock. Eviction loses that address's pending count, which is why the
-    cap is set well above any plausible number of concurrent legitimate sources: it is a
-    backstop against a spoofed-address flood, not a routine path.
+    Called under the lock. The caller's own window is left to :func:`note`, which has to
+    decide whether to restart it rather than drop it.
+    """
+    collapsed: list[Collapsed] = []
+    expired = [
+        address
+        for address, window in _windows.items()
+        if address != keep and moment - window.started >= WINDOW_SECONDS
+    ]
+    for address in expired:
+        window = _windows.pop(address)
+        if window.suppressed:
+            collapsed.append(Collapsed(address, window.suppressed))
+    return tuple(collapsed)
+
+
+def _evict_if_full() -> tuple[Collapsed, ...]:
+    """Drop the least recently SEEN address at capacity, handing back its pending count.
+
+    Called under the lock. Least recently seen, not first inserted: under insertion order a
+    sustained flooder is evicted once it is the oldest ENTRY even though it is the most
+    active caller, its counter resets, and its next refusal buys a fresh window of
+    individual rows. Measured over 200 rounds with a small cap: six rows under this policy,
+    seventy-five under insertion order.
+
+    The pending count is returned rather than discarded, so an attacker cannot erase a
+    victim's count by churning through addresses.
     """
     if len(_windows) < MAXIMUM_TRACKED:
-        return
+        return ()
     oldest = min(_windows, key=lambda address: _windows[address].seen)
-    del _windows[oldest]
+    window = _windows.pop(oldest)
+    return (Collapsed(oldest, window.suppressed),) if window.suppressed else ()

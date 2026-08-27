@@ -322,9 +322,12 @@ def _audit_line() -> str:
         # The TYPE only. The full message carries the log's absolute path and the OS error
         # string, and this read-out is a client response even behind the sign-in gate. The
         # detail is in the pod log, which is where the recovery instruction points anyway.
+        # `str()` first: `wedged` reaches here through `getattr`, so nothing in the type
+        # system stops a non-string arriving, and an AttributeError inside this handler
+        # would take down the recovery channel it is part of.
         return (
-            f"wedged since boot: {wedged.split(':')[0]}. See the pod log, then restart once "
-            f"the volume fault is fixed."
+            f"wedged since boot: {str(wedged).split(':', 1)[0]}. See the pod log, then "
+            f"restart once the volume fault is fixed."
         )
     return status
 

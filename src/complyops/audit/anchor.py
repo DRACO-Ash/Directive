@@ -71,6 +71,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -337,6 +338,10 @@ def _marker_is_valid(data_dir: str, key: bytes) -> bool:
     if not key or not target.exists():
         return False
     try:
+        # `lstat` before opening: a FIFO here would block this call forever, and this call
+        # is on the boot path. A marker that is not a regular file is not a marker.
+        if not stat.S_ISREG(target.lstat().st_mode):
+            return False
         if target.stat().st_size > MAXIMUM_ANCHOR_BYTES:
             return False
         stored = target.read_text(encoding="utf-8").strip()
@@ -558,28 +563,56 @@ def _read_stored(data_dir: str, key: bytes, *, strict: bool) -> Anchor | None:
     """Return the anchor on disk, or ``None``. ``strict`` decides whether faults raise."""
     target = anchor_path(data_dir)
     try:
+        _refuse_irregular(target)
         return _parse_stored(target, key)
-    except OSError as error:
-        # An ACCESS fault. This one genuinely can be infrastructure, so it stays a fault to
-        # diagnose whatever the marker says.
+    except (OSError, ValueError, AnchorError) as error:
         if not strict:
             return None
-        raise AnchorError(f"the audit anchor at {target} could not be read: {error}") from error
-    except (ValueError, AnchorError) as error:
-        if not strict:
-            return None
+        # ONE arm. Splitting the access fault out and leaving it keyed on the exception's
+        # type reintroduced the exact hole the split was made to close: `mkdir
+        # audit-anchor.json` beside a valid marker raised `IsADirectoryError` and reported
+        # as a fault to diagnose, so one command still bought the softer verdict. The rule
+        # is the marker, for every read failure alike; `_content_fault` decides.
         raise _content_fault(data_dir, target, key, error) from error
 
 
-def _content_fault(data_dir: str, target: Path, key: bytes, error: Exception) -> AnchorError:
-    """Return the right error for an anchor whose CONTENT is unusable.
+def _refuse_irregular(target: Path) -> None:
+    """Refuse anything at this path that is not a regular file, WITHOUT opening it.
 
-    Classified on STATE, never on the exception's type. Keying off `ValueError` alone
-    covered an emptied file and missed every other one-write content fault: `{}`, `[]`, a
-    bumped `schemaVersion`, a malformed key id, an oversized file. All of those raise
-    `AnchorError` from `_parse_stored`, so overwriting the anchor with two bytes reported as
-    a fault to diagnose while emptying it reported as tampering. Same attacker, same single
-    write, opposite labels, and the cheaper attack bought the softer verdict.
+    `mkfifo audit-anchor.json` made `read_text` block forever. `read_anchor` runs from the
+    app factory, so the gunicorn worker never finished loading: nothing answered `/healthz`,
+    `/readyz` or `/api/diagnostics`, the documented recovery channel was gone, the
+    HEALTHCHECK failed and the pod restart-looped. One command, no key, and a tamper alarm
+    became a permanent outage, against the hard rule that nothing in this path may prevent
+    boot or block indefinitely.
+
+    `lstat`, not `stat`, so a symlink is refused as itself rather than followed to whatever
+    it points at.
+    """
+    try:
+        mode = target.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(mode):
+        raise AnchorError(f"the audit anchor at {target} is not a regular file")
+
+
+def _content_fault(data_dir: str, target: Path, key: bytes, error: Exception) -> AnchorError:
+    """Return the right error for an anchor whose read FAILED, of any kind.
+
+    Classified on STATE, never on the exception's type. That rule has now been got wrong
+    twice in the same place. Keying off `ValueError` alone covered an emptied file and
+    missed `{}`, `[]`, a bumped `schemaVersion` and a malformed key id, which raise
+    `AnchorError`. Keeping a separate arm for `OSError` then missed a directory or a symlink
+    put in the file's place. Every one of those is a single command, and each time the
+    cheaper shape bought the softer verdict. So there is no type test here at all: beside a
+    valid marker, a read that failed is interference.
+
+    A genuine infrastructure fault beside a valid marker therefore reads as tampering, and
+    that is the deliberate trade. The marker says this log has been used, so the anchor was
+    readable from this pod before; a permissions or device fault appearing under a running
+    volume is not routine, and a false alarm an operator can clear from the pod log costs
+    less than an alarm that never fires.
 
     The rule is the marker. This application only ever writes the anchor by renaming a
     fully written, fsynced temporary file over it, so it cannot produce an unusable one; if
@@ -593,9 +626,9 @@ def _content_fault(data_dir: str, target: Path, key: bytes, error: Exception) ->
         return error
     if _marker_is_valid(data_dir, key):
         return AnchorTamperError(
-            f"the audit anchor at {target} is unusable although this log has been used "
-            f"before, so it was overwritten. Treat the log as unverifiable until an "
-            f"operator re-anchors it from the evidence library."
+            f"the audit anchor at {target} could not be read although this log has been "
+            f"used before, so it was overwritten or replaced. Treat the log as unverifiable "
+            f"until an operator re-anchors it from the evidence library."
         )
     if isinstance(error, AnchorError):
         return error

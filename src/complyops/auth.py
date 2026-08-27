@@ -89,6 +89,10 @@ def is_production() -> bool:
     cookie's Secure flag and its identity provider. The failure is loud in both directions:
     unconfigured production refuses to boot with a message naming what to set.
     """
+    # The `.strip()` is redundant: `config.env` already normalises through `config.normalise`,
+    # which strips whitespace, surrounding quotes and control characters. Kept as belt and
+    # braces on a security-posture decision, and noted here because a mutation that removes
+    # it survives the suite and would otherwise read as a coverage gap.
     return config.env("COMPLYOPS_ENV", "production").strip().lower() != DEVELOPMENT
 
 
