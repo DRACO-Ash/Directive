@@ -109,15 +109,26 @@ class AnchorError(RuntimeError):
     """Raised when the anchor cannot be read or is not trustworthy. Always fail closed."""
 
 
-class AnchorRollbackError(AnchorError):
+class AnchorTamperError(AnchorError):
+    """Raised when the anchor's STATE indicates interference rather than a fault.
+
+    Three classes of anchor problem, not two, and getting that wrong has now gone both ways
+    in this build. Reporting them all as tampering showed a corrupt file to an assessor as
+    an attack. Splitting off only the rollback then put an anchor signed by a key this
+    server does not hold, and an anchor deleted beside a surviving marker, into the "fault
+    to diagnose" class, which turned a true positive into a false all-clear on the read-out
+    an assessor is shown. Both of those are interference: neither can happen by accident,
+    and the second is the AUD-001 delete control's own signal.
+
+    An I/O error, a parse failure, an implausible size or an unreadable field is a fault.
+    Everything under this type is not.
+    """
+
+
+class AnchorRollbackError(AnchorTamperError):
     """Raised when the stored anchor records FEWER entries than this process has seen.
 
-    A distinct type because it means something distinct. Every other anchor fault says the
-    file is unreadable, oversized, malformed or unauthenticated, which is a fault to
-    diagnose; this one says a genuine older anchor was put back, which is the rollback the
-    high-water mark exists to catch. Reporting the two the same way meant a file containing
-    the bytes `{ not an anchor` was shown to an assessor as a restored-anchor attack, which
-    is the false alarm the whole verdict type exists to prevent.
+    A genuine older anchor was put back, which the high-water mark exists to catch.
     """
 
 
@@ -532,7 +543,7 @@ def read_anchor(data_dir: str, key: bytes) -> Anchor | None:
             _write_marker(data_dir, key)
     if anchor is None:
         if _marker_is_valid(data_dir, key):
-            raise AnchorError(
+            raise AnchorTamperError(
                 f"the audit anchor at {anchor_path(data_dir)} is missing although this log "
                 f"has been used before, so it was deleted. Treat the log as unverifiable "
                 f"until an operator re-anchors it from the evidence library."
@@ -640,7 +651,7 @@ def _validate(target: Path, document: dict[str, object], key: bytes) -> Anchor:
     # on a non-ASCII string, which let an actor with volume write and no key turn the
     # tamper alarm into an unhandled error.
     if not is_hash(tag) or not key or not hmac.compare_digest(tag, anchor.mac(key)):
-        raise AnchorError(
+        raise AnchorTamperError(
             f"the audit anchor at {target} is not authenticated under the current signing "
             f"key, so it was written or altered by something without that key. After a key "
             f"rotation, re-anchor: read under the outgoing key and write under the incoming "

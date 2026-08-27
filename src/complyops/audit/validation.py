@@ -137,15 +137,37 @@ class AuditFieldError(ValueError):
     """Raised when a field is not fit to be recorded. Always reject, never coerce."""
 
 
-def is_recordable(value: str) -> bool:
-    """Return whether a value satisfies the audit boundary's character rule.
+#: What is recorded when a caller's own context cannot be represented under the field
+#: rules. NOT a transliteration of the value, which the hard rule forbids: it is an honest
+#: statement that the header could not be recorded, which is itself worth knowing.
+#:
+#: Stated plainly because it is a real limit: this marker is itself a legal user agent, so
+#: a caller who sends it verbatim is indistinguishable in the log from one whose value was
+#: refused. Closing that needs a separate field, which means changing FIELD_ORDER, which
+#: breaks every historical digest and is the Managing Director's sign-off. The ambiguity is
+#: far smaller than losing the entry, so it is accepted and recorded in `docs/DEPLOYMENT.md`.
+UNRECORDABLE = "unrecordable"
 
-    Exposed so a caller can decide what to do about a value BEFORE offering it, which is
-    not the same as relaxing the rule. The register and sign-in routes use it on the source
-    address and user agent: a caller who picks a header the boundary refuses must not be
-    able to suppress their own audit entry by doing so.
+
+def recordable(name: str, value: str) -> str:
+    """Return ``value`` if the audit boundary would accept it for ``name``, else the marker.
+
+    Calls the boundary's own check rather than re-stating any part of it. A helper that
+    mirrored only the character rule shipped once and left the hole it claimed to close: a
+    printable-ASCII user agent beginning `-` passed the mirror, was refused by the boundary,
+    and discarded the whole entry, so an unauthenticated caller could still probe the
+    callback route leaving nothing behind. Two rule sets drift; one does not.
+
+    Use this ONLY for a caller-influenced context field, the source address and the user
+    agent. Never for the actor: an actor is the subject of the record, so a name that cannot
+    be recorded refuses the sign-in instead.
     """
-    return bool(value) and bool(_PRINTABLE_ASCII.match(value))
+    trimmed = value.strip()[: FIELD_LIMITS.get(name, 0)]
+    try:
+        _check_one(name, trimmed)
+    except AuditFieldError:
+        return UNRECORDABLE
+    return trimmed or UNRECORDABLE
 
 
 def check_key_id(value: str) -> str:

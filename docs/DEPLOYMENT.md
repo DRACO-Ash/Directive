@@ -69,7 +69,17 @@ Two mitigations are in place, and the first one has a limit that must be stated 
 
 `/api/diagnostics` reports each input, including `AUDIT_HMAC_KEY`, as a boolean and a length band, so a stale value and a correct value are distinguishable without leaking either. No probe failure and no configuration value can prevent boot, so the route itself always answers. **But that half of the read-out is now signed-in only, and there is a configuration in which nobody can sign in to reach it.** `entra_is_configured` tests presence, not correctness, so a PRESENT BUT WRONG `CLIENT_SECRET` disables the self-asserted sign-in path while the real one cannot complete. The recovery for that case is NOT this route.
 
-The recovery for that case is the container log. Every boot writes one decisive line naming the storage verdict and the state of the audit chain, and the log is readable from the App Store console without authenticating to the application. If an operator cannot sign in, read the pod log, correct the value on the environment channel, and restart. Recording this plainly rather than leaving an operator to discover it during an outage.
+The recovery for that case is the container log, and specifically one line in it. Every boot writes three:
+
+```
+boot: inputs TENANT_ID=set(32+), CLIENT_ID=set(32+), CLIENT_SECRET=MISSING(0), ...
+boot: audit log resumed, chain intact across 41 entries
+boot: storage accepted a write at /data
+```
+
+The first is the one this section rests on. It carries the same presence map as the signed-in half of `/api/diagnostics`, as a boolean and a length band per input, never a value and never an exact length. It is emitted from the application factory rather than from the storage narrative, so a storage probe failure cannot suppress it, and nothing in it can prevent boot. `TBC, re-verify` with the platform team that pod logs are readable from the App Store console without authenticating to the application; that is the assumption this recovery path rests on and it has not been confirmed here.
+
+If an operator cannot sign in: read the pod log, correct the value on the environment channel, and restart. Recorded plainly rather than left to be discovered during an outage.
 
 Request-time fail-closed behaviour IS implemented as of V2.1: the application refuses to boot in production without Entra ID and without `SESSION_KEY`, and every register mutation fails closed without a usable `AUDIT_HMAC_KEY`.
 
@@ -251,6 +261,14 @@ New in V2.1 and worth a reviewer's attention:
 Two AUD-001 clauses need a policy amendment rather than code, and both are Ash and Adam
 Field's to make:
 
+● **The `unrecordable` marker is forgeable.** A source address or user agent the audit
+  boundary refuses is recorded as `unrecordable` rather than discarded, because a caller
+  must never be able to suppress their own audit entry by choosing a header. That marker is
+  itself a legal user agent, so a caller who sends it verbatim is indistinguishable in the
+  log from one whose value was refused. Closing that needs a separate field, which means
+  changing `FIELD_ORDER`, which breaks every historical digest and is the Managing
+  Director's sign-off. The ambiguity is far smaller than losing the entry, so it is
+  accepted. Recorded here rather than left in a docstring.
 ● **Form submissions, "key field values"** (`policy/AUD-001-audit-controls.md`). No field in
   `FIELD_ORDER` can carry a value, by the same decision that keeps old and new values out
   of the log. The clause is unimplementable under that decision. Recorded as a deviation.

@@ -1,9 +1,9 @@
 """The register API: read the registers, create and update records, verify the log.
 
 Every mutating route is gated by `auth.required` and carries a cross-site request forgery
-token. Every mutation goes through `records.mutate`, which writes the chained audit entry
-before the register is touched, so there is no path from a request to a stored record that
-skips the log.
+token. Every mutation goes through `records.mutate`, which stages the register, writes the
+chained audit entry, then commits, so there is no path from a request to a stored record
+that skips the log.
 """
 
 from __future__ import annotations
@@ -13,11 +13,17 @@ from werkzeug.wrappers.response import Response
 
 from .. import auth, csrf, records, store
 from ..audit import AuditFieldError, ChainVerdict, verify_log
-from ..audit.anchor import AnchorError, AnchorRollbackError, read_anchor
+from ..audit.anchor import (
+    AnchorError,
+    AnchorRollbackError,
+    AnchorTamperError,
+    read_anchor,
+)
 from ..audit.journal import JournalChain, JournalError, read_entries
+from ..audit.keys import AuditKeyError
+from ..audit.validation import recordable
 from ..records import RecordError
 from ..store import StoreError
-from .auth_routes import recordable
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -48,16 +54,16 @@ def _chain() -> JournalChain:
 
 def _client_ip() -> str:
     """Return the caller's address, from the connection rather than a header."""
-    return recordable(request.remote_addr or "unknown", 45)
+    return recordable("source_ip", request.remote_addr or "unknown")
 
 
 def _user_agent() -> str:
     """Return the caller's user agent, or a marker if it cannot be recorded.
 
     A caller must never be able to veto their own audit entry by choosing a header the
-    audit boundary refuses. See `auth_routes._recordable`.
+    audit boundary refuses. See `complyops.audit.validation.recordable`.
     """
-    return recordable(request.headers.get("User-Agent") or "unknown", 512)
+    return recordable("user_agent", request.headers.get("User-Agent") or "unknown")
 
 
 @api_bp.errorhandler(RecordError)
@@ -146,7 +152,7 @@ def list_records(register: str) -> Response:
 @auth.required
 @csrf.required
 def create_record(register: str) -> tuple[Response, int]:
-    """Create one record, writing its audit entry first."""
+    """Create one record. The register is staged, the entry written, then committed."""
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         raise RecordError("the request body must be an object")
@@ -169,7 +175,7 @@ def create_record(register: str) -> tuple[Response, int]:
 @auth.required
 @csrf.required
 def update_record(register: str, record_id: str) -> Response:
-    """Update one record, writing its audit entry first."""
+    """Update one record. The register is staged, the entry written, then committed."""
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         raise RecordError("the request body must be an object")
@@ -224,7 +230,24 @@ def verify() -> Response:
     from ..audit import verification_keys  # noqa: PLC0415 - read at call time
 
     chain = _chain()
-    keys = verification_keys() or {chain.signing_key_id: chain.signing_key}
+    try:
+        keys = verification_keys() or {chain.signing_key_id: chain.signing_key}
+    except AuditKeyError:
+        # A verdict, never an exception. `key_unavailable` exists for exactly a mistyped
+        # retired key, and reporting it as anything else would be a false tamper alarm.
+        current_app.logger.exception("verification could not assemble the key set")
+        return jsonify(
+            {
+                "ok": False,
+                "tampered": False,
+                "invalidUnderCurrentRules": False,
+                "keyUnavailable": True,
+                "anchorUnusable": False,
+                "checked": 0,
+                "summary": "a configured verification key could not be read",
+                "note": "AUDIT_RETIRED_KEYS could not be read. See /api/diagnostics.",
+            }
+        )
     verdict, note = _verify_the_volume(chain, keys)
     return jsonify(
         {
@@ -232,6 +255,7 @@ def verify() -> Response:
             "tampered": verdict.tampered,
             "invalidUnderCurrentRules": verdict.invalid_under_current_rules,
             "keyUnavailable": verdict.key_unavailable,
+            "anchorUnusable": verdict.anchor_unusable,
             "checked": verdict.checked,
             "summary": verdict.summary(),
             "note": note,
@@ -260,23 +284,35 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
         )
     try:
         anchor = read_anchor(directory, chain.signing_key)
-    except AnchorRollbackError:
-        # A genuine older anchor was put back. That is tampering, and it is the one anchor
-        # fault that means so: every other one says the file is unreadable, oversized,
-        # malformed or unauthenticated, which is a fault to diagnose rather than an attack
-        # to report. Conflating them showed a corrupt file to an assessor as an attack.
-        current_app.logger.exception("verification refused a rolled-back anchor")
-        return ChainVerdict(
-            ok=False, checked=len(entries), reason="an older anchor was restored"
-        ), "The anchor on the volume is older than one already seen. See /api/diagnostics."
+    except AnchorTamperError as error:
+        # The anchor's STATE says interference: a genuine older anchor put back, an anchor
+        # signed by a key this server does not hold, or an anchor deleted beside a marker
+        # that survived. None of those happens by accident, and the last is the AUD-001
+        # delete control's own signal. Reporting them as a fault to diagnose turned a true
+        # positive into an all-clear on the read-out an assessor is shown.
+        current_app.logger.exception("verification refused the stored anchor")
+        # A FIXED reason per class, never the exception's own text: that carries the
+        # anchor's absolute path, and the summary reaches an operator banner and an audit
+        # record. The detail is in the log above.
+        reason = (
+            "an older anchor was restored"
+            if isinstance(error, AnchorRollbackError)
+            else "the anchor is not authenticated under the current key, or was removed"
+        )
+        return ChainVerdict(ok=False, checked=len(entries), reason=reason), (
+            "The anchor on the volume shows interference. See /api/diagnostics."
+        )
     except AnchorError:
-        current_app.logger.exception("verification could not use the stored anchor")
+        # An I/O error, a parse failure, an implausible size or an unreadable field. A fault
+        # to diagnose, reported as its own class rather than as a tightened field rule,
+        # which is a statement about an ENTRY and would be false here.
+        current_app.logger.exception("verification could not read the stored anchor")
         return ChainVerdict(
             ok=False,
             checked=len(entries),
-            invalid_under_current_rules=True,
-            reason="the anchor on the volume is not usable",
-        ), "The anchor on the volume could not be read or authenticated. See /api/diagnostics."
+            anchor_unusable=True,
+            reason="the anchor file could not be read",
+        ), "The anchor on the volume could not be read. See /api/diagnostics."
 
     if anchor is None:
         return ChainVerdict(

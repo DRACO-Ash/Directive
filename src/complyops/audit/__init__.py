@@ -4,6 +4,7 @@ from .anchor import (
     Anchor,
     AnchorError,
     AnchorRollbackError,
+    AnchorTamperError,
     re_anchor,
     read_anchor,
     write_anchor,
@@ -22,10 +23,11 @@ from .hashing import (
 from .keys import AuditKeyError, key_id, signing_key, verification_keys
 from .validation import (
     FIELD_LIMITS,
+    UNRECORDABLE,
     AuditFieldError,
     check_key_id,
-    is_recordable,
     normalise_fields,
+    recordable,
 )
 
 __all__ = [
@@ -33,9 +35,11 @@ __all__ = [
     "FIELD_ORDER",
     "GENESIS_HASH",
     "HASH_LENGTH",
+    "UNRECORDABLE",
     "Anchor",
     "AnchorError",
     "AnchorRollbackError",
+    "AnchorTamperError",
     "AuditChain",
     "AuditEntry",
     "AuditFieldError",
@@ -47,11 +51,11 @@ __all__ = [
     "entry_hash",
     "hashes_equal",
     "is_hash",
-    "is_recordable",
     "key_id",
     "normalise_fields",
     "re_anchor",
     "read_anchor",
+    "recordable",
     "signing_key",
     "verification_keys",
     "verify_log",
