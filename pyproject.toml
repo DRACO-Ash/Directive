@@ -33,6 +33,11 @@ output = "coverage.xml"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The vendored skill under .claude/ is third-party content: its scripts ship with the
+# skill package and are not this project's source. Formatting or linting them would edit
+# a file we did not write and cannot maintain, and a reformat would make the next skill
+# update conflict for no gain.
+extend-exclude = [".claude"]
 src = ["src", "tests"]
 
 [tool.ruff.lint]

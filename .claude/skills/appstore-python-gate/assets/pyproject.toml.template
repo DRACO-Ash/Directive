@@ -1,0 +1,36 @@
+# Minimal pyproject.toml for a Bluestaq App Store Python container application.
+#
+# Change the three values below. Add nothing else.
+#
+# The [project] table is mandatory: a pyproject.toml carrying only build-system
+# configuration is skipped by the dependency resolver with a warning, so it buys
+# you nothing. Deliberately no [project.dependencies] list; neither application
+# known to clear the gate declares one, and declaring dependencies twice lets the
+# two drift. Dependencies belong in the .in files and their locked outputs, which
+# is what the platform test stage and the Dockerfile actually install.
+#
+# Keep version in step with your single source of truth automatically. If you
+# have a bump_version.sh, have it rewrite that line; never edit it by hand.
+#
+# Side effect worth knowing: declaring requires-python may tighten the target
+# version your linter infers, surfacing new lint findings. Fix them, do not
+# suppress them.
+
+[project]
+name = "your-app"
+version = "0.1.0"
+description = "One line, plain English."
+requires-python = ">=3.12"
+
+# Security linting. The S rules are the Bandit checks: hardcoded secrets (S105),
+# weak hashes (S324), missing request timeouts (S113), unsafe deserialisation
+# (S301), SQL built by string formatting (S608), eval on untrusted input (S307).
+# Runs in under a second. Expand to select = ["ALL"] once the codebase is clean.
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]   # assert is the point of a test
