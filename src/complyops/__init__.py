@@ -56,6 +56,7 @@ def create_app() -> Flask:
     app.register_blueprint(console_bp)
     app.register_blueprint(api_bp)
 
+    _log_input_presence(app)
     _log_boot_verdict(app)
     return app
 
@@ -135,8 +136,6 @@ def _log_boot_verdict(app: Flask) -> None:
     else:
         app.logger.warning("boot: %s", verdict.log_line())
 
-    _log_input_presence(app)
-
 
 def _log_input_presence(app: Flask) -> None:
     """Write the credential presence map to the log, as booleans and length bands only.
@@ -149,7 +148,15 @@ def _log_input_presence(app: Flask) -> None:
     without authenticating to this application, which is exactly what that case needs.
 
     Never a value and never an exact length, the same rule the route follows.
+
+    Called from the factory rather than from the storage narrative, deliberately. It was
+    inside `_log_boot_verdict` after that function's early return, so a storage probe
+    failure suppressed the credential recovery channel, which is backwards: the two
+    diagnose different faults and neither should be able to silence the other.
     """
+    if not app.logger.handlers:
+        logging.basicConfig(level=logging.INFO)
+
     from .views.health import CRITICAL_INPUTS, input_report  # noqa: PLC0415 - avoids a cycle
 
     try:

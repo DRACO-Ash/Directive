@@ -1,10 +1,12 @@
 """The registers, and the one path by which any of them changes.
 
 Every mutation goes through :func:`mutate`, which writes one chained audit entry per
-AUD-001 and refuses the change if the entry cannot be written. That ordering is the point:
-the audit entry is derived and validated BEFORE the register is touched, so a record change
-that could not be evidenced never happens at all. It is what makes the log an account of
-what the application did rather than a best-effort side note.
+AUD-001 and refuses the change if the entry cannot be written. The ordering is stage, sign,
+commit: the register's new contents go to a temporary file first, the audit entry is derived
+and validated second, and the staged file is renamed into place only on a clean exit. So a
+record change that could not be evidenced never reaches the register, and the realistic
+failures (space, permissions, serialisation) happen with nothing yet recorded. It is what
+makes the log an account of what the application did rather than a best-effort side note.
 
 The state vocabularies below are the closed sets the audit module has been waiting for.
 Until now `old_state` and `new_state` were held to a character rule that rejects the common

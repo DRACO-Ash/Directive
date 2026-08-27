@@ -19,6 +19,7 @@ from complyops import (
     records,
     store,
 )
+from complyops.audit import AuditFieldError, normalise_fields
 from complyops.audit.journal import JournalError
 
 #: Real key material, published here on purpose: it is not a credential.
@@ -726,8 +727,9 @@ def test_verification_reports_a_volume_that_disagrees_with_this_process(
     verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
     assert verdict["ok"] is False
     assert verdict["tampered"] is True
-    assert "older than one already seen" in verdict["note"]
+    assert "shows interference" in verdict["note"]
     assert str(tmp_path) not in verdict["note"], "no server-side path in a client body"
+    assert str(tmp_path) not in verdict["summary"], "nor in the summary"
 
 
 def test_an_unknown_register_creates_nothing(signed_in: FlaskClient) -> None:
@@ -753,7 +755,57 @@ def test_a_patch_body_that_is_not_an_object_is_refused(signed_in: FlaskClient) -
 # ============================ a caller may not veto their own entry ============================
 
 
-HOSTILE_AGENT = {"User-Agent": "Mozilla/5.0 \u00e9vil"}
+#: Every shape the audit boundary refuses, not only the non-ASCII one. A helper that
+#: mirrored the character rule alone shipped once and left this hole open: a printable
+#: ASCII agent beginning `-` passed the mirror, the boundary refused it, and the whole
+#: entry was discarded, so an unauthenticated caller could still probe the callback route
+#: leaving nothing behind.
+HOSTILE_AGENTS = {
+    "non-ascii": "Mozilla/5.0 \u00e9vil",
+    "formula lead =": "=cmd|'/c calc'!A1",
+    "formula lead -": "-Mozilla/5.0 (probe)",
+    "formula lead +": "+44 probe",
+    "formula lead @": "@SUM(A1)",
+    "trailing whitespace": "Mozilla/5.0 ",
+    "leading whitespace": " Mozilla/5.0",
+    "double quote": 'Mozilla/5.0 "probe"',
+    "over the cap": "M" * 900,
+    "line separator": "Mozilla\u2028evil",
+    "empty": "",
+    "null byte": "Mozilla\x00evil",
+}
+HOSTILE_AGENT = {"User-Agent": HOSTILE_AGENTS["non-ascii"]}
+
+
+@pytest.mark.parametrize("shape", list(HOSTILE_AGENTS))
+def test_no_header_shape_can_suppress_the_callback_entry(
+    app: Flask, client: FlaskClient, shape: str
+) -> None:
+    """Every shape the boundary refuses, on the unauthenticated production-reachable route.
+
+    The invariant is that an entry is ALWAYS written, never that the marker always appears:
+    a value the helper can bring inside the rules by trimming or truncating is recorded as
+    the trimmed value, which is better evidence than a marker. What a caller must never be
+    able to do is leave nothing behind.
+    """
+    entries = app.extensions["complyops_chain"].entries
+    client.get("/auth/callback?code=x&state=forged", headers={"User-Agent": HOSTILE_AGENTS[shape]})
+
+    assert [entry.action for entry in entries] == ["LOGIN_FAILED"], shape
+    assert normalise_fields(entries[0].covered_fields()), "the entry satisfies the boundary"
+
+
+@pytest.mark.parametrize("shape", list(HOSTILE_AGENTS))
+def test_no_header_shape_can_deny_a_sign_in(app: Flask, client: FlaskClient, shape: str) -> None:
+    """A caller must not be able to refuse their own sign-in by choosing a header either."""
+    landed = client.post(
+        "/sign-in",
+        data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": form_token(client)},
+        headers={"User-Agent": HOSTILE_AGENTS[shape]},
+    )
+
+    assert landed.headers["Location"].endswith("/console"), shape
+    assert [entry.action for entry in app.extensions["complyops_chain"].entries] == ["LOGIN"]
 
 
 def test_a_header_cannot_suppress_an_audit_entry_on_the_callback(
@@ -802,6 +854,17 @@ def test_a_header_cannot_suppress_a_register_entry(app: Flask, signed_in: FlaskC
     assert entries[-1].user_agent == "unrecordable"
 
 
+@pytest.mark.parametrize(
+    "shape", ["non-ascii", "formula lead =", "formula lead -", "double quote", "line separator"]
+)
+def test_a_value_that_cannot_be_brought_inside_the_rules_is_marked(
+    app: Flask, client: FlaskClient, shape: str
+) -> None:
+    """And where trimming cannot help, the marker appears rather than a partial value."""
+    client.get("/auth/callback?code=x&state=forged", headers={"User-Agent": HOSTILE_AGENTS[shape]})
+    assert app.extensions["complyops_chain"].entries[0].user_agent == "unrecordable", shape
+
+
 def test_the_marker_is_not_a_transliteration(app: Flask, client: FlaskClient) -> None:
     """The rule forbids transliterating a value. This records that it could not be recorded."""
     client.post(
@@ -847,8 +910,13 @@ def test_a_corrupt_anchor_is_not_reported_as_an_attack(
     verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
     assert verdict["ok"] is False
     assert verdict["tampered"] is False, "a corrupt file is not evidence of tampering"
-    assert verdict["invalidUnderCurrentRules"] is True
-    assert "could not be read or authenticated" in verdict["note"]
+    assert verdict["anchorUnusable"] is True
+    assert verdict["invalidUnderCurrentRules"] is False, (
+        "that flag means a tightened rule on an ENTRY, which is a false statement here"
+    )
+    assert "could not be read" in verdict["note"]
+    assert "does not satisfy the current field rules" not in verdict["summary"]
+    assert "entry None" not in verdict["summary"]
 
 
 def test_a_restored_older_anchor_is_reported_as_an_attack(
@@ -864,10 +932,10 @@ def test_a_restored_older_anchor_is_reported_as_an_attack(
 
     verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
     assert verdict["tampered"] is True
-    assert "older than one already seen" in verdict["note"]
+    assert "shows interference" in verdict["note"]
     # The summary is what reaches an audit record or an operator banner, so the reason
     # itself has to name the rollback rather than a generic read fault.
-    assert "an older anchor was restored" in verdict["summary"]
+    assert "older anchor was restored" in verdict["summary"]
 
 
 def test_the_export_survives_an_unusable_anchor(tmp_path: Path, signed_in: FlaskClient) -> None:
@@ -933,3 +1001,77 @@ def test_a_tab_in_the_next_path_cannot_bounce_the_operator_off_this_origin(
         },
     )
     assert landed.headers["Location"].endswith("/console")
+
+
+def test_a_refusal_that_cannot_be_recorded_is_logged(
+    app: Flask, client: FlaskClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """There is nothing left to substitute at that point, so it is logged rather than retried.
+
+    `recordable` already stops a caller's headers vetoing the entry and the actor here is a
+    fixed placeholder, so reaching this line means the boundary refused something no caller
+    controls. Asserted because it is live code, not a defensive branch nothing reaches.
+    """
+
+    def refuse(entry_fields: object) -> None:
+        raise AuditFieldError("nothing here can be recorded")
+
+    chain = app.extensions["complyops_chain"]
+    original = chain.append
+    chain.append = refuse  # type: ignore[method-assign]
+    try:
+        with caplog.at_level("ERROR"):
+            client.get("/auth/callback?code=x&state=forged")
+    finally:
+        chain.append = original  # type: ignore[method-assign]
+
+    assert any("refusal itself could not be recorded" in r.getMessage() for r in caplog.records)
+
+
+def test_an_anchor_signed_by_another_key_is_reported_as_interference(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """An anchor this server cannot authenticate did not get there by accident.
+
+    Splitting off only the rollback put this case in the "fault to diagnose" class, which
+    turned a true positive into an all-clear on the read-out an assessor is shown.
+    """
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    target = Path(tmp_path) / "audit-anchor.json"
+    document = json.loads(target.read_text(encoding="utf-8"))
+    document["mac"] = "f" * 64
+    target.write_text(json.dumps(document), encoding="utf-8")
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["tampered"] is True, "an unauthenticated anchor is interference"
+    assert verdict["anchorUnusable"] is False
+    assert "not authenticated under the current key" in verdict["summary"]
+    assert str(tmp_path) not in verdict["summary"]
+
+
+def test_a_deleted_anchor_beside_a_surviving_marker_is_reported_as_interference(
+    tmp_path: Path, signed_in: FlaskClient
+) -> None:
+    """The AUD-001 delete control's own signal. It must not read as a read fault."""
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    (Path(tmp_path) / "audit-anchor.json").unlink()
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["tampered"] is True
+    assert "was removed" in verdict["summary"]
+
+
+def test_a_mistyped_retired_key_is_a_verdict_not_an_exception(
+    monkeypatch: pytest.MonkeyPatch, signed_in: FlaskClient
+) -> None:
+    """A verdict, never an exception. `keyUnavailable` exists for exactly this."""
+    monkeypatch.setenv("AUDIT_RETIRED_KEYS", "k0:not-hex-at-all")
+
+    verdict = signed_in.post("/api/audit/verify", headers=token_for(signed_in)).get_json()
+    assert verdict["ok"] is False
+    assert verdict["keyUnavailable"] is True
+    assert verdict["tampered"] is False, "a configuration fault is not evidence of tampering"

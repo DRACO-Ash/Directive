@@ -88,6 +88,7 @@ class ChainVerdict:
     broken_entry_hash: str | None = None
     invalid_under_current_rules: bool = False
     key_unavailable: bool = False
+    anchor_unusable: bool = False
 
     @property
     def tampered(self) -> bool:
@@ -97,7 +98,12 @@ class ChainVerdict:
         raise a tamper alarm for a tightened field rule or a mistyped retired key, which is
         the false alarm the other two flags exist to prevent.
         """
-        return not self.ok and not self.invalid_under_current_rules and not self.key_unavailable
+        return (
+            not self.ok
+            and not self.invalid_under_current_rules
+            and not self.key_unavailable
+            and not self.anchor_unusable
+        )
 
     def summary(self) -> str:
         """Return a one-line summary fit for an audit record or an operator banner.
@@ -110,6 +116,15 @@ class ChainVerdict:
         """
         if self.ok:
             return f"chain intact across {self.checked} entries"
+        if self.anchor_unusable:
+            # Its own branch, and it must not name an entry index. Reusing the tightened
+            # field-rule branch produced "entry None does not satisfy the current field
+            # rules; its digest is unbroken" for a corrupt anchor file, which is a false
+            # statement about an entry that was never examined.
+            return (
+                f"the trusted anchor could not be read or used, so the {self.checked} "
+                f"entries present were not verified against it: {self.reason}"
+            )
         if self.invalid_under_current_rules:
             return (
                 f"entry {self.break_index} does not satisfy the current field rules; "
