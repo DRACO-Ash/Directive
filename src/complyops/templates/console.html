@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="shell">
+  <nav class="sidebar" aria-label="Sections">
+    <div class="brand">
+      <div class="brand-name">Compliance Operations</div>
+      <div class="brand-sub">Bluestaq Limited</div>
+    </div>
+    <ul class="nav">
+      <li><button type="button" data-view="dashboard" aria-current="page">Dashboard</button></li>
+      {% for name, spec in registers.items() %}
+      <li>
+        <button type="button" data-view="{{ name }}">
+          <span>{{ spec.title }}</span>
+          <span class="count" data-count="{{ name }}">0</span>
+        </button>
+      </li>
+      {% endfor %}
+      <li><button type="button" data-view="audit">Audit log</button></li>
+    </ul>
+    <div class="who">
+      <div class="who-actor">{{ actor }}</div>
+      <div class="who-mode">
+        {% if verified %}Verified via Entra ID{% else %}Self-asserted identity{% endif %}
+      </div>
+      <form method="post" action="{{ url_for('auth.sign_out') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="action">Sign out</button>
+      </form>
+    </div>
+  </nav>
+
+  <main class="main" id="main">
+    {% if banner %}<div class="banner" role="status">{{ banner }}</div>{% endif %}
+    <div class="notice" id="notice" role="status" aria-live="polite"></div>
+
+    <div class="head">
+      <h1 id="view-title">Dashboard</h1>
+      <div class="row-actions">
+        <a class="button" href="{{ url_for('api.export') }}">Export evidence pack</a>
+        <button type="button" class="action" id="verify">Verify chain</button>
+      </div>
+    </div>
+    <p class="sub" id="view-sub">The compliance operating rhythm, its registers, and the audit trail.</p>
+
+    <section id="panel-dashboard">
+      <div class="cards" id="cards"></div>
+      <p class="sub">
+        Every register change writes one chained audit entry before the record is stored.
+        A change that cannot be evidenced does not happen.
+      </p>
+    </section>
+
+    {% for name, spec in registers.items() %}
+    <section id="panel-{{ name }}" class="hidden">
+      <form class="record" data-register="{{ name }}">
+        <div class="fields">
+          <div>
+            <label for="{{ name }}-title">Title</label>
+            <input id="{{ name }}-title" name="title" maxlength="200" required>
+          </div>
+          <div>
+            <label for="{{ name }}-owner">Owner</label>
+            <input id="{{ name }}-owner" name="owner" maxlength="120">
+          </div>
+          <div>
+            <label for="{{ name }}-state">State</label>
+            <select id="{{ name }}-state" name="state">
+              {% for state in spec.states %}<option value="{{ state }}">{{ state.replace('_', ' ') }}</option>{% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="{{ name }}-reference">Reference</label>
+            <input id="{{ name }}-reference" name="reference" maxlength="64">
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <label for="{{ name }}-summary">Summary</label>
+          <textarea id="{{ name }}-summary" name="summary" maxlength="2000"></textarea>
+        </div>
+        <div style="margin-top:14px" class="row-actions">
+          <button type="submit" class="primary">Add to {{ spec.title|lower }}</button>
+        </div>
+      </form>
+
+      <table>
+        <caption>{{ spec.title }}. Newest first.</caption>
+        <thead>
+          <tr><th scope="col">Reference</th><th scope="col">Title</th><th scope="col">Owner</th>
+              <th scope="col">State</th><th scope="col">Updated</th><th scope="col">Move to</th></tr>
+        </thead>
+        <tbody data-rows="{{ name }}"></tbody>
+      </table>
+      <div class="empty hidden" data-empty="{{ name }}">Nothing recorded yet.</div>
+    </section>
+    {% endfor %}
+
+    <section id="panel-audit" class="hidden">
+      <table>
+        <caption>Audit entries written by this process, newest first. AUD-001.</caption>
+        <thead>
+          <tr><th scope="col">Timestamp</th><th scope="col">Actor</th><th scope="col">Action</th>
+              <th scope="col">Resource</th><th scope="col">Transition</th><th scope="col">Entry hash</th></tr>
+        </thead>
+        <tbody id="audit-rows"></tbody>
+      </table>
+      <div class="empty hidden" id="audit-empty">No entries yet. Add a record and it will appear here.</div>
+    </section>
+  </main>
+</div>
+<script src="{{ url_for('static', filename='console.js') }}" defer></script>
+{% endblock %}

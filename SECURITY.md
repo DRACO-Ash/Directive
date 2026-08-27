@@ -43,10 +43,11 @@ Two limits are stated openly rather than left for a reader to discover:
   first-use marker together, which leaves a state indistinguishable from a fresh install.
 ● The same actor, holding no key, can restore a genuine older anchor alongside a matching
   truncation of the log. The refusal to move backwards is held in memory PER PROCESS, and
-  the container serves two workers, so the second worker accepts the rolled-back anchor
-  with no restart at all; a restart clears it for both. The result is worse than the case
+  a restart clears it, which on this platform is routine. The result is worse than the case
   above: it does not look like a missing anchor, it looks like clean shorter history, and
-  verification positively certifies it as intact.
+  verification positively certifies it as intact. From V2.1 the container runs a single
+  worker, so a second process no longer accepts the rolled-back anchor without a restart;
+  that narrows the window and does not close the gap.
 
   Closing both needs corroboration against a store that actor does not control, which for
   this build is the exported evidence pack. That detects the removal of entries a prior

@@ -11,8 +11,10 @@ the length increment are one critical section: without the lock, two concurrent 
 read the same head, and the log then fails its own verification with no tampering at
 all. A false tamper alarm on the evidence an assessor is shown is worse than no control.
 The lock covers this process only, and the persistent write is the remaining gap: see the
-note on that in `append`. The container runs two gunicorn workers, so nothing here is
-shared between them yet.
+note on that in `append`. The container therefore runs a SINGLE gunicorn worker with
+threads: two workers would each hold their own view of the head, append from it, and write
+two entries claiming the same predecessor, and that log fails its own verification with no
+attacker anywhere near it. Raising the worker count is blocked on an inter-process lock.
 """
 
 from __future__ import annotations
@@ -155,6 +157,16 @@ class AuditChain:
         # rotation and the next append. Stamping the current key into the anchor during
         # that window made verify_log report untampered evidence as re-signed.
         self._tail_key_id = anchor.key_id if anchor else self._key_id
+
+    @property
+    def key_id(self) -> str:
+        """Return the identifier of the key this chain signs NEW entries with.
+
+        Not the key the tail was signed with, which is what the anchor records: between a
+        rotation and the next append those differ, and conflating them made verification
+        report untampered evidence as re-signed.
+        """
+        return self._key_id
 
     def append(self, fields: Mapping[str, object]) -> AuditEntry:
         """Validate, sign, and append one entry, advancing the head.

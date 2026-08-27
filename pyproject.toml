@@ -1,6 +1,6 @@
 [project]
 name = "comply-ops"
-version = "2.0"
+version = "2.1"
 description = "Bluestaq Compliance Operations Console"
 requires-python = ">=3.12"
 

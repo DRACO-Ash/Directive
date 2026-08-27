@@ -6,4 +6,4 @@ find nothing at runtime. A test asserts this matches pyproject.toml so the two c
 drift.
 """
 
-__version__ = "2.0"
+__version__ = "2.1"
