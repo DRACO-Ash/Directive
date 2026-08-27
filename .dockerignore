@@ -13,6 +13,7 @@ tests
 docs
 scripts
 coverage.xml
+sbom.cdx.json
 .coverage
 htmlcov
 .env

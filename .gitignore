@@ -16,5 +16,6 @@ dist/
 .mypy_cache/
 .ruff_cache/
 coverage.xml
+sbom.cdx.json
 .coverage
 htmlcov/

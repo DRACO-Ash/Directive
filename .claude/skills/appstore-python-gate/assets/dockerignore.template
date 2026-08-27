@@ -1,0 +1,19 @@
+# Keep the build context lean and the test toolchain out of the image.
+# Note the two separate contracts: tests/ must be INSIDE the package, because
+# the platform test stage runs pytest against the package root before it builds
+# any image, but tests/ must be OUTSIDE the image.
+.git/
+.venv/
+tests/
+scripts/
+docs/
+*.md
+!README.md
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+coverage.xml
+.env
+*.log

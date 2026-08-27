@@ -74,4 +74,35 @@ for LOCKFILE in requirements.txt requirements-dev.txt; do
   fi
 done
 
+echo "== software bill of materials =="
+# A CycloneDX SBOM of the RUNTIME tree, which is the tree the image installs. Emitted by
+# pip-audit, so this leg adds no dependency: the alternative was a new packaging tool in
+# the build path, which is the thing a supply-chain control should add least of.
+#
+# Why generate one at all when the platform generates its own. Two reasons, both dated.
+# The App Store's Dependency Scanning stage reports a crash and a genuine advisory with the
+# same message, and the presence of an SBOM artefact is what tells the two apart; holding
+# our own means a gate failure can be triaged rather than guessed at. And the Cyber
+# Resilience Act's vulnerability reporting duty binds from 11 September 2026 with a 24-hour
+# early warning, which leaves no time to work out which shipped versions carry a component.
+#
+# Be exact about what this file is and is not. It is CycloneDX 1.4, inside the 1.4 to 1.6
+# range the App Store accepts for a bring-your-own SBOM. It carries component names,
+# versions and the dependency graph. It does NOT carry component hashes, licences, or the
+# generating tool's own identity, so it does NOT satisfy the CISA 2026 minimum elements.
+# The hashes exist in requirements.txt and merging them in by hand would make this file
+# less trustworthy, not more. Closing that gap needs a real SBOM generator; recorded in
+# docs/DEPLOYMENT.md rather than implied to be done.
+if "$PY" -m pip_audit -r requirements.txt --format cyclonedx-json \
+     --progress-spinner off -o sbom.cdx.json > "$REPORT" 2>&1; then
+  echo "sbom.cdx.json written, $("$PY" -c 'import json,sys; print(len(json.load(open("sbom.cdx.json"))["components"]))') components"
+elif grep -qiE "temporary failure|connection|resolve|timed out|network|unreachable" "$REPORT"; then
+  echo "SKIPPED: the advisory service was unreachable, so no SBOM was written."
+  echo "Compensating control: the CI job on a networked runner fails hard on this."
+else
+  cat "$REPORT"
+  echo "FAIL: the SBOM could not be generated"
+  exit 1
+fi
+
 echo "LOOP: PASS"
