@@ -61,6 +61,24 @@ jobs:
       - name: Dependency vulnerabilities (tooling)
         run: python -m pip_audit -r requirements-dev.txt
 
+      # The local loop emits this and Continuous Integration did not, so the two legs
+      # disagreed about what a green run means. This runner is the binding one: it has
+      # network access, so a failure to generate is a hard failure rather than a skip.
+      # The artefact is what distinguishes an App Store analyser crash from a genuine
+      # advisory, and the Cyber Resilience Act reporting duty binds on 11 September 2026.
+      - name: Software bill of materials
+        run: |
+          python -m pip_audit -r requirements.txt --format cyclonedx-json \
+            --progress-spinner off -o sbom.cdx.json
+          test -s sbom.cdx.json
+
+      - name: Keep the bill of materials with the run
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cdx.json
+          retention-days: 90
+
       # The two real-permission readiness assertions are skipped when the suite runs as
       # root. This job runs as a non-root user, so they must actually execute here. The
       # check reads the JUnit report rather than matching the human-readable skip
