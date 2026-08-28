@@ -243,16 +243,19 @@ Where this build satisfies the policy, where it exceeds it, and where it does no
 assessor reading this table should not have to take anything on trust, so each row says
 what to look at.
 
-Both source documents are stored verbatim in `policy/`, so every row can be checked
-against the clause it claims rather than against a paraphrase. Note that the approval row
-of each is unsigned: Adam Field's date is blank on both. They are treated as binding here,
-and that gap is recorded rather than assumed closed.
+Both source documents are held in the Bluestaq Ltd policy library, not in this repository:
+they are internal policy instruments with their own classification and review cycle, and
+this application is not classified. `policy/README.md` names them and says how to obtain
+the current versions. Each row below cites its clause by reference, so it is read beside
+the document rather than against a copy that could go stale here. Note that the approval
+row of each is unsigned: Adam Field's date is blank on both. They are treated as binding
+here, and that gap is recorded rather than assumed closed.
 
 | Policy requirement | This build | Evidence |
 | --- | --- | --- |
 | AUD-001, SHA-256 hash over timestamp, user, action, resource | **Exceeded.** HMAC-SHA256 under a server-held key, over the full AUD-001 event field set, chained to the previous entry. Deviation recorded for the Managing Director's sign-off. | `src/complyops/audit/hashing.py`, golden vector in `tests/test_audit_hashing.py` |
 | AUD-001, write-once from the application's perspective | **Met by design, not yet implemented.** `AuditChain.append` is the only path that produces an entry and it never updates or deletes, but nothing persists an entry yet, so this is a property of code that does not exist. | `AuditChain.append` |
-| AUD-001, event field set | **Met for four categories, deviated for three.** One fixed shape rather than one per category, because a digest over a varying field set cannot be verified without knowing the variant. Authentication, Task management, Register operations and Audit export map onto `FIELD_ORDER` directly. Incident management and Administration are covered by the old-and-new-value deviation below. **Form submissions asks for "key field values" and no field can carry a value**, so that clause is unimplementable under the same decision and is recorded as a deviation in its own right, not covered by the row below. | `FIELD_ORDER`, `policy/AUD-001-audit-controls.md` |
+| AUD-001, event field set | **Met for four categories, deviated for three.** One fixed shape rather than one per category, because a digest over a varying field set cannot be verified without knowing the variant. Authentication, Task management, Register operations and Audit export map onto `FIELD_ORDER` directly. Incident management and Administration are covered by the old-and-new-value deviation below. **Form submissions asks for "key field values" and no field can carry a value**, so that clause is unimplementable under the same decision and is recorded as a deviation in its own right, not covered by the row below. | `FIELD_ORDER`; AUD-001 clause, see `policy/README.md` |
 | AUD-001, old and new value of a changed field | **Deviated, deliberately, and the deviation is weaker than first claimed.** Field NAMES only in `fields_changed`, capped at 128 bytes; an enumerated workflow state in `old_state` and `new_state` under a character rule that rejects the common SHAPES of record content (a space, lower case, an `@`, over 32 characters) but does not make it impossible: a single upper-case token such as `HIGGINS` or `SW1A1AA` satisfies it. A closed state vocabulary would be structural and is not yet definable, because the real state set is not knowable until the records module. Caller discipline is load-bearing in the meantime. Ash's decision, recorded for sign-off; the vocabulary is `TBC, re-verify`. | `src/complyops/audit/validation.py` |
 | AUD-001, 24-month active retention, annual CSV export, annual pruning | **Met by design, not yet implemented.** The anchor records the archive boundary, the chain carries it across an append, and `verify_log` walks from it, so a pruned active log verifies rather than reading as tampered. The export and prune procedure itself lands with the export module. | `Anchor.after_prune`, `test_the_archive_boundary_survives_a_prune_a_restart_and_an_append` |
 | AUD-001, Q-06 quarterly hash verification on a sample | **Mechanism met, procedure open.** `verify_sample` is the sampling entry point and cannot report a truncation, by construction; `verify_log` verifies the whole ACTIVE log and requires the anchor. There is no scheduler, no runbook step, and no caller, so the quarterly activity itself is not yet real. | `src/complyops/audit/chain.py` |
@@ -354,7 +357,7 @@ Field's to make:
   changing `FIELD_ORDER`, which breaks every historical digest and is the Managing
   Director's sign-off. The ambiguity is far smaller than losing the entry, so it is
   accepted. Recorded here rather than left in a docstring.
-● **Form submissions, "key field values"** (`policy/AUD-001-audit-controls.md`). No field in
+● **Form submissions, "key field values"** (AUD-001, see `policy/README.md`). No field in
   `FIELD_ORDER` can carry a value, by the same decision that keeps old and new values out
   of the log. The clause is unimplementable under that decision. Recorded as a deviation.
 ● **Monitoring and Alerting**, five Application Insights alerts the App Store does not
