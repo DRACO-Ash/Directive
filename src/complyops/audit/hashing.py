@@ -1,0 +1,168 @@
+"""Tamper-evident hashing for the compliance audit log (AUD-001).
+
+The control is a KEYED hash CHAIN, and each half of that answers a different attack.
+
+Chaining answers the edit. A per-entry hash over the entry's own fields detects an
+accidental change and nothing else: an edit is re-stampable and a deletion is
+invisible. Chaining each entry to its predecessor means an edit, a reorder, or a
+deletion breaks every hash after it.
+
+Keying answers the re-stamp. Chaining alone is only evidence against an attacker who
+cannot recompute the chain, and the attacker named in the threat model can: somebody
+with write access to the stored log, using this documented algorithm. HMAC-SHA256 under a
+key held by the server and never written alongside the log means write access is no longer
+enough (`keys`).
+
+Neither half answers a wholesale rewrite from the genesis anchor, and nor can they: a
+chain is self-consistent by construction. That needs a trusted record of where the log
+should end, which is `anchor`, and `verify_chain` refuses to call a run intact unless it
+terminates where the anchor says it should.
+
+Two encoding choices are load-bearing.
+
+Length-prefixed fields. Each field is serialised as its UTF-8 byte length, a colon,
+then its bytes. A plain delimiter would let one field absorb another: with a pipe
+delimiter, actor ``a|b`` and action ``c`` produce the same payload as actor ``a`` and
+action ``b|c``, so two different records would share a digest. Length prefixes remove
+that ambiguity by construction.
+
+No truncation. Truncation cuts the work an attacker needs to forge a colliding entry,
+so all 64 hexadecimal characters are stored. AUD-001 does not ask for truncation; the
+flight plan mentioned a truncation policy and that is declined here, deliberately.
+
+Deviation from AUD-001, recorded for the Managing Director's sign-off. The policy
+specifies "a SHA-256 hash of the event data (timestamp + user + action + resource)".
+This build keys that digest with HMAC-SHA256, extends the covered fields to the full
+AUD-001 event set below, and chains each entry to its predecessor. Every difference is
+strictly stronger than the letter of the policy, and none of them weakens a stated
+control, but a deviation is still a deviation and belongs on the record rather than in
+a commit message.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+from collections.abc import Mapping
+from typing import TypeGuard
+
+#: The record fields covered by an entry hash, in the order they are serialised.
+#: Changing this tuple, its order, or the digest below breaks every historical entry, so
+#: it is an irreversible decision requiring the Managing Director's sign-off. A golden
+#: test vector pins it, so a change cannot pass the loop silently.
+#:
+#: The set covers every "Data Recorded" column in the AUD-001 Audit Log Scope table, in
+#: one fixed shape rather than one shape per event category, because a digest over a
+#: varying field set cannot be verified without knowing which variant was used. Fields
+#: that do not apply to an event are recorded empty, which the length-prefixed encoding
+#: represents unambiguously as `0:`.
+#:
+#: ● `timestamp`, `actor`, `action`, `resource`, `resource_id`: every category.
+#: ● `outcome`: the success or failure AUD-001 requires on an authentication event.
+#: ● `source_ip`, `user_agent`: the authentication category. Personal data, collected
+#:   deliberately under legitimate interest per POL-002 section 03.
+#: ● `fields_changed`: the NAMES of the fields a change touched, never their values.
+#: ● `old_state`, `new_state`: the before and after of an enumerated workflow state,
+#:   such as a task status or an incident phase, under a character rule that rejects the
+#:   common SHAPES of record content. Read `validation._STATE` before relying on that: it
+#:   is a large reduction in surface, NOT an impossibility, and `HIGGINS` satisfies it.
+#:   Caller discipline is load-bearing for every free-form field here, which is all of
+#:   them except `outcome`.
+FIELD_ORDER: tuple[str, ...] = (
+    "timestamp",
+    "actor",
+    "action",
+    "resource",
+    "resource_id",
+    "outcome",
+    "source_ip",
+    "user_agent",
+    "fields_changed",
+    "old_state",
+    "new_state",
+)
+
+#: The chain's anchor. The first entry has no predecessor, so it chains to all zeroes.
+GENESIS_HASH = "0" * 64
+
+#: HMAC-SHA256 rendered as lowercase hexadecimal, stored in full.
+HASH_LENGTH = 64
+
+_HEX_HASH = re.compile(r"\A[0-9a-f]{64}\Z")
+
+#: The fields that must carry a value on every entry, whatever the event category, kept
+#: here only so the parity test can hold it against `validation.REQUIRED_FIELDS`. The hash
+#: path does NOT enforce it: see the note in `canonical_payload`.
+_REQUIRED_NON_EMPTY = frozenset(
+    {"timestamp", "actor", "action", "resource", "resource_id", "\x00key_id"}
+)
+
+
+class AuditHashError(ValueError):
+    """Raised when an entry cannot be hashed. Always fail closed, never hash a guess."""
+
+
+def is_hash(value: object) -> TypeGuard[str]:
+    """Return whether ``value`` is a full lowercase hexadecimal digest.
+
+    A type guard, so a caller validating an untrusted document narrows the value at the
+    same time as checking it, rather than checking and then asserting the type again.
+    """
+    return isinstance(value, str) and bool(_HEX_HASH.match(value))
+
+
+def canonical_payload(fields: Mapping[str, str], key_id: str) -> bytes:
+    """Serialise the covered fields and the key identifier unambiguously.
+
+    Each element becomes ``<byte length>:<bytes>``, so no element can absorb another and
+    no two distinct records share a payload. The key identifier is covered so a signing
+    key cannot be swapped for a weaker one after the fact.
+
+    Expects fields already validated by :func:`complyops.audit.validation.normalise_fields`.
+    """
+    parts: list[bytes] = []
+    for name in (*FIELD_ORDER, "\x00key_id"):
+        value = key_id if name == "\x00key_id" else fields.get(name)
+        # Type is the ONE rule the hash path enforces, and it covers absence too, because
+        # `fields.get` yields None for a missing key. Two things it deliberately does NOT
+        # enforce:
+        #
+        # The required-field rule. Enforcing it here made `entry_hash` raise on legitimately
+        # written history the moment the required set was tightened, and the verifier
+        # reported that as "chain broken", against the rule that history written under
+        # looser rules must never read as tampering. A tightening now falls through to the
+        # boundary rule check, which reports `invalid_under_current_rules` truthfully.
+        #
+        # Emptiness. A field that does not apply to an event is recorded empty and the
+        # length prefix renders that unambiguously as `0:`, so an empty value is legitimate
+        # while an absent one is not: absence would silently shift every later field.
+        if not isinstance(value, str):
+            raise AuditHashError(f"audit entry is missing the {name.lstrip(chr(0))!r} field")
+        encoded = value.encode("utf-8")
+        parts.append(f"{len(encoded)}:".encode("ascii"))
+        parts.append(encoded)
+    return b"".join(parts)
+
+
+def entry_hash(previous_hash: str, fields: Mapping[str, str], *, key: bytes, key_id: str) -> str:
+    """Return the keyed, chained digest for one audit entry.
+
+    The digest covers the previous entry's hash, this entry's canonical payload, and the
+    key identifier, under HMAC-SHA256. An edit anywhere invalidates every digest after
+    it, and forging one needs the key as well as write access.
+    """
+    if not is_hash(previous_hash):
+        raise AuditHashError(
+            "previous hash must be 64 lowercase hexadecimal characters; "
+            f"use GENESIS_HASH for the first entry, got {previous_hash!r}"
+        )
+    if not key:
+        raise AuditHashError("no signing key supplied, so the entry cannot be signed")
+    message = previous_hash.encode("ascii") + canonical_payload(fields, key_id)
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def hashes_equal(left: str, right: str) -> bool:
+    """Compare two digests in constant time, so no comparison leaks by timing."""
+    return hmac.compare_digest(left.encode("ascii"), right.encode("ascii"))

@@ -1,0 +1,60 @@
+# Bluestaq App Store Python container template.
+#
+# Must live at the package root. A nested Dockerfile breaks both container
+# template detection and the build context.
+#
+# Three deliberate choices, each with a cost stated:
+#
+# 1. The base is pinned by DIGEST, not by tag. A tag is mutable, so two builds
+#    of the identical archive can produce different images and different
+#    Container Scan results. Digest pinning creates an obligation: a pinned
+#    digest never patches itself, so pair this with a scheduled job that
+#    refreshes the digest, rebuilds, re-scans, and opens a merge request.
+#
+# 2. The patch step is fail-CLOSED with a distinguishable marker. The common
+#    `|| true` makes a build where apt-get upgrade failed look identical to one
+#    where it succeeded, and the image carries unpatched packages into stage 9.
+#
+# 3. The install uses --require-hashes --no-deps against the runtime lock file
+#    only, so the image carries no test toolchain. Keep requirements-runtime.txt
+#    a strict, version-identical subset of requirements.txt: the runtime file is
+#    NOT a filename the dependency scanner reads, so a divergence would ship a
+#    version no gate examined.
+
+# Replace <digest> with a real one:  docker buildx imagetools inspect python:3.12-slim
+FROM python:3.12-slim@sha256:<digest> AS prep
+
+# Fail closed, but distinguishably. A transient mirror failure should be
+# visible in the log rather than silently indistinguishable from success.
+RUN set -eux; \
+    if ! (apt-get update && apt-get -y upgrade); then \
+        echo "PATCH_STEP_FAILED"; exit 1; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-runtime.txt ./
+RUN pip install --no-cache-dir --require-hashes --no-deps -r requirements-runtime.txt
+
+COPY src/ ./src/
+
+# Layer-flattening stage. Note honestly what this is and is not: `scratch` is
+# chosen so the image-policy scanner finds no setuid or setgid bit in layer
+# history. It is NOT a minimal image; the entire Debian userland is copied in,
+# so Container Scan sees every operating system package. Moving to a distroless
+# base would cut that surface materially and needs testing, not adopting on trust.
+FROM scratch
+COPY --from=prep / /
+
+# Non-root. Create the account in the prep stage if the base does not provide one.
+USER 65532:65532
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)"]
+
+CMD ["/usr/local/bin/gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000", "src.main:app"]
