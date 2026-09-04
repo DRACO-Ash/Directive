@@ -3,12 +3,9 @@
 ## Reporting a vulnerability
 
 Report a suspected vulnerability in the Bluestaq Compliance Operations Console
-(`comply-ops`) under the **Bluestaq Vulnerability Disclosure Policy (POL-006)**. Contact
-the UK Information Security Manager (ISM), who is the named owner for this application.
-
-`TBC, re-verify`: this file needs the POL-006 reporting address or link before the first
-deploy. It is deliberately absent rather than guessed, because inventing a contact address
-is exactly the kind of plausible fabrication that gets a security report sent nowhere.
+(`comply-ops`) to **dpa@bluestaq.uk**, under the **Bluestaq Vulnerability Disclosure
+Policy (POL-006)**. That address reaches the UK Information Security Manager, who is the
+named owner for this application.
 
 Please do not open a public issue for a security report, and please do not test against
 the production deployment. Include what you did, what you observed, and what you expected;
