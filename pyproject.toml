@@ -14,6 +14,12 @@ python_files = ["test_*.py"]
 # satisfies both without a wager.
 pythonpath = ["src", "tests"]
 addopts = "-q --strict-markers --strict-config"
+# A per-test wall-clock bound. Not tidiness: several controls in the audit path exist to
+# stop a named pipe or a device node blocking a read forever, and removing one of those
+# guards makes the suite HANG rather than fail. Without this the mutant is caught only by
+# whoever is watching, and in Continuous Integration it burns the six-hour job limit
+# instead of going red in seconds. 60 seconds is far above the whole suite's runtime.
+timeout = 60
 
 [tool.coverage.run]
 branch = true

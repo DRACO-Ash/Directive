@@ -263,3 +263,88 @@ def test_a_summary_entry_is_attributed_to_its_own_address(app: Flask, client: Fl
         "10.1.1.1": f"REPEATED_{10 - refusals.RECORDED_PER_WINDOW}",
         "10.2.2.2": f"REPEATED_{10 - refusals.RECORDED_PER_WINDOW}",
     }
+
+
+# ============================ the global budget ============================
+
+
+def test_a_many_address_flood_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`MAXIMUM_TRACKED` bounds memory and never bounded rows.
+
+    This module once stated that the per-address cap held a many-address flood to about
+    4096 entries and 1.66 MiB per window. Measurement disproved it: 6000 distinct addresses
+    wrote 6000 entries, 1.46 times the stated ceiling, scaling linearly with addresses. The
+    global budget is the bound that actually exists.
+    """
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 50)
+    recorded = sum(refusals.note(f"10.0.{i // 256}.{i % 256}", now=0.0).record for i in range(400))
+
+    assert recorded == 50, "rows are capped across all addresses, not per address"
+
+
+def test_the_budget_does_not_bite_inside_normal_use() -> None:
+    """A handful of addresses refusing a few times each must still be individually recorded."""
+    recorded = sum(
+        refusals.note(f"10.0.0.{address}", now=float(index)).record
+        for address in range(5)
+        for index in range(2)
+    )
+    assert recorded == 10, "ordinary refusals are unaffected by the flood bound"
+
+
+def test_the_overflow_is_counted_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bound that loses what it bounded records nothing, which is the failure it replaces."""
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 10)
+    for index in range(60):
+        refusals.note(f"10.1.{index // 256}.{index % 256}", now=0.0)
+
+    after = refusals.note("10.9.9.9", now=refusals.WINDOW_SECONDS + 1)
+
+    assert after.flood is not None
+    assert after.flood.refusals == 50, "every refusal past the budget is counted"
+    assert after.flood.addresses == 50, "and the number of distinct addresses is kept"
+
+
+def test_the_overflow_reaches_the_log(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the bound has to produce a real entry, not just a Decision."""
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 5)
+    for index in range(40):
+        client.get(
+            "/auth/callback?code=x&state=forged",
+            environ_base={"REMOTE_ADDR": f"10.2.{index // 256}.{index % 256}"},
+        )
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+    refusals._budget.started -= refusals.WINDOW_SECONDS + 1
+    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.3.3.3"})
+
+    flood = [
+        entry
+        for entry in app.extensions["complyops_chain"].entries
+        if entry.action == "LOGIN_FAILED_FLOOD"
+    ]
+    assert flood, "the overflow must be recorded"
+    assert flood[0].new_state == "REPEATED_35"
+    assert flood[0].source_ip == "multiple", "no per-address attribution past the budget"
+    assert flood[0].resource_id == "addresses-35"
+
+
+def test_a_flood_entry_satisfies_the_audit_boundary(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is an entry like any other, so it is held to the same rules."""
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 2)
+    for index in range(12):
+        client.get(
+            "/auth/callback?code=x&state=forged",
+            environ_base={"REMOTE_ADDR": f"10.4.0.{index}"},
+        )
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+    refusals._budget.started -= refusals.WINDOW_SECONDS + 1
+    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.5.5.5"})
+
+    for entry in app.extensions["complyops_chain"].entries:
+        assert normalise_fields(entry.covered_fields())
