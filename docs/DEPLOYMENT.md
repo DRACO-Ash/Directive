@@ -217,6 +217,23 @@ a recorded decision to add one. Open.
 application, and which national CSIRT applies. That is a legal determination, not an
 engineering one, and nothing here should be read as having made it.
 
+## Recorded decisions
+
+Settled by the Information Security Manager. Recorded here so they are not re-litigated by
+a later reviewer, a gate, or a fresh session.
+
+● **The repository is public, deliberately.** Ash's decision, 4 September 2026. The
+  application is not classified. This was raised as a finding on the strength of a sentence
+  in `docs/policy/README.md` claiming COMMERCIAL IN CONFIDENCE was "the classification of
+  this repository"; that sentence extended the two policy documents' own marking to the
+  whole repository, which was never right, and it has been removed. The documents
+  themselves are now referenced rather than held (`docs/policy/README.md`). They remain in
+  git history, readable at any commit from 20 August 2026; removing them from history would
+  need a rewrite and has not been judged necessary.
+● **Vulnerability reports go to `dpa@bluestaq.uk`**, under POL-006. Supplied by the ISM,
+  4 September 2026. This closes the AMD-001 section 10.6 disclosure-route gap and is the
+  route the Cyber Resilience Act reporting duty rests on from 11 September 2026.
+
 ## Known gaps before the first submission
 
 ● The image has not been built or probed. The Docker daemon is unavailable in the build environment, so the non-root user, the port binding, the absence of a package manager, the absence of setuid bits, and the flattened single layer are verified by construction against the Dockerfile, not by running the container. Before the deploy gate, build it and run: `docker run --rm --entrypoint sh comply-ops -c 'command -v apt-get dpkg apt pip pip3; find / -xdev -perm /6000; id'` and expect no command found, no path listed, and `uid=10001`.
@@ -266,7 +283,7 @@ here, and that gap is recorded rather than assumed closed.
 | AMD-001 10.6, static application security testing on every change | **Met.** `bandit` in the local loop and, as of this round, in Continuous Integration, which is the only leg that runs on every change. `ruff` and `mypy` are a linter and a type checker and do not satisfy this clause. | `scripts/verify.sh`, `.github/workflows/verify.yml` |
 | AMD-001 10.6, dependencies pinned with integrity verification | **Met.** Exact pins, hash-locked, installed with `--require-hashes`. | `requirements.txt`, `Dockerfile` |
 | AMD-001 10.6, security headers on all responses | **Met.** All four named headers, plus three more, on every response including probes, redirects and error pages, applied OVER anything a route set. The previous implementation was first-writer-wins, so a route could serve a wider policy and keep it; a narrower per-route policy now goes through an explicit `tighten` call and there is no door for a wider one. | `src/complyops/security_headers.py`, `tests/test_security_headers.py` |
-| AMD-001 10.6, SECURITY.md linking POL-006 | **Partially met.** The file exists and names POL-006 and the responsible owner, but carries no reporting address or link, so a reporter outside the company cannot actually report. `TBC, re-verify`: the ISM must supply the address; inventing one would breach the no-invention rule. | `SECURITY.md` |
+| AMD-001 10.6, SECURITY.md linking POL-006 | **Met.** The file names POL-006, the responsible owner, and the reporting address `dpa@bluestaq.uk`, supplied by the ISM on 4 September 2026, so a reporter outside the company can actually report. That route is also what the Cyber Resilience Act reporting duty rests on from 11 September 2026. | `SECURITY.md` |
 | AMD-001 10.6, secrets never in source, environment variables, or configuration | **Partially deviated.** No secret is in source or in history. Secrets DO arrive as environment variables, because that is the App Store's only injection mechanism; Azure Key Vault is not available on this platform. `TBC, re-verify` the wording with the ISM. | `.env.example`, App Store environment configuration |
 | AMD-001 10.6, input validation, output encoding, CSRF tokens | **Met.** Every field is validated at the boundary and rejected rather than coerced (`records.check_fields`, `check_state` against a closed vocabulary). Every untrusted value is escaped by Jinja autoescaping and the API returns JSON, never interpolated HTML. Every state-changing request carries a session-derived token compared in constant time, on the register routes and on sign-in and sign-out alike. | `src/complyops/records.py`, `src/complyops/csrf.py`, `test_a_well_formed_but_wrong_token_is_refused`, `test_a_record_title_is_escaped_in_the_page` |
 | AMD-001 10.6, OWASP Top 10 testing before deployment | **Not yet.** Named for the September 2026 penetration test per AMD-001 11.5. | Open |
