@@ -1,0 +1,21 @@
+# Secrets. Never tracked, in any form.
+.env
+.env.local
+.env.*.local
+secrets/
+
+# Local runtime and build output
+.venv/
+__pycache__/
+*.py[cod]
+data/
+dist/
+
+# Test and analysis output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+sbom.cdx.json
+.coverage
+htmlcov/

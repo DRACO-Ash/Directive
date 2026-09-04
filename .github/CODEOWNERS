@@ -1,0 +1,14 @@
+# Every change needs a review from the owner. Branch protection is what makes this
+# binding: without "require review from Code Owners" enabled on main, this file is a
+# suggestion rather than a control.
+#
+# The audit module, the policy sources and the deployment contract carry the controls an
+# assessor tests, so they are called out separately rather than relying on the catch-all.
+* @DRACO-Ash
+
+/src/complyops/audit/       @DRACO-Ash
+/docs/policy/               @DRACO-Ash
+/docs/DEPLOYMENT.md         @DRACO-Ash
+/SECURITY.md                @DRACO-Ash
+/Dockerfile                 @DRACO-Ash
+/.github/workflows/         @DRACO-Ash

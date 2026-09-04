@@ -1,0 +1,45 @@
+# Dependency update proposals. Bump, never remove: every entry in these sets is
+# load-bearing and dropping a transitive pin to silence a scanner breaks the install.
+#
+# Grouped so a routine transitive bump is one review rather than fifteen, and weekly
+# rather than daily because a hash-locked set needs the lockfile recompiled by hand
+# (`sh scripts/lock.sh`) and a queue of open proposals nobody actions is worse than none.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      runtime:
+        patterns: ["*"]
+        exclude-patterns: ["ruff", "mypy", "pytest*", "bandit", "pip-audit", "coverage*"]
+      tooling:
+        patterns: ["ruff", "mypy", "pytest*", "bandit", "pip-audit", "coverage*"]
+    commit-message:
+      prefix: "[DEPS]"
+
+  # The workflow pins every action by commit SHA rather than a mutable tag. That is the
+  # right posture and it is also why this entry exists: a pinned SHA never updates itself,
+  # so without this the actions silently age.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "[CI]"
+
+  # The base image is digest-pinned, which never patches itself. This is the closest thing
+  # available to the scheduled rebuild recorded as open in docs/DEPLOYMENT.md; it proposes
+  # a new digest but does not rebuild or re-scan, so it narrows that gap rather than
+  # closing it.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "[BUILD]"
