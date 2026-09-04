@@ -14,7 +14,7 @@
 # baked default would silently defeat the value the platform injects.
 
 # ---- build: install the hash-locked requirements into an isolated virtual environment ----
-FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS build
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS build
 ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN python -m venv /opt/venv
@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --require-hashes --no-deps -r requirements.txt
 
 # ---- prep: assemble the runtime filesystem, then establish the invariants last ----
-FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS prep
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS prep
 # No `apt-get upgrade` here, deliberately. It installs whatever Debian ships at build
 # time into a digest-pinned base, so the shipped image stops being reproducible from its
 # pinned inputs and the change set is unreviewed. Patch by rebasing to a newer pinned
