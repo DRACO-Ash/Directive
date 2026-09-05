@@ -46,7 +46,13 @@ def _user_agent() -> str:
 
 
 def _record_authentication(
-    action: str, actor: str, outcome: str, *, collapsed: int = 0, source_ip: str | None = None
+    action: str,
+    actor: str,
+    outcome: str,
+    *,
+    collapsed: int = 0,
+    source_ip: str | None = None,
+    resource_id: str = "sign-in",
 ) -> bool:
     """Write one authentication audit entry. Returns whether the ACTOR was recordable.
 
@@ -73,7 +79,7 @@ def _record_authentication(
                 "actor": actor[:320],
                 "action": action,
                 "resource": "session",
-                "resource_id": "sign-in",
+                "resource_id": recordable("resource_id", resource_id),
                 "outcome": outcome,
                 "source_ip": recordable("source_ip", source_ip) if source_ip else _client_ip(),
                 "user_agent": _user_agent(),
@@ -197,6 +203,22 @@ def _refuse(reason: str) -> Response:
     """
     current_app.logger.warning("sign-in refused: %s", reason)
     decision = refusals.note(_client_ip())
+    if decision.flood is not None:
+        # The global overflow of a closed window. No per-address attribution by
+        # construction: it is the trade `GLOBAL_ROWS_PER_WINDOW` exists to make, and the
+        # addresses are in the platform's ingress log.
+        _record_authentication(
+            "LOGIN_FAILED_FLOOD",
+            "unknown",
+            "FAILURE",
+            collapsed=decision.flood.refusals,
+            source_ip="multiple",
+            resource_id=(
+                f"addresses-{decision.flood.addresses}"
+                if decision.flood.exact
+                else f"addresses-atleast-{decision.flood.addresses}"
+            ),
+        )
     for collapsed in decision.collapsed:
         # One entry per address, not one total. A summary that merged several addresses
         # would collapse the attribution as well as the rows, which is the opposite of what
