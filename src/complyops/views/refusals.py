@@ -25,9 +25,19 @@ it. This module previously stated that `MAXIMUM_TRACKED` held such a flood to ab
 entries and 1.66 MiB per window, putting the 64 MiB cap 3.2 hours away. Measurement
 disproved it: 6000 distinct addresses in one window wrote 6000 entries and 2.44 MiB, 1.46
 times the stated ceiling, scaling linearly, with the cap about 157,000 addresses away.
-`MAXIMUM_TRACKED` bounds memory and never bounded rows. The figure is corrected here rather
-than quietly dropped, because it was the sizing on which deferring an edge rate limiter
-rested.
+`MAXIMUM_TRACKED` bounds the per-address tracker and never bounded rows. The figure is
+corrected here rather than quietly dropped, because it was the sizing on which deferring an
+edge rate limiter rested.
+
+The first version of that fix then traded unbounded rows for unbounded memory, which is
+worse. The set of over-budget addresses had no cap, and the post-budget path does no disk
+writing, so it is the cheapest request this application serves. Measured at 300,000
+addresses in one window: 26.1 MiB resident, against 0.3 MiB once capped. An unauthenticated
+caller could have driven the single worker to an out-of-memory restart, and a restart
+discards every pending count, which is exactly the evidence loss this module exists to
+prevent. The set is capped at `MAXIMUM_TRACKED` and the address count is reported as a floor
+when it hits that, because an exact-looking 1024 where the truth was 300,000 misleads a
+reader more than an honest "at least".
 
 Three limits remain, stated because each was claimed away once already.
 
@@ -56,15 +66,23 @@ RECORDED_PER_WINDOW = 3
 #: The window, in seconds.
 WINDOW_SECONDS = 300.0
 
-#: The most source addresses tracked at once. This bounds MEMORY and nothing else, which
-#: is worth stating flatly because it was once written down as though it bounded entries.
-#: At the cap the least recently seen address is dropped and its pending count is handed
-#: back, and the NEXT refusal from a new address is recorded individually all the same, so
-#: refusal rows scale with distinct source addresses rather than with this number.
+#: The most source addresses held at once, in the per-address tracker AND in the set of
+#: over-budget addresses. It bounds MEMORY and never bounded rows, which is worth stating
+#: flatly because it was once written down as though it bounded entries: at the cap the
+#: least recently seen address is dropped, its pending count is handed back, and the NEXT
+#: refusal from a new address is recorded individually all the same. Rows are bounded by
+#: `GLOBAL_ROWS_PER_WINDOW` below, which exists because this constant does not do that job.
 MAXIMUM_TRACKED = 1024
 
-#: The most individual refusal rows written across ALL addresses in one window. This is the
-#: bound that actually exists on the log, and it exists because the per-address one did not.
+#: The most refusal rows written across ALL addresses in one window: individual refusals,
+#: collapse summaries and flood summaries alike. Every one of them is a row in the log, and
+#: an earlier version charged only the first kind, so a cap named 500 was measured at 666
+#: under the strategy that maximises summaries. It is 500 now, measured.
+#:
+#: This is the bound that exists on the LOG. It is not a bound on the total: at 500 rows and
+#: 426 bytes a row across 288 windows a day, a sustained flood writes 58.45 MiB a day and
+#: reaches the 64 MiB refusal cap in about 1.1 days. Measured, and stated because that
+#: residual is real and only an edge rate limiter or log rotation closes it.
 #:
 #: Measured rather than reasoned, which is the rule that was broken when the per-address cap
 #: was described as a ceiling on entries. Driving 6000 distinct source addresses through
@@ -106,7 +124,18 @@ class _Budget:
     started: float | None = None
     written: int = 0
     refusals_over: int = 0
+    #: Capped at MAXIMUM_TRACKED. Uncapped, this replaced unbounded ROWS with unbounded
+    #: MEMORY, which is worse: the post-budget path does no disk writing, so it is the
+    #: cheapest request the application serves. Measured at 2,398 refusals a second in
+    #: process, with 300,000 addresses reaching 38.6 MiB resident while `_windows` stayed
+    #: correctly at 1024. An unauthenticated caller could drive the single worker to an
+    #: out-of-memory restart, and a restart discards every pending count, which is the
+    #: evidence loss this module exists to prevent.
     addresses_over: set[str] = field(default_factory=set)
+    #: Whether the address count above is a floor rather than an exact figure. Reported as
+    #: a floor rather than silently understated: an assessor reading "1024 addresses" when
+    #: it was 300,000 is being misled by a number that looks precise.
+    addresses_capped: bool = False
 
 
 _budget = _Budget()
@@ -134,6 +163,8 @@ class Flood:
 
     refusals: int
     addresses: int
+    #: False when the address count is a floor because the tracking set hit its cap.
+    exact: bool = True
 
 
 @dataclass(frozen=True)
@@ -176,6 +207,14 @@ def note(address: str, now: float | None = None) -> Decision:
 
         flood = _roll_budget(moment)
 
+        # Charge the summary rows to the budget as well. `_budget.written` counted only
+        # individual refusals, so the collapse and flood entries this call is about to
+        # cause fell outside the cap, and a cap named 500 was really 500 plus however many
+        # summaries an attacker could provoke. Measured at 666 rows per window under the
+        # strategy that maximises them, which is 33 per cent above the figure this module
+        # asserted. The rows are rows in the log like any other.
+        _budget.written += len(collapsed) + (1 if flood is not None else 0)
+
         window.seen = moment
         if window.recorded < RECORDED_PER_WINDOW and _budget.written < GLOBAL_ROWS_PER_WINDOW:
             window.recorded += 1
@@ -186,7 +225,10 @@ def note(address: str, now: float | None = None) -> Decision:
             # globally rather than against the address, because the address is not the
             # thing being bounded here: the log is.
             _budget.refusals_over += 1
-            _budget.addresses_over.add(address)
+            if len(_budget.addresses_over) < MAXIMUM_TRACKED:
+                _budget.addresses_over.add(address)
+            else:
+                _budget.addresses_capped = True
             return Decision(record=False, collapsed=collapsed, flood=flood)
         window.suppressed += 1
         return Decision(record=False, collapsed=collapsed, flood=flood)
@@ -201,12 +243,19 @@ def _roll_budget(moment: float) -> Flood | None:
     if _budget.started is not None and moment - _budget.started < WINDOW_SECONDS:
         return None
     over = (
-        Flood(_budget.refusals_over, len(_budget.addresses_over)) if _budget.refusals_over else None
+        Flood(
+            _budget.refusals_over,
+            len(_budget.addresses_over),
+            exact=not _budget.addresses_capped,
+        )
+        if _budget.refusals_over
+        else None
     )
     _budget.started = moment
     _budget.written = 0
     _budget.refusals_over = 0
     _budget.addresses_over = set()
+    _budget.addresses_capped = False
     return over
 
 
