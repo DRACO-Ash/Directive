@@ -213,7 +213,11 @@ def _refuse(reason: str) -> Response:
             "FAILURE",
             collapsed=decision.flood.refusals,
             source_ip="multiple",
-            resource_id=f"addresses-{decision.flood.addresses}",
+            resource_id=(
+                f"addresses-{decision.flood.addresses}"
+                if decision.flood.exact
+                else f"addresses-atleast-{decision.flood.addresses}"
+            ),
         )
     for collapsed in decision.collapsed:
         # One entry per address, not one total. A summary that merged several addresses
