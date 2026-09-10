@@ -160,11 +160,21 @@ package. FACT, run at V2.1:
 Three of the standing risks the skill records against its reference application do not apply
 here, and one does.
 
-● **The largest gap it names does not exist in this package.** Stage 4 scans
-  `requirements.txt` and never reads a separate runtime lockfile, so where the two differ
-  the scanned set is not the installed set. This build has no such split: `Dockerfile` line
-  22 copies `requirements.txt` and line 23 installs from it under `--require-hashes
-  --no-deps`. The file scanned IS the file installed. FACT.
+● **The largest gap it names now exists here, deliberately, and is closed by an assertion
+  rather than by avoidance.** Stage 4 scans `requirements.txt` and never reads a separate
+  runtime lockfile, so where the two differ the scanned set is not the installed set. Until
+  V2.2 this build had no split and that bullet read "the file scanned IS the file
+  installed". It also could not deploy: stage 5 runs `pip install -r requirements.txt` then
+  pytest, and a runtime-only `requirements.txt` fails it with "No module named pytest" while
+  every later stage is skipped. Measured against the built package, not reasoned about;
+  `scripts/simulate-pipeline.sh` runs that exact command. So `requirements.txt` is now the
+  test-inclusive superset the platform installs and scans, `requirements-runtime.txt` is
+  what the image installs, and `requirements-dev.txt` adds the analyser tooling. The three
+  are nested at the `.in` level, so the subset relation holds by construction, and it is
+  asserted twice, by the verification loop's nesting leg and by
+  `tests/test_lockfiles_nest_at_identical_versions`. That assertion is not ceremony: the
+  first attempt at this split resolved click to 8.4.2 in the file that ships and 8.5.0 in
+  the file that is scanned, which is precisely the failure the bullet describes.
 ● **The base image is digest-pinned**, not tag-pinned. FACT.
 ● **There is no fail-open patch step**, because there is no `apt-get upgrade` at all: the
   image takes whatever Debian shipped at the pinned digest and then removes the package
@@ -216,6 +226,14 @@ a recorded decision to add one. Open.
 `TBC, re-verify` whether Bluestaq Ltd is in scope as a manufacturer under the CRA for this
 application, and which national CSIRT applies. That is a legal determination, not an
 engineering one, and nothing here should be read as having made it.
+
+## The upload package
+
+`sh scripts/build-package.sh` writes `dist/comply-ops-<version>-<date>-<commit>.zip` and prints its SHA-256. `sh scripts/simulate-pipeline.sh` unzips that package into a temporary directory, creates a clean virtual environment, and runs the platform's stage 5 verbatim: `pip install -r requirements.txt`, then pytest with coverage to `coverage.xml`. Run both before any upload.
+
+Neither existed before V2.2, which meant the artefact that would be uploaded had never been built or tested. The first package assembled by hand from a reasonable allowlist went red in seconds, twice and for two unrelated reasons: the suite reads `.env.example` and `docs/DEPLOYMENT.md` from the package ROOT and neither had been shipped, and `requirements.txt` carried no test runner. Both failures are invisible to a green repository loop, which is the point. The build script asserts the root files the suite reads, refuses a nested `Dockerfile`, and refuses a package containing `.env`.
+
+What is deliberately not shipped, and why, is listed in the script itself so the next person does not add it back. `.gitlab-ci.yml` in particular: the platform generates its own pipeline, and a shipped copy is inert at best and misleading at worst.
 
 ## Recorded decisions
 
@@ -271,7 +289,7 @@ here, and that gap is recorded rather than assumed closed.
 | Policy requirement | This build | Evidence |
 | --- | --- | --- |
 | AUD-001, SHA-256 hash over timestamp, user, action, resource | **Exceeded.** HMAC-SHA256 under a server-held key, over the full AUD-001 event field set, chained to the previous entry. Deviation recorded for the Managing Director's sign-off. | `src/complyops/audit/hashing.py`, golden vector in `tests/test_audit_hashing.py` |
-| AUD-001, write-once from the application's perspective | **Met by design, not yet implemented.** `AuditChain.append` is the only path that produces an entry and it never updates or deletes, but nothing persists an entry yet, so this is a property of code that does not exist. | `AuditChain.append` |
+| AUD-001, write-once from the application's perspective | **Met.** `AuditChain.append` is the only path that produces an entry and it never updates or deletes. Entries persist to `DATA_DIR/audit/log.jsonl` through `journal.append_entry`, which opens append-only and never rewrites a line, and the keyed anchor detects a rewrite or a truncation made outside the application. The row previously read "not yet implemented", which understated the build: the journal landed in V2.1 and the deploy gate observed `boot: audit log resumed, chain intact` on the running container. | `AuditChain.append`, `audit/journal.py`, `audit/anchor.py` |
 | AUD-001, event field set | **Met for four categories, deviated for three.** One fixed shape rather than one per category, because a digest over a varying field set cannot be verified without knowing the variant. Authentication, Task management, Register operations and Audit export map onto `FIELD_ORDER` directly. Incident management and Administration are covered by the old-and-new-value deviation below. **Form submissions asks for "key field values" and no field can carry a value**, so that clause is unimplementable under the same decision and is recorded as a deviation in its own right, not covered by the row below. | `FIELD_ORDER`; AUD-001 clause, see `policy/README.md` |
 | AUD-001, old and new value of a changed field | **Deviated, deliberately, and the deviation is weaker than first claimed.** Field NAMES only in `fields_changed`, capped at 128 bytes; an enumerated workflow state in `old_state` and `new_state` under a character rule that rejects the common SHAPES of record content (a space, lower case, an `@`, over 32 characters) but does not make it impossible: a single upper-case token such as `HIGGINS` or `SW1A1AA` satisfies it. A closed state vocabulary would be structural and is not yet definable, because the real state set is not knowable until the records module. Caller discipline is load-bearing in the meantime. Ash's decision, recorded for sign-off; the vocabulary is `TBC, re-verify`. | `src/complyops/audit/validation.py` |
 | AUD-001, 24-month active retention, annual CSV export, annual pruning | **Met by design, not yet implemented.** The anchor records the archive boundary, the chain carries it across an append, and `verify_log` walks from it, so a pruned active log verifies rather than reading as tampered. The export and prune procedure itself lands with the export module. | `Anchor.after_prune`, `test_the_archive_boundary_survives_a_prune_a_restart_and_an_append` |
@@ -281,7 +299,7 @@ here, and that gap is recorded rather than assumed closed.
 | AUD-001, timestamp FORM in UTC | **Met.** RFC 3339 in UTC is the only accepted form, the calendar is parsed rather than pattern-matched, and a local offset is rejected at the boundary. | `validation._check_timestamp` |
 | IASME 12.3, time SYNCHRONISATION | **Not met, and not the same clause.** AUD-001 evidences 12.3 as "All timestamps in UTC from Azure App Service (NTP-synchronised)", a platform this build no longer uses. The timestamp is also caller-supplied: nothing in the build generates it or establishes the time source. `TBC, re-verify` the App Store clock source, and consider deriving the timestamp server-side when the records module lands. | Open |
 | AMD-001 10.6, static application security testing on every change | **Met.** `bandit` in the local loop and, as of this round, in Continuous Integration, which is the only leg that runs on every change. `ruff` and `mypy` are a linter and a type checker and do not satisfy this clause. | `scripts/verify.sh`, `.github/workflows/verify.yml` |
-| AMD-001 10.6, dependencies pinned with integrity verification | **Met.** Exact pins, hash-locked, installed with `--require-hashes`. | `requirements.txt`, `Dockerfile` |
+| AMD-001 10.6, dependencies pinned with integrity verification | **Met.** Exact pins, hash-locked, installed with `--require-hashes`, across all three lockfiles. The image installs `requirements-runtime.txt`; the platform installs and scans `requirements.txt`; the nesting between them is asserted rather than assumed. | `requirements-runtime.txt`, `requirements.txt`, `requirements-dev.txt`, `Dockerfile` |
 | AMD-001 10.6, security headers on all responses | **Met.** All four named headers, plus three more, on every response including probes, redirects and error pages, applied OVER anything a route set. The previous implementation was first-writer-wins, so a route could serve a wider policy and keep it; a narrower per-route policy now goes through an explicit `tighten` call and there is no door for a wider one. | `src/complyops/security_headers.py`, `tests/test_security_headers.py` |
 | AMD-001 10.6, SECURITY.md linking POL-006 | **Met.** The file names POL-006, the responsible owner, and the reporting address `dpa@bluestaq.uk`, supplied by the ISM on 4 September 2026, so a reporter outside the company can actually report. That route is also what the Cyber Resilience Act reporting duty rests on from 11 September 2026. | `SECURITY.md` |
 | AMD-001 10.6, secrets never in source, environment variables, or configuration | **Partially deviated.** No secret is in source or in history. Secrets DO arrive as environment variables, because that is the App Store's only injection mechanism; Azure Key Vault is not available on this platform. `TBC, re-verify` the wording with the ISM. | `.env.example`, App Store environment configuration |

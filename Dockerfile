@@ -19,8 +19,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-COPY requirements.txt .
-RUN pip install --require-hashes --no-deps -r requirements.txt
+# The RUNTIME lockfile, not `requirements.txt`. The platform's test stage runs
+# `pip install -r requirements.txt` then pytest, so that file has to be the test-inclusive
+# superset; installing it here would ship the whole test toolchain into the image and hand
+# the container scan a vulnerability surface the service never executes. The two are nested
+# at the `.in` level, so the runtime set is a strict subset at identical versions, asserted
+# by the verification loop and by `tests/test_store_and_auth.py`.
+COPY requirements-runtime.txt .
+RUN pip install --require-hashes --no-deps -r requirements-runtime.txt
 
 # ---- prep: assemble the runtime filesystem, then establish the invariants last ----
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS prep

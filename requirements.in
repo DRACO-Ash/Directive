@@ -1,2 +1,16 @@
-Flask==3.1.3
-gunicorn==23.0.0
+# What the platform's test stage installs and its dependency scan reads.
+#
+# The runtime set PLUS the test tooling, nested rather than duplicated: the platform runs
+# `pip install -r requirements.txt` then pytest, so a runtime-only file here fails the test
+# stage with "No module named pytest" and skips every later stage. Measured, not assumed;
+# `scripts/simulate-pipeline.sh` runs that exact command against the built package.
+#
+# Nesting is what keeps the runtime file a strict subset with identical versions. The
+# scanner never reads `requirements-runtime.txt`, so a divergence between the two would
+# ship a version no gate examined.
+-r requirements-runtime.in
+
+pytest==9.0.3
+pytest-cov==7.0.0
+pytest-timeout==2.4.0
+coverage==7.10.7

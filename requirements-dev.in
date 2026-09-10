@@ -1,8 +1,12 @@
-pytest==9.0.3
-pytest-cov==7.0.0
-coverage==7.10.7
+# The local verification loop and Continuous Integration only. Not shipped, not scanned by
+# the platform: `requirements-dev.txt` is not a filename the analyser knows, so nothing
+# here reaches the image or the platform's dependency scan.
+#
+# Nested on the test set, which is itself nested on the runtime set, so one install gives
+# the whole loop and the subset relation cannot drift.
+-r requirements.in
+
 ruff==0.14.0
 mypy==1.18.2
 pip-audit==2.9.0
 bandit==1.8.6
-pytest-timeout==2.4.0
