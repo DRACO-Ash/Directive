@@ -131,8 +131,12 @@ def sign_in_submit() -> Response:
     a real identity provider once one exists.
     """
     if auth.entra_is_configured():
-        _record_authentication("LOGIN_FAILED", "unknown", "FAILURE")
-        return redirect(url_for("auth.sign_in_page"))
+        # Through `_refuse`, so the refusal is collapsed and charged to the row budget like
+        # every other. Recorded directly, this was one fsynced row per request: with Entra
+        # configured the CSRF token is issued to any caller of `/`, so an unauthenticated
+        # client could reach the log's 64 MiB refusal cap in about 72,500 posts, on the one
+        # route the bound was documented as covering and the one mode the suite did not run.
+        return _refuse("the self-asserted sign-in is refused while Entra ID is configured")
 
     actor = (request.form.get("actor") or "").strip()
     if not actor or len(actor) > MAXIMUM_ACTOR_LENGTH:

@@ -26,6 +26,7 @@ from flask.testing import FlaskClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from complyops import auth, create_app
+from complyops.views import refusals
 
 #: Real key material, published here on purpose: it is not a credential.
 SUITE_KEY = bytes(range(32)).hex()
@@ -344,3 +345,25 @@ def test_a_non_ascii_nonce_in_a_token_is_refused(app: Flask) -> None:
     """Same comparison, same failure mode, reached through the token instead."""
     with app.app_context(), pytest.raises(auth.AuthError, match="nonce"):
         auth.claims_from_id_token(id_token(nonce="ééé"), nonce="the-nonce")
+
+
+def test_the_refused_self_asserted_sign_in_is_collapsed(client: FlaskClient) -> None:
+    """With Entra ID configured, `POST /sign-in` is refused THROUGH the collapser.
+
+    It was recorded directly, one fsynced row per request, on the route the deployment notes
+    said the bound covered. The CSRF token is issued to any caller of `/`, so an
+    unauthenticated client could reach the log's refusal cap in about 72,500 posts. Only
+    reachable in production mode, which is why the development-mode refusal suite never saw
+    it.
+    """
+    refusals.reset()
+    token = client.get("/").headers["X-CSRF-Token"]
+    for _ in range(40):
+        response = client.post("/sign-in", data={"actor": "anyone", "csrf_token": token})
+        assert response.status_code == 302
+
+    chain = client.application.extensions["complyops_chain"]
+    failed = [entry for entry in chain.entries if entry.action == "LOGIN_FAILED"]
+    assert len(failed) == refusals.RECORDED_PER_WINDOW, f"{len(failed)} rows for 40 refusals"
+    assert not [entry for entry in chain.entries if entry.action == "LOGIN"]
+    refusals.reset()

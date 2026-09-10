@@ -466,18 +466,20 @@ def test_late_summaries_cannot_exceed_the_budget_by_expiry(
 ) -> None:
     """The same defeat through the sweep: banked windows expiring mid-window as rows."""
     monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 30)
-    late = refusals.WINDOW_SECONDS - 10
-    rows_a = 0
+    period = refusals.WINDOW_SECONDS
+    # The global window has to be LIVE when the banks expire, or the sweep lands them in a
+    # fresh budget and the test passes without exercising the defeat. So the global window
+    # is opened first, the banks are made late in it, the next global window is spent on
+    # fresh addresses at its start, and the banks expire inside it.
+    rows_a = _rows(refusals.note("10.9.3.250", now=0.0))
     for bank in range(6):
         for _ in range(refusals.RECORDED_PER_WINDOW + 1):
-            rows_a += _rows(refusals.note(f"10.9.3.{bank}", now=late))
-    # Window B: spend the budget on fresh addresses, then let the banked windows expire.
-    start_b = refusals.WINDOW_SECONDS
+            rows_a += _rows(refusals.note(f"10.9.3.{bank}", now=period - 10))
     rows_b = 0
     for index in range(40):
-        rows_b += _rows(refusals.note(f"10.9.4.{index}", now=start_b))
+        rows_b += _rows(refusals.note(f"10.9.4.{index}", now=period))
     for index in range(10):
-        rows_b += _rows(refusals.note(f"10.9.5.{index}", now=late + refusals.WINDOW_SECONDS))
+        rows_b += _rows(refusals.note(f"10.9.5.{index}", now=2 * period - 5))
 
     assert rows_a <= 30
     assert rows_b <= 30, f"{rows_b} rows written in window B against a cap of 30"
@@ -514,3 +516,27 @@ def test_re_seeing_an_overflow_address_does_not_flag_a_floor(
     assert closing.flood is not None
     assert closing.flood.addresses == 2
     assert closing.flood.exact, "two addresses in a set of two is exact, not a floor"
+
+
+def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: FlaskClient) -> None:
+    """The residual is sized at the adversarial row, and this pins what that row weighs.
+
+    The earlier figure was measured with the test client's short User-Agent and presented as
+    the number to size the edge rate limiter against. A caller picks their own User-Agent,
+    so the sizing row carries every caller-controlled field at the audit boundary's cap. If a
+    field is added to the entry this fails, and the figure is re-measured rather than drifting.
+    """
+    address = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
+    assert len(address) == 45, "the source address cap is 45 characters"
+    client.get(
+        "/auth/callback?state=forged",
+        environ_base={"REMOTE_ADDR": address},
+        headers={"User-Agent": "A" * 512},
+    )
+    client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": "10.9.9.9"})
+    log = Path(app.config["COMPLYOPS_DATA_DIR"]) / "audit" / "log.jsonl"
+    at_caps, friendly = (len(line) + 1 for line in log.read_bytes().splitlines()[-2:])
+
+    assert at_caps <= refusals.ROW_BYTES_AT_FIELD_CAPS, f"{at_caps} bytes: re-measure the figure"
+    assert at_caps > refusals.ROW_BYTES_AT_FIELD_CAPS * 0.9, "the pin has drifted loose"
+    assert friendly < at_caps, "the friendly row must weigh less than the sizing row"

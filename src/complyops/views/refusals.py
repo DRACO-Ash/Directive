@@ -83,10 +83,8 @@ MAXIMUM_TRACKED = 1024
 #: now admitted or refused against the budget BEFORE it is handed back, and a refused one
 #: folds into the flood row. It is 500 now, measured under all three strategies.
 #:
-#: This is the bound that exists on the LOG. It is not a bound on the total: at 500 rows and
-#: 426 bytes a row across 288 windows a day, a sustained flood writes 58.45 MiB a day and
-#: reaches the 64 MiB refusal cap in about 1.1 days. Measured, and stated because that
-#: residual is real and only an edge rate limiter or log rotation closes it.
+#: This is the bound that exists on the LOG. It is not a bound on the total, and the total
+#: is sized at the field caps, not at the friendly row: see `ROW_BYTES_AT_FIELD_CAPS`.
 #:
 #: Measured rather than reasoned, which is the rule that was broken when the per-address cap
 #: was described as a ceiling on entries. Driving 6000 distinct source addresses through
@@ -102,6 +100,22 @@ MAXIMUM_TRACKED = 1024
 #: platform's ingress log, and an audit log that has been filled to its cap records nothing
 #: at all.
 GLOBAL_ROWS_PER_WINDOW = 500
+
+#: The size of one refusal row when the caller fills every field it controls to the audit
+#: boundary's cap: a 512 byte User-Agent and a 45 character source address. Measured at 959
+#: bytes on this build and pinned here at the next round figure, with a test that writes such
+#: a row and checks it still fits, so a field added to the entry moves this number rather
+#: than silently invalidating the sizing below.
+#:
+#: The residual is sized at THIS row, because the earlier figure was not. It was measured
+#: with the test client's short User-Agent, 426 bytes a row, and stated as the number to
+#: size the edge rate limiter against: 208 KiB a window, 58.45 MiB a day, 1.1 days to the
+#: log's 64 MiB refusal cap. A caller chooses their own User-Agent. At the caps, 500 rows
+#: are about 469 KiB a window, so across 288 windows a sustained flood writes about 132 MiB
+#: a day and reaches the cap in under twelve hours. The friendly figure is the typical case
+#: and nothing more; the adversarial one is the sizing basis, and only an edge rate limiter
+#: or log rotation closes it.
+ROW_BYTES_AT_FIELD_CAPS = 960
 
 
 @dataclass
