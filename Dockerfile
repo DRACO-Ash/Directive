@@ -92,7 +92,11 @@ ENV PATH="/opt/venv/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/
     PYTHONPATH="/app/src" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-WORKDIR /app
+# No WORKDIR in this stage, deliberately. It is a filesystem mutation, so it lands as a
+# second layer on top of the flattening COPY and the image stops being one layer. Measured:
+# 2 layers with it, 1 without. Gunicorn is given `--chdir /app` below instead, which sets
+# the working directory and puts it on `sys.path` at start-up rather than at build time.
+# `/app` itself already exists, carried in by the COPY above.
 USER 10001:10001
 EXPOSE 8080
 # Readiness proves storage with a real write and races a hard timeout, so a stalled
@@ -110,4 +114,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # thing this control must never say about clean evidence. Raising the worker count is
 # blocked on an inter-process lock on the volume; see the deferred table in
 # `docs/DEPLOYMENT.md`. Threads are safe because every lock above covers them.
-CMD ["sh","-c","exec gunicorn wsgi:app -b 0.0.0.0:${PORT:-8080} --workers 1 --threads 8 --timeout 60 --access-logfile - --error-logfile -"]
+CMD ["sh","-c","exec gunicorn wsgi:app --chdir /app -b 0.0.0.0:${PORT:-8080} --workers 1 --threads 8 --timeout 60 --access-logfile - --error-logfile -"]
