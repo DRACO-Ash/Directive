@@ -528,10 +528,14 @@ def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: Flas
     """
     address = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
     assert len(address) == 45, "the source address cap is 45 characters"
+    # Backslashes, not letters: the cap is measured on the value and the log on the line,
+    # and the serialiser writes each backslash as two bytes. 512 letters made a 959 byte row
+    # and was pinned as the worst case; 512 backslashes make 1471, and that is the row an
+    # attacker sends.
     client.get(
         "/auth/callback?state=forged",
         environ_base={"REMOTE_ADDR": address},
-        headers={"User-Agent": "A" * 512},
+        headers={"User-Agent": "\\" * 512},
     )
     client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": "10.9.9.9"})
     log = Path(app.config["COMPLYOPS_DATA_DIR"]) / "audit" / "log.jsonl"
