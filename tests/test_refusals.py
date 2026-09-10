@@ -523,8 +523,10 @@ def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: Flas
 
     The earlier figure was measured with the test client's short User-Agent and presented as
     the number to size the edge rate limiter against. A caller picks their own User-Agent,
-    so the sizing row carries every caller-controlled field at the audit boundary's cap. If a
-    field is added to the entry this fails, and the figure is re-measured rather than drifting.
+    so the sizing row carries every caller-controlled field at the audit boundary's cap, on
+    the `LOGIN_FAILED` row; a summary row is up to 24 bytes longer and the key identifier up
+    to 30, both stated beside the pin. If a field is added to the entry this fails, and the
+    figure is re-measured rather than drifting.
     """
     address = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
     assert len(address) == 45, "the source address cap is 45 characters"

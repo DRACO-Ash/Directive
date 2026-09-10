@@ -108,7 +108,12 @@ GLOBAL_ROWS_PER_WINDOW = 500
 #: two bytes, so the row at the caps is 1471 bytes and not the 959 that 512 letters make.
 #: Pinned at the next round figure, with a test that writes exactly that row and checks it
 #: still fits, so a field added to the entry or a change to the serialiser moves this number
-#: rather than silently invalidating the sizing below.
+#: rather than silently invalidating the sizing below. It is the `LOGIN_FAILED` row that is
+#: pinned: a `LOGIN_FAILED_REPEATED` row at the same caps is up to 24 bytes longer for its
+#: action name and count, and an `AUDIT_KEY_ID` at its 32 character cap adds 30 bytes to
+#: every row, so the largest possible row is about 1526 bytes. At three individual rows to
+#: each summary that moves the figures below by under one per cent, and by 3.5 per cent if
+#: every row were the largest, which changes no decision at the precision they are stated.
 #:
 #: The residual is sized at THIS row, because two earlier figures were not. The first was
 #: measured with the test client's short User-Agent, 426 bytes a row, 58.45 MiB a day, 1.1
