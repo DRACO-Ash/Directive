@@ -426,3 +426,91 @@ def test_summary_rows_are_charged_to_the_budget(monkeypatch: pytest.MonkeyPatch)
             rows += 1 if decision.flood is not None else 0
 
     assert rows <= 20 * 4, f"{rows} rows written against a cap of 20 per window"
+
+
+def _rows(decision: refusals.Decision) -> int:
+    """How many audit rows `auth_routes._refuse` writes for one decision."""
+    return int(decision.record) + len(decision.collapsed) + (1 if decision.flood else 0)
+
+
+def test_late_summaries_cannot_exceed_the_budget_by_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Summaries produced AFTER the budget is spent are folded into the flood, not written.
+
+    The second defeat of the cap. Charging summaries to the budget after handing them to
+    the caller bounded nothing, because the caller writes every summary it is handed. Bank
+    a suppressed count on several addresses, spend the rest of the budget on fresh ones,
+    then churn past `MAXIMUM_TRACKED` so each banked count is evicted as a row. Measured
+    at 666 rows against a cap of 500 over the real HTTP path before this test existed.
+    """
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 30)
+    monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 16)
+    rows = 0
+    for bank in range(6):
+        for _ in range(refusals.RECORDED_PER_WINDOW + 1):
+            rows += _rows(refusals.note(f"10.9.0.{bank}", now=0.0))
+    for index in range(100):
+        rows += _rows(refusals.note(f"10.9.1.{index}", now=1.0))
+    closing = refusals.note("10.9.2.1", now=refusals.WINDOW_SECONDS + 1)
+
+    assert rows <= 30, f"{rows} rows written against a cap of 30"
+    assert closing.flood is not None
+    # Six banks of three recorded rows spent 18 of the budget; twelve fresh addresses spent
+    # the rest; the other 88 fresh refusals AND the six folded counts are in the flood row.
+    assert closing.flood.refusals == (100 - 12) + 6, "a folded count must not be lost"
+
+
+def test_late_summaries_cannot_exceed_the_budget_by_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same defeat through the sweep: banked windows expiring mid-window as rows."""
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 30)
+    late = refusals.WINDOW_SECONDS - 10
+    rows_a = 0
+    for bank in range(6):
+        for _ in range(refusals.RECORDED_PER_WINDOW + 1):
+            rows_a += _rows(refusals.note(f"10.9.3.{bank}", now=late))
+    # Window B: spend the budget on fresh addresses, then let the banked windows expire.
+    start_b = refusals.WINDOW_SECONDS
+    rows_b = 0
+    for index in range(40):
+        rows_b += _rows(refusals.note(f"10.9.4.{index}", now=start_b))
+    for index in range(10):
+        rows_b += _rows(refusals.note(f"10.9.5.{index}", now=late + refusals.WINDOW_SECONDS))
+
+    assert rows_a <= 30
+    assert rows_b <= 30, f"{rows_b} rows written in window B against a cap of 30"
+
+
+def test_a_folded_summary_is_carried_by_the_flood_row(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the chain receives no more rows per window than the cap names."""
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 6)
+    monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 8)
+    for _ in range(4):
+        client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": "10.9.6.1"})
+    for index in range(20):
+        client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": f"10.9.7.{index}"})
+    entries = [
+        entry
+        for entry in app.extensions["complyops_chain"].entries
+        if entry.action.startswith("LOGIN_FAILED")
+    ]
+    assert len(entries) <= 6, f"{len(entries)} rows in the chain against a cap of 6"
+
+
+def test_re_seeing_an_overflow_address_does_not_flag_a_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 1)
+    monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 2)
+    refusals.note("10.9.8.1", now=0.0)
+    for _ in range(3):
+        refusals.note("10.9.8.2", now=0.0)
+        refusals.note("10.9.8.3", now=0.0)
+    closing = refusals.note("10.9.8.4", now=refusals.WINDOW_SECONDS + 1)
+    assert closing.flood is not None
+    assert closing.flood.addresses == 2
+    assert closing.flood.exact, "two addresses in a set of two is exact, not a floor"

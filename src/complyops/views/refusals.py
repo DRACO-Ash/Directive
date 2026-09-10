@@ -76,8 +76,12 @@ MAXIMUM_TRACKED = 1024
 
 #: The most refusal rows written across ALL addresses in one window: individual refusals,
 #: collapse summaries and flood summaries alike. Every one of them is a row in the log, and
-#: an earlier version charged only the first kind, so a cap named 500 was measured at 666
-#: under the strategy that maximises summaries. It is 500 now, measured.
+#: two earlier versions were defeated in turn: the first charged only the first kind, and
+#: the second charged summaries AFTER handing them to the caller, who writes every one it
+#: is handed. Both measured at 666 rows per window under the strategy that maximises
+#: summaries, and the second at 832 when two such strategies are combined. A summary is
+#: now admitted or refused against the budget BEFORE it is handed back, and a refused one
+#: folds into the flood row. It is 500 now, measured under all three strategies.
 #:
 #: This is the bound that exists on the LOG. It is not a bound on the total: at 500 rows and
 #: 426 bytes a row across 288 windows a day, a sustained flood writes 58.45 MiB a day and
@@ -206,32 +210,66 @@ def note(address: str, now: float | None = None) -> Decision:
             window.suppressed = 0
 
         flood = _roll_budget(moment)
-
-        # Charge the summary rows to the budget as well. `_budget.written` counted only
-        # individual refusals, so the collapse and flood entries this call is about to
-        # cause fell outside the cap, and a cap named 500 was really 500 plus however many
-        # summaries an attacker could provoke. Measured at 666 rows per window under the
-        # strategy that maximises them, which is 33 per cent above the figure this module
-        # asserted. The rows are rows in the log like any other.
-        _budget.written += len(collapsed) + (1 if flood is not None else 0)
+        if flood is not None:
+            # The overflow of the window that just closed is one row in THIS window, and it
+            # is charged first so that it always fits: a bound whose own summary could be
+            # squeezed out by the traffic it summarises would lose the count.
+            _budget.written += 1
+        collapsed = _admit(collapsed)
 
         window.seen = moment
-        if window.recorded < RECORDED_PER_WINDOW and _budget.written < GLOBAL_ROWS_PER_WINDOW:
-            window.recorded += 1
-            _budget.written += 1
-            return Decision(record=True, collapsed=collapsed, flood=flood)
         if window.recorded < RECORDED_PER_WINDOW:
+            if _budget.written < GLOBAL_ROWS_PER_WINDOW:
+                window.recorded += 1
+                _budget.written += 1
+                return Decision(record=True, collapsed=collapsed, flood=flood)
             # Inside this address's own allowance but past the global budget. Counted
             # globally rather than against the address, because the address is not the
             # thing being bounded here: the log is.
-            _budget.refusals_over += 1
-            if len(_budget.addresses_over) < MAXIMUM_TRACKED:
-                _budget.addresses_over.add(address)
-            else:
-                _budget.addresses_capped = True
+            _count_over(address, 1)
             return Decision(record=False, collapsed=collapsed, flood=flood)
         window.suppressed += 1
         return Decision(record=False, collapsed=collapsed, flood=flood)
+
+
+def _admit(collapsed: tuple[Collapsed, ...]) -> tuple[Collapsed, ...]:
+    """Charge each collapse row to the budget, folding the ones past it into the overflow.
+
+    Called under the lock. The earlier version charged summaries to the budget AFTER the
+    caller had already been handed them, and the caller writes every summary it is handed.
+    So a summary produced once the budget was spent was written on top of it, and the cap
+    was defeated by making summaries arrive late: bank suppressed counts on about 166
+    addresses, spend the budget on fresh ones, then force evictions or let the banked
+    windows expire so each count is swept out as a row. Measured at 666 rows per window
+    from either lever and 832 from both, against a named cap of 500, over the real HTTP
+    path. Charging after the fact cannot bound what has already been emitted; only a row
+    that is refused here is a row that is not written.
+
+    A refused summary is not lost. Its count joins the overflow and its address joins the
+    overflow's address set, so the single flood row for this window carries it.
+    """
+    admitted: list[Collapsed] = []
+    for summary in collapsed:
+        if _budget.written < GLOBAL_ROWS_PER_WINDOW:
+            _budget.written += 1
+            admitted.append(summary)
+        else:
+            _count_over(summary.address, summary.count)
+    return tuple(admitted)
+
+
+def _count_over(address: str, count: int) -> None:
+    """Add refusals past the budget to the overflow, without letting the address set grow.
+
+    Called under the lock. An address already in the set does not flip the floor flag: the
+    flag means the count is a floor because an address could NOT be added, and re-seeing a
+    member is not that.
+    """
+    _budget.refusals_over += count
+    if address in _budget.addresses_over or len(_budget.addresses_over) < MAXIMUM_TRACKED:
+        _budget.addresses_over.add(address)
+    else:
+        _budget.addresses_capped = True
 
 
 def _roll_budget(moment: float) -> Flood | None:
