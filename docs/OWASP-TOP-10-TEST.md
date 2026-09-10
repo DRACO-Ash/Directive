@@ -67,7 +67,7 @@ Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` in production mode;
 
 ## A03:2021 Injection
 
-No SQL, no shell, no template string construction: registers are JSON on the volume, read and written through `store.py`. Register fields are validated against a closed vocabulary and rejected rather than coerced; an unknown field, a wrong type, a non-object body, and an invalid JSON body are all 400. A stored `<script>` title is rendered escaped by Jinja autoescape. Audit fields are printable ASCII by allowlist, so a User-Agent carrying CRLF, U+2028 or U+202E is substituted with `unrecordable` rather than written to the log, which defeats log-line forgery.
+No SQL, no shell, no template string construction: registers are JSON on the volume, read and written through `store.py`. The `state` field is validated against a closed vocabulary (`records.check_state`); every other register field is validated against a closed set of field NAMES and a length cap (`records.check_fields`) and then whitespace-stripped, which is a coercion, so the values themselves are free text. An unknown field, a wrong type, a non-object body, and an invalid JSON body are all 400. Stated this precisely because the summary of this row over-claimed it once, in a signed record, and the correction has to reach the evidence and not only the summary. A stored `<script>` title is rendered escaped by Jinja autoescape. Audit fields are printable ASCII by allowlist, so a User-Agent carrying CRLF, U+2028 or U+202E is substituted with `unrecordable` rather than written to the log, which defeats log-line forgery.
 
 | Test | Expected | Observed | Result |
 | --- | --- | --- | --- |
@@ -121,7 +121,7 @@ All four AMD-001 10.6 headers (Content-Security-Policy, Strict-Transport-Securit
 
 ## A06:2021 Vulnerable and Outdated Components
 
-Not tested by request; tested by the verification loop. `pip-audit` runs against both hash-locked lockfiles on every change and in Continuous Integration, and returned no known vulnerabilities on this commit. Dependabot raises weekly pull requests for pip, GitHub Actions and Docker. A CycloneDX software bill of materials is produced on every run.
+Not tested by request; tested by the verification loop. `pip-audit` runs against all three hash-locked lockfiles on every change and in Continuous Integration, and returned no known vulnerabilities on this commit. Dependabot raises weekly pull requests for pip, GitHub Actions and Docker. A CycloneDX software bill of materials is produced on every run.
 
 ## A07:2021 Identification and Authentication Failures
 

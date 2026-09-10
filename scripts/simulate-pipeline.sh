@@ -20,12 +20,29 @@ cd "$ROOT"
 # parsing `ls` output and could pick the wrong one of two packages built from different
 # commits.
 PKG="${1:-}"
+FROM_POINTER=no
 if [ -z "$PKG" ] && [ -f dist/latest ]; then
   PKG="$(cat dist/latest)"
+  FROM_POINTER=yes
 fi
 if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
   echo "FAIL: no package at '${PKG:-dist/latest}'. Run scripts/build-package.sh first."
   exit 1
+fi
+
+# A package built from a different commit tests the wrong tree and reports PASS for it,
+# which is the one answer this script must never give. Checked only when the package came
+# from the pointer: an explicit argument is a deliberate choice to test that file.
+if [ "$FROM_POINTER" = yes ] && command -v git >/dev/null 2>&1; then
+  HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  case "$PKG" in
+    *"$HEAD_SHORT"*) ;;
+    *)
+      echo "FAIL: $PKG was not built from the current commit ($HEAD_SHORT)."
+      echo "Run scripts/build-package.sh, or pass the package explicitly to test it anyway."
+      exit 1
+      ;;
+  esac
 fi
 
 WORK="$(mktemp -d)"

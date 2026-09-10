@@ -57,8 +57,14 @@ scripts"
 #   .gitlab-ci.yml           the platform generates its own pipeline; a shipped copy is
 #                            inert at best and misleading at worst
 
+# Invalidate the pointer BEFORE building, not after. It was only ever written on success
+# and never cleared, so a build that failed left the previous commit's package still
+# pointed at, and the simulation would test that stale artefact and report PASS for a tree
+# whose package never built. Reproduced in a throwaway clone.
+mkdir -p dist
+rm -f dist/latest
 rm -rf "$STAGE" "$OUT"
-mkdir -p "$STAGE" dist
+mkdir -p "$STAGE"
 
 for path in $FILES; do
   [ -f "$path" ] || { echo "FAIL: $path is named in the allowlist and does not exist"; exit 1; }

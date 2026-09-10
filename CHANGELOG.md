@@ -14,7 +14,7 @@ deployed yet, so every row below records a release that was cut, gated and merge
 review PASS at `b3b798c`. Deploy gate **FAIL**, first run, at `ee7a1e1`. Engineering review
 **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials still describing the
 pre-split dependency tree and on a test count in this file that had never been measured.
-Verification loop PASS, 793 passed, 2 skipped, coverage 98.84%, measured after those fixes.
+Verification loop PASS, 793 passed, 2 skipped, coverage 98.84%, measured after those fixes. The coverage figure moves between 98.84% and 98.89% on an unchanged tree, a partial-branch count that varies between runs; both are far above the 80% gate, and the range is recorded rather than the prettier single number.
 
 **Changed.**
 
