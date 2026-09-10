@@ -20,6 +20,12 @@ cd "$ROOT"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
 STAMP="$(date -u +%Y%m%d)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+# A package from a tree with uncommitted changes is stamped as such, so the simulation can
+# refuse it. Without this, commit granularity admits a package built before an edit and the
+# simulation reports PASS for a tree whose package was never built.
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  COMMIT="${COMMIT}-dirty"
+fi
 OUT="dist/comply-ops-${VERSION}-${STAMP}-${COMMIT}.zip"
 STAGE="dist/.stage"
 

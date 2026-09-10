@@ -32,9 +32,9 @@ row says so rather than reconstructing it.
 ## What these rows show
 
 Three engineering FAILs in a row, and not one of them was in the application. The `amr`
-check, the lockfile split and the container contract were sound at the first pass. Every
-failure since has been in the machinery built to check the application, or in a document
-describing it: a bill of materials pointed at the wrong tree, a test count asserted without
+check and the lockfile split were sound at the first pass, and the container needed only
+the one-layer correction recorded above. Every failure since has been in the machinery
+built to check the application, or in a document describing it: a bill of materials pointed at the wrong tree, a test count asserted without
 measuring, a lint gate observed only while skipping, and a correction applied to a summary
 but not to the evidence beneath it. Worth recording plainly, because the temptation at each
 pass was to treat the finding as paperwork.
