@@ -101,21 +101,26 @@ MAXIMUM_TRACKED = 1024
 #: at all.
 GLOBAL_ROWS_PER_WINDOW = 500
 
-#: The size of one refusal row when the caller fills every field it controls to the audit
-#: boundary's cap: a 512 byte User-Agent and a 45 character source address. Measured at 959
-#: bytes on this build and pinned here at the next round figure, with a test that writes such
-#: a row and checks it still fits, so a field added to the entry moves this number rather
-#: than silently invalidating the sizing below.
+#: The size of one refusal row AS SERIALISED when the caller fills every field it controls
+#: to the audit boundary's cap and chooses the character that serialises largest: a 512 byte
+#: User-Agent of backslashes and a 45 character source address. The field cap is measured
+#: on the value, the log is measured on the line, and `json.dumps` writes each backslash as
+#: two bytes, so the row at the caps is 1471 bytes and not the 959 that 512 letters make.
+#: Pinned at the next round figure, with a test that writes exactly that row and checks it
+#: still fits, so a field added to the entry or a change to the serialiser moves this number
+#: rather than silently invalidating the sizing below.
 #:
-#: The residual is sized at THIS row, because the earlier figure was not. It was measured
-#: with the test client's short User-Agent, 426 bytes a row, and stated as the number to
-#: size the edge rate limiter against: 208 KiB a window, 58.45 MiB a day, 1.1 days to the
-#: log's 64 MiB refusal cap. A caller chooses their own User-Agent. At the caps, 500 rows
-#: are about 469 KiB a window, so across 288 windows a sustained flood writes about 132 MiB
-#: a day and reaches the cap in under twelve hours. The friendly figure is the typical case
-#: and nothing more; the adversarial one is the sizing basis, and only an edge rate limiter
-#: or log rotation closes it.
-ROW_BYTES_AT_FIELD_CAPS = 960
+#: The residual is sized at THIS row, because two earlier figures were not. The first was
+#: measured with the test client's short User-Agent, 426 bytes a row, 58.45 MiB a day, 1.1
+#: days to the log's 64 MiB refusal cap; the second at 512 letters, 959 bytes, 132 MiB a
+#: day, under twelve hours. A caller chooses their own User-Agent and its characters. At the
+#: serialised caps, 500 rows are about 719 KiB a window, so across 288 windows a sustained
+#: flood writes about 202 MiB a day and reaches the cap in about 7.6 hours. The friendly
+#: figure is the typical case and nothing more; the adversarial one is the sizing basis, and
+#: only an edge rate limiter or log rotation closes it. Dropping the backslash from the
+#: field allowlist is a permitted one-way tightening that would return the row to 959 bytes;
+#: it is not taken here, so that the figure is corrected without changing the boundary.
+ROW_BYTES_AT_FIELD_CAPS = 1472
 
 
 @dataclass
