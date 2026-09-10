@@ -73,6 +73,14 @@ if [ "$FROM_POINTER" = yes ]; then
         exit 1
         ;;
     esac
+    # A skip bit makes a modified file invisible to `git status`, so the guard below reads
+    # a clean tree and the stale package sails through. `git ls-files -v` reports a lower
+    # case tag for any path with `assume-unchanged` or `skip-worktree` set.
+    if git ls-files -v | grep -q '^[a-z]'; then
+      echo "FAIL: a tracked path carries an assume-unchanged or skip-worktree bit,"
+      echo "      so the tree cannot be compared. Clear it with git update-index --no-assume-unchanged."
+      exit 1
+    fi
     if [ -n "$(git status --porcelain)" ]; then
       echo "FAIL: the working tree has changed, so $PKG no longer represents it."
       echo "Rebuild, or pass the package explicitly to test it anyway."

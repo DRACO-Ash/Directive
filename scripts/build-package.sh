@@ -17,6 +17,16 @@ set -eu
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
 
+# The content sweep below needs an interpreter. The project's own is preferred; a system
+# python3 is accepted so the package can still be built on a machine without the virtual
+# environment, and the absence of both is a hard failure rather than a silent skip, because
+# this is a credential control.
+PY_FOR_SWEEP=""
+for candidate in "${PYTHON:-.venv/bin/python}" python3; do
+  if command -v "$candidate" >/dev/null 2>&1; then PY_FOR_SWEEP="$candidate"; break; fi
+done
+[ -n "$PY_FOR_SWEEP" ] || { echo "FAIL: no interpreter for the credential sweep"; exit 1; }
+
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
 # A version with a slash in it makes $OUT and `basename "$OUT"` disagree, so the zip is
 # written to one path while a different one is recorded, hashed and pointed at.
@@ -84,50 +94,89 @@ for path in $DIRS; do
   [ -d "$path" ] || { echo "FAIL: $path is named in the allowlist and does not exist"; exit 1; }
 done
 
-# The file list comes from GIT, not from a walk of the working tree, and that is a security
-# boundary rather than a tidiness preference. A directory copy ships whatever is on disk: a
-# git-ignored `src/.env` is invisible to `git status`, so the tree reads clean, the package
-# is stamped with a clean commit, and the secret is inside it. Demonstrated with a file
-# holding a credential, read back out of the shipped zip. `git ls-files` cannot see an
-# ignored or untracked file, so the class is closed at the source rather than by a
-# blocklist of names someone has to keep guessing at.
-# shellcheck disable=SC2086  # deliberate: both are newline-separated allowlists, and
-# every entry is a literal path this file controls, checked to exist immediately above.
-git ls-files -- $FILES $DIRS > "$STAGE.list"
-[ -s "$STAGE.list" ] || { echo "FAIL: git listed no files; is this a repository?"; exit 1; }
-# A path git had to quote carries a newline or a control character, which this loop cannot
-# read safely. Refuse rather than mis-handle it.
-if grep -q '^"' "$STAGE.list"; then
-  echo "FAIL: a tracked path needs quoting, so it carries a newline or control character"
-  exit 1
-fi
+# The stage is materialised from the OBJECT DATABASE, not from a walk of the working tree,
+# and that is a security boundary rather than a tidiness preference. Two attacks made the
+# case, both demonstrated rather than theorised.
+#
+# A directory copy ships whatever is on disk. A git-ignored `src/.env` is invisible to
+# `git status`, so the tree reads clean, the package is stamped with a clean commit, and the
+# secret is inside it. Reading the file list from `git ls-files` closed that, and left a
+# second hole open: `cp` dereferences a symlink at any INTERMEDIATE path component, so
+# replacing `docs/` with a link to a directory outside the tree put host-side content into
+# the artefact while every leaf-level check passed. The sweep could not see it, because `cp`
+# had already resolved it.
+#
+# `git archive HEAD` ends the class rather than narrowing it again. The bytes come from the
+# committed tree, so an ignored file, an untracked file, a symlinked directory component, a
+# hardlink swapped in on disk and an `assume-unchanged` bit are all equally invisible: none
+# of them is in HEAD.
+#
+# The consequence is worth stating plainly. The package always contains HEAD, never the
+# working tree. On a dirty tree it therefore packages the committed content and the `-dirty`
+# stamp says so, which is the honest signal: the artefact does not represent what you are
+# looking at.
+# shellcheck disable=SC2086  # deliberate: both are newline-separated allowlists of
+# literal paths this file controls, each checked to exist immediately above.
+git archive HEAD -- $FILES $DIRS | tar -x -C "$STAGE"
+[ -n "$(find "$STAGE" -type f -print -quit)" ] || { echo "FAIL: git archive produced nothing"; exit 1; }
 
-while IFS= read -r path; do
-  # A symlink inside an allowlisted directory is an exfiltration primitive: `zip -r` without
-  # `-y` DEREFERENCES it and stores the target's bytes, so `docs/notes.md` pointing at a
-  # deploy token on the build host puts that token in the artefact. Demonstrated twice.
-  # Refused rather than followed, and refused rather than stored as a link, because nothing
-  # in this package has any reason to be one.
-  if [ -L "$path" ]; then
-    echo "FAIL: $path is a symlink; the archiver would store what it points at"
-    exit 1
-  fi
-  mkdir -p "$STAGE/$(dirname "$path")"
-  cp "$path" "$STAGE/$path"
-done < "$STAGE.list"
-rm -f "$STAGE.list"
+# A symlink can still be COMMITTED, and `git archive` faithfully restores it as a link.
+# Nothing in this package has any reason to be one, and `zip -r` without `-y` would store
+# what it points at, so any link is refused rather than followed or preserved.
+LINK="$(find "$STAGE" -type l -print -quit)"
+[ -z "$LINK" ] || { echo "FAIL: $LINK is a symlink; the archiver would store what it points at"; exit 1; }
 
-# Belt and braces on the staged tree, because the two controls above fail differently: the
-# git list closes ignored and untracked files, this closes anything that reached the stage
-# by another route. A credential must not leave this repository in any form.
-# `.env.example` holds placeholders, is tracked, and the suite reads it from the package
-# root, so it is the one name in this shape that must ship.
+# By name. `.env.example` holds placeholders, is tracked, and the suite reads it from the
+# package root, so it is the one name in this shape that must ship.
 SECRET="$(find "$STAGE" ! -name '.env.example' \
                \( -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \
                   -o -name 'id_rsa*' -o -name '*.p12' -o -name '*.pfx' \) -print -quit)"
 [ -z "$SECRET" ] || { echo "FAIL: $SECRET looks like a credential and is in the package"; exit 1; }
-LINK="$(find "$STAGE" -type l -print -quit)"
-[ -z "$LINK" ] || { echo "FAIL: $LINK is a symlink in the staged package"; exit 1; }
+
+# By CONTENT, because a name sweep is only a name sweep. A tracked file with an innocuous
+# name and a credential inside it shipped in a clean-stamped package; the pre-write hook
+# that would have caught it only runs on this assistant's own edits, so a human `git add`,
+# a heredoc or a paste never passes through it. These are the hook's own patterns, so one
+# rule set governs both routes into the repository. A line carrying the project's existing
+# `# noqa: S105` or `# nosec` marker is a declared test double and is skipped, which is the
+# convention the code already uses rather than a new one invented here.
+"$PY_FOR_SWEEP" - "$STAGE" <<'SWEEP'
+import pathlib
+import re
+import sys
+
+RULES = [
+    ("AWS access key id", r"\bAKIA[0-9A-Z]{16}\b"),
+    ("Generic API key assignment",
+     r"(?:api[_-]?key|secret|token|password|passwd|pwd)\s*[:=]\s*['\"][^'\"]{8,}['\"]"),
+    ("Bearer token", r"\bBearer\s+[A-Za-z0-9._\-]{20,}\b"),
+    ("Private key block", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    ("LLM provider key", r"\b(?:sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,})\b"),
+    ("Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b"),
+    ("Slack token", r"\bxox[baprs]-[0-9A-Za-z\-]{10,}\b"),
+    ("GitLab personal token", r"\bglpat-[0-9A-Za-z_\-]{20,}\b"),
+    ("Client-side access gate", r"\b(?:ADMIN_)?PIN\s*=\s*['\"][0-9A-Za-z]{4,}['\"]"),
+]
+COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in RULES]
+
+hits = []
+for path in pathlib.Path(sys.argv[1]).rglob("*"):
+    if not path.is_file():
+        continue
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        continue
+    for number, line in enumerate(text.splitlines(), start=1):
+        if "# noqa: S105" in line or "# nosec" in line:
+            continue
+        for label, rule in COMPILED:
+            if rule.search(line):
+                hits.append(f"{path}:{number}: {label}")
+for hit in hits:
+    print(f"FAIL: {hit}")
+sys.exit(1 if hits else 0)
+SWEEP
 
 # The assertion that would have caught the gate's finding. The suite reads these from the
 # package root, so a package without them fails the platform test stage even though the
