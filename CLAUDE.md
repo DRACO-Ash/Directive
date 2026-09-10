@@ -35,8 +35,9 @@ Authentication stays in the application, against Entra ID with MSAL, rather than
 ## Commands
 
 ```
-.venv/bin/python -m pip install --require-hashes -r requirements.txt \
-                                                 -r requirements-dev.txt   # install
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.txt   # install (nested)
+sh scripts/build-package.sh                                                # the upload package
+sh scripts/simulate-pipeline.sh                                            # the platform's stage 5
 sh scripts/verify.sh                                                       # the loop
 .venv/bin/flask --app wsgi run --port 8080                                 # local dev
 docker build -t comply-ops .                                               # build
@@ -55,13 +56,15 @@ wsgi.py                 the container entrypoint, reads PORT
 Dockerfile              the whole build
 tests/                  the suite, run against the uploaded package by the platform
 scripts/verify.sh       the verification loop, one command
+  build-package.sh      the App Store upload package, allowlisted
+  simulate-pipeline.sh  the platform's test stage, run against that package
 docs/                   deployment parameters and runbooks
 .claude/                this baseline (skills, agents, output style, hooks, settings)
 ```
 
 ## Toolchain
 
-Python 3.12, pinned in `.python-version`. Dependencies are exact-pinned and hash-locked in `requirements.txt` and `requirements-dev.txt`, compiled from the `.in` files with `pip-compile --generate-hashes`. Lint and format with `ruff` on the platform's analyser profile, not a looser default. Types with `mypy` in strict mode across the whole package. Tests with `pytest`, coverage to Cobertura XML at `coverage.xml`, which is the exact artefact the App Store Code Quality gate reads. Dependency scanning with `pip-audit`, where an unreachable advisory service is an honest skip locally and a hard failure in Continuous Integration. Static application security testing with `bandit`, required by AMD-001 section 10.6 on every code change; `ruff` and `mypy` are a linter and a type checker and do not satisfy that clause.
+Python 3.12, pinned in `.python-version`. Dependencies are exact-pinned and hash-locked across **three** nested lockfiles, compiled from the `.in` files with `pip-compile --generate-hashes --strip-extras`: `requirements-runtime.txt` is what the image installs, `requirements.txt` is the test-inclusive superset the App Store installs at its test stage and reads at its dependency scan, and `requirements-dev.txt` adds the analyser tooling for the local loop and Continuous Integration. The names are the platform's, not a preference: stage 5 runs `pip install -r requirements.txt` then pytest, so a runtime-only `requirements.txt` fails the upload with every later stage skipped, and installing the test-inclusive file in the image would ship the whole test toolchain into the container scan. The `.in` files nest with `-r`, so the runtime set is a strict subset at identical versions; that is asserted by the verification loop and by the suite, because the scanner reads one file by name and the image installs another, and a divergence would put a shipped version through no gate at all. Lint and format with `ruff` on the platform's analyser profile, not a looser default. Types with `mypy` in strict mode across the whole package. Tests with `pytest`, coverage to Cobertura XML at `coverage.xml`, which is the exact artefact the App Store Code Quality gate reads. Dependency scanning with `pip-audit`, where an unreachable advisory service is an honest skip locally and a hard failure in Continuous Integration. Static application security testing with `bandit`, required by AMD-001 section 10.6 on every code change; `ruff` and `mypy` are a linter and a type checker and do not satisfy that clause.
 
 ## Quality bar
 

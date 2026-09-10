@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -547,6 +548,61 @@ def test_the_container_runs_one_worker(tmp_path: Path) -> None:
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert "--workers 1" in dockerfile
     assert "--workers 2" not in dockerfile
+
+
+def _pins(name: str) -> dict[str, str]:
+    """Return the pinned versions in one lockfile, read from the PACKAGE root."""
+    text = (Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8")
+    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ \\\n]+)", text, re.MULTILINE))
+
+
+def test_the_platform_test_stage_can_install_its_own_test_runner() -> None:
+    """`requirements.txt` is the file the platform installs before it runs pytest.
+
+    It was the runtime set. The platform's test stage is `pip install -r requirements.txt`
+    then pytest, so the stage died on "No module named pytest" and every later stage was
+    skipped, while the repository's own loop stayed green because it installs a second file
+    the platform never reads. Measured against the built package by
+    `scripts/simulate-pipeline.sh`, not reasoned about.
+    """
+    assert "pytest" in _pins("requirements.txt")
+    assert "pytest-cov" in _pins("requirements.txt")
+
+
+def test_the_image_never_installs_the_test_toolchain() -> None:
+    """The other half of the same split, and the reason it is a split rather than one file.
+
+    `requirements.txt` has to carry pytest for the stage above. Installing that file in the
+    image would ship the whole test toolchain and hand the container scan a vulnerability
+    surface the running service never executes.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    # Instructions only. The comment above the COPY explains the platform's stage 5 command
+    # and therefore contains the string this assertion forbids, which is a fair thing for a
+    # comment to say and not a thing the build may do.
+    build = [line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")]
+    assert any("-r requirements-runtime.txt" in line for line in build)
+    assert not [line for line in build if "-r requirements.txt" in line]
+    assert "pytest" not in _pins("requirements-runtime.txt")
+
+
+@pytest.mark.parametrize(
+    ("inner", "outer"),
+    [
+        ("requirements-runtime.txt", "requirements.txt"),
+        ("requirements.txt", "requirements-dev.txt"),
+    ],
+)
+def test_the_lockfiles_nest_at_identical_versions(inner: str, outer: str) -> None:
+    """The scanner reads one file by name and the image installs another.
+
+    So a package resolved to one version in the file that SHIPS and another in the file
+    that is SCANNED puts a version through no gate at all. Not hypothetical: the first
+    attempt at this split resolved click to 8.4.2 in one file and 8.5.0 in the other.
+    """
+    small, large = _pins(inner), _pins(outer)
+    drift = {name: (v, large.get(name)) for name, v in small.items() if large.get(name) != v}
+    assert not drift, f"{inner} disagrees with {outer} on {drift}"
 
 
 # ============================ the environment is fail-closed ============================

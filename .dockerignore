@@ -24,7 +24,11 @@ README.md
 CLAUDE.md
 READINESS.md
 requirements.in
+requirements-runtime.in
 requirements-dev.in
 requirements-dev.txt
+# The test-inclusive lockfile. The platform reads it; the image installs
+# `requirements-runtime.txt` instead and must not see this one.
+requirements.txt
 pyproject.toml
 sonar-project.properties

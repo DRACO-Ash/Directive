@@ -60,7 +60,7 @@ echo "== dependency vulnerabilities =="
 REPORT="$(mktemp)"
 trap 'rm -f "$REPORT"' EXIT
 
-for LOCKFILE in requirements.txt requirements-dev.txt; do
+for LOCKFILE in requirements-runtime.txt requirements.txt requirements-dev.txt; do
   echo "-- $LOCKFILE"
   if "$PY" -m pip_audit -r "$LOCKFILE" > "$REPORT" 2>&1; then
     cat "$REPORT"
@@ -75,7 +75,7 @@ for LOCKFILE in requirements.txt requirements-dev.txt; do
 done
 
 echo "== software bill of materials =="
-# A CycloneDX SBOM of the RUNTIME tree, which is the tree the image installs. Emitted by
+# A CycloneDX SBOM of the RUNTIME tree, `requirements-runtime.txt`, which is what ships. Emitted by
 # pip-audit, so this leg adds no dependency: the alternative was a new packaging tool in
 # the build path, which is the thing a supply-chain control should add least of.
 #
@@ -93,7 +93,7 @@ echo "== software bill of materials =="
 # The hashes exist in requirements.txt and merging them in by hand would make this file
 # less trustworthy, not more. Closing that gap needs a real SBOM generator; recorded in
 # docs/DEPLOYMENT.md rather than implied to be done.
-if "$PY" -m pip_audit -r requirements.txt --format cyclonedx-json \
+if "$PY" -m pip_audit -r requirements-runtime.txt --format cyclonedx-json \
      --progress-spinner off -o sbom.cdx.json > "$REPORT" 2>&1; then
   echo "sbom.cdx.json written, $("$PY" -c 'import json,sys; print(len(json.load(open("sbom.cdx.json"))["components"]))') components"
 elif grep -qiE "temporary failure|connection|resolve|timed out|network|unreachable" "$REPORT"; then
@@ -104,5 +104,33 @@ else
   echo "FAIL: the SBOM could not be generated"
   exit 1
 fi
+
+echo "== dependency nesting =="
+# The platform never checks this and it is what a divergence would hide. The scanner reads
+# `requirements.txt` by name and never `requirements-runtime.txt`, so a package resolved to
+# one version in the file that SHIPS and another in the file that is SCANNED would put a
+# version through no gate at all. It is not hypothetical: splitting these files resolved
+# click to 8.5.0 in one and 8.4.2 in the other on the first attempt.
+"$PY" - <<'NESTING'
+import re
+import sys
+
+def pins(path):
+    text = open(path, encoding="utf-8").read()
+    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ \\\n]+)", text, re.MULTILINE))
+
+failed = False
+for inner, outer in (
+    ("requirements-runtime.txt", "requirements.txt"),
+    ("requirements.txt", "requirements-dev.txt"),
+):
+    small, large = pins(inner), pins(outer)
+    for name, version in small.items():
+        if large.get(name) != version:
+            print(f"FAIL: {name}=={version} in {inner} but {large.get(name)} in {outer}")
+            failed = True
+sys.exit(1 if failed else 0)
+NESTING
+echo "runtime subset of test subset of dev, at identical versions"
 
 echo "LOOP: PASS"
