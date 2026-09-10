@@ -15,11 +15,18 @@ set -eu
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
 
+# The package to test: the argument, or whatever the builder last wrote. Reading the
+# builder's own record beats picking the newest file by modification time, which meant
+# parsing `ls` output and could pick the wrong one of two packages built from different
+# commits.
 PKG="${1:-}"
-if [ -z "$PKG" ]; then
-  PKG="$(ls -1t dist/comply-ops-*.zip 2>/dev/null | head -1 || true)"
+if [ -z "$PKG" ] && [ -f dist/latest ]; then
+  PKG="$(cat dist/latest)"
 fi
-[ -n "$PKG" ] && [ -f "$PKG" ] || { echo "FAIL: no package. Run scripts/build-package.sh first."; exit 1; }
+if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
+  echo "FAIL: no package at '${PKG:-dist/latest}'. Run scripts/build-package.sh first."
+  exit 1
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

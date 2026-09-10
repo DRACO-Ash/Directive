@@ -96,6 +96,11 @@ NESTED="$(find "$STAGE" -mindepth 2 -name Dockerfile -print | head -1)"
 (cd "$STAGE" && zip -q -r -X "../$(basename "$OUT")" . )
 rm -rf "$STAGE"
 
+# The builder names what it built. The simulation used to pick the newest zip by
+# modification time, which meant parsing `ls` output and guessing; with two packages in
+# `dist/` from different commits it is a guess that can be wrong, and it was.
+printf '%s\n' "$OUT" > dist/latest
+
 echo "package: $OUT"
 echo "size:    $(wc -c < "$OUT") bytes"
 echo "sha256:  $(sha256sum "$OUT" | cut -d' ' -f1)"

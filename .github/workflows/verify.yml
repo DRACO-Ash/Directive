@@ -30,9 +30,11 @@ jobs:
         run: git diff --exit-code -- requirements-runtime.txt requirements.txt requirements-dev.txt
 
       # Three POSIX scripts now carry the verification, packaging and pipeline-simulation
-      # logic and nothing statically checked them. `shellcheck` is not installed on the
-      # development machine, so the local loop reports an honest skip and this runner is the
-      # binding leg, exactly as it is for the dependency scan.
+      # logic and nothing statically checked them. `shellcheck` may be absent from the
+      # development machine, where the local loop reports an honest skip, so this runner is
+      # the binding leg exactly as it is for the dependency scan. The binary comes from the
+      # runner image rather than an install step; if a future image drops it, this fails on
+      # a missing command, which is the right direction.
       - name: Shell
         run: shellcheck -s sh scripts/*.sh
 
