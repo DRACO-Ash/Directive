@@ -30,19 +30,39 @@ if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
   exit 1
 fi
 
-# A package built from a different commit tests the wrong tree and reports PASS for it,
+# A package built from a different tree tests the wrong thing and reports PASS for it,
 # which is the one answer this script must never give. Checked only when the package came
 # from the pointer: an explicit argument is a deliberate choice to test that file.
-if [ "$FROM_POINTER" = yes ] && command -v git >/dev/null 2>&1; then
-  HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
-  case "$PKG" in
-    *"$HEAD_SHORT"*) ;;
-    *)
-      echo "FAIL: $PKG was not built from the current commit ($HEAD_SHORT)."
-      echo "Run scripts/build-package.sh, or pass the package explicitly to test it anyway."
-      exit 1
-      ;;
-  esac
+#
+# The match is on the FILENAME the builder writes, not anywhere in the path. `*$HEAD_SHORT*`
+# accepted `dist/3a0661f/comply-ops-2.2-20260101-deadbee.zip` because the commit appeared in
+# a directory name, which is looser than the check reads.
+#
+# `-dirty` closes the remaining gap. Commit granularity alone still admits a package built
+# before an uncommitted edit, so a PASS for a tree whose package was never built stayed
+# reachable inside one commit. The builder stamps a dirty tree and this refuses that stamp
+# from the pointer, because a dirty package is by construction out of date the moment
+# anything changes again.
+if [ "$FROM_POINTER" = yes ]; then
+  if command -v git >/dev/null 2>&1; then
+    HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+    case "${PKG##*/}" in
+      comply-ops-*-"$HEAD_SHORT".zip) ;;
+      comply-ops-*-"$HEAD_SHORT"-dirty.zip)
+        echo "FAIL: ${PKG##*/} was built from a dirty tree, so it may already be stale."
+        echo "Commit, rebuild, or pass the package explicitly to test it anyway."
+        exit 1
+        ;;
+      *)
+        echo "FAIL: $PKG was not built from the current commit ($HEAD_SHORT)."
+        echo "Run scripts/build-package.sh, or pass the package explicitly to test it anyway."
+        exit 1
+        ;;
+    esac
+  else
+    echo "SKIPPED: git is unavailable, so the package was NOT checked against the tree."
+    echo "Compensating control: none here. Pass the package explicitly to be sure of it."
+  fi
 fi
 
 WORK="$(mktemp -d)"
