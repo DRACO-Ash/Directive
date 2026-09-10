@@ -5,7 +5,7 @@ Bluestaq Ltd, Compliance Operations Console (`comply-ops`), release V2.2. Drafte
 | Item | Value |
 | --- | --- |
 | Application | `comply-ops`, Bluestaq App Store, `comply-ops.apps.bluestaq.com` |
-| Release under review | V2.2, commit `TBC, re-verify` (the merge commit of the branch carrying this record) |
+| Release under review | V2.2, main at merge commit `79fd8b4` (PR #9, 2026-09-10) |
 | Reviewer and decision owner | Ash Higgins, Information Security Manager and Data Protection Lead, as UK Information Security Officer |
 | Policy | AMD-001 section 10.4, Accreditation |
 | Related records | `docs/OWASP-TOP-10-TEST.md` (AMD-001 10.6 pre-deployment test), `docs/DEPLOYMENT.md` (conformance table, recorded decisions, deviations) |
