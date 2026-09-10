@@ -83,17 +83,34 @@ jobs:
       # The artefact is what distinguishes an App Store analyser crash from a genuine
       # advisory, and the Cyber Resilience Act reporting duty binds on 11 September 2026.
       #
-      # Of `requirements-runtime.txt`, the tree the image installs. It read
-      # `requirements.txt` until the lockfiles split three ways, and from that moment this
-      # artefact described a product that does not exist: 15 components including pytest and
-      # coverage, against the 8 the container actually carries. An inaccurate bill of
-      # materials is worse than none, because this is the artefact the reporting duty rests
-      # on and an assessor has no way to tell it is wrong.
+      # Built from an INSTALL of the runtime lockfile, not from the lockfile text. Two
+      # separate defects made the text route wrong. It read `requirements.txt` until the
+      # lockfiles split three ways, and from that moment described a product that does not
+      # exist: 15 components including pytest, against the 9 the container carries. And the
+      # text route is incomplete even when pointed at the right file: `pip-audit -r` returned
+      # 8 of the 9 pins, dropping `packaging` from both the audit and the inventory with no
+      # skip notice, no warning and exit 0. Installing the lockfile and auditing that by path
+      # returns all 9, and the assertion below fails the job if it ever does not.
       - name: Software bill of materials
         run: |
-          python -m pip_audit -r requirements-runtime.txt --format cyclonedx-json \
+          python -m pip install --require-hashes --no-deps --target sbom-tree \
+            -r requirements-runtime.txt
+          python -m pip_audit --path sbom-tree --format cyclonedx-json \
             --progress-spinner off -o sbom.cdx.json
           test -s sbom.cdx.json
+          python - <<'COMPLETE'
+          import json, re, sys
+          pins = {n.lower() for n, _ in re.findall(
+              r"^[ \t]*([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)",
+              open("requirements-runtime.txt", encoding="utf-8").read(), re.MULTILINE)}
+          listed = {c["name"].lower() for c in
+                    json.load(open("sbom.cdx.json", encoding="utf-8"))["components"]}
+          missing = sorted(pins - listed)
+          if missing or not pins:
+              sys.exit(f"the bill of materials omits {missing or 'everything'}")
+          print(f"all {len(pins)} shipped pins are inventoried")
+          COMPLETE
+          rm -rf sbom-tree
 
       - name: Keep the bill of materials with the run
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

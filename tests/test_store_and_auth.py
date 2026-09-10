@@ -561,7 +561,54 @@ def _pins(name: str) -> dict[str, str]:
     """
     text = (Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8")
     assert "--strip-extras" in text, f"{name} was not compiled with --strip-extras"
-    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)", text, re.MULTILINE))
+    # `^` alone missed a pin written with leading whitespace, which pip honours: an indented
+    # `requests==2.19.1` appended to the runtime lockfile was installed by pip while all
+    # three nesting tests stayed green. The count guard closes the other direction, where an
+    # empty parse satisfies every subset check vacuously.
+    found = re.findall(r"^[ \t]*([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)", text, re.MULTILINE)
+    declared = len(re.findall(r"^[ \t]*[A-Za-z0-9_.\-]+==", text, re.MULTILINE))
+    assert found, f"{name} parsed no pins at all"
+    assert len(found) == declared, f"{name} parsed {len(found)} pins against {declared} declared"
+    return dict(found)
+
+
+@pytest.mark.parametrize("field", ["id", "created", "updated"])
+def test_a_client_cannot_set_a_server_owned_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """`records.check_fields` DISCARDS these three rather than rejecting them.
+
+    A signed accreditation record and the OWASP test record both now assert it, and nothing
+    exercised it: the loop reported the `continue` at `records.py:105` uncovered, and
+    deleting the skip left the suite green. The direction of failure is safe, because the
+    three are absent from `FIELD_CAPS` and removing the skip turns the discard into a 400
+    rather than an acceptance, but a claim in a signed record needs evidence beneath it.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    client = create_app().test_client()
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+    )
+    # Re-read after signing in: `auth.sign_in` clears the session by design.
+    token = {"X-CSRF-Token": client.get("/api/registers").headers["X-CSRF-Token"]}
+    forged = "TSK-9999" if field == "id" else "1999-01-01T00:00:00Z"
+    created = client.post(
+        "/api/registers/tasks",
+        json={"title": "server owns this", "state": "OPEN", field: forged},
+        headers=token,
+    )
+
+    assert created.status_code in (200, 201), created.get_data(as_text=True)
+    record = created.get_json()
+    stored = record.get(field) or record.get("record", {}).get(field)
+    assert stored != forged, f"a client set {field} to its own value"
+    assert stored, f"{field} must still be set by the server"
 
 
 def test_the_platform_test_stage_can_install_its_own_test_runner() -> None:

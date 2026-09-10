@@ -18,6 +18,11 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
+# A version with a slash in it makes $OUT and `basename "$OUT"` disagree, so the zip is
+# written to one path while a different one is recorded, hashed and pointed at.
+case "$VERSION" in
+  "" | *[!0-9.]* ) echo "FAIL: implausible version '$VERSION' in pyproject.toml"; exit 1 ;;
+esac
 STAMP="$(date -u +%Y%m%d)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 # A package from a tree with uncommitted changes is stamped as such, so the simulation can
@@ -74,19 +79,55 @@ mkdir -p "$STAGE"
 
 for path in $FILES; do
   [ -f "$path" ] || { echo "FAIL: $path is named in the allowlist and does not exist"; exit 1; }
-  cp "$path" "$STAGE/$path"
 done
 for path in $DIRS; do
   [ -d "$path" ] || { echo "FAIL: $path is named in the allowlist and does not exist"; exit 1; }
-  cp -R "$path" "$STAGE/$path"
 done
 
-# Local build output can ride along inside a copied directory. Remove it rather than
-# trusting that it was never generated: an uploaded __pycache__ is a stale-bytecode
-# failure waiting for a Python version difference to surface it.
-find "$STAGE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-find "$STAGE" -name '*.pyc' -delete 2>/dev/null || true
-find "$STAGE" -name '.DS_Store' -delete 2>/dev/null || true
+# The file list comes from GIT, not from a walk of the working tree, and that is a security
+# boundary rather than a tidiness preference. A directory copy ships whatever is on disk: a
+# git-ignored `src/.env` is invisible to `git status`, so the tree reads clean, the package
+# is stamped with a clean commit, and the secret is inside it. Demonstrated with a file
+# holding a credential, read back out of the shipped zip. `git ls-files` cannot see an
+# ignored or untracked file, so the class is closed at the source rather than by a
+# blocklist of names someone has to keep guessing at.
+# shellcheck disable=SC2086  # deliberate: both are newline-separated allowlists, and
+# every entry is a literal path this file controls, checked to exist immediately above.
+git ls-files -- $FILES $DIRS > "$STAGE.list"
+[ -s "$STAGE.list" ] || { echo "FAIL: git listed no files; is this a repository?"; exit 1; }
+# A path git had to quote carries a newline or a control character, which this loop cannot
+# read safely. Refuse rather than mis-handle it.
+if grep -q '^"' "$STAGE.list"; then
+  echo "FAIL: a tracked path needs quoting, so it carries a newline or control character"
+  exit 1
+fi
+
+while IFS= read -r path; do
+  # A symlink inside an allowlisted directory is an exfiltration primitive: `zip -r` without
+  # `-y` DEREFERENCES it and stores the target's bytes, so `docs/notes.md` pointing at a
+  # deploy token on the build host puts that token in the artefact. Demonstrated twice.
+  # Refused rather than followed, and refused rather than stored as a link, because nothing
+  # in this package has any reason to be one.
+  if [ -L "$path" ]; then
+    echo "FAIL: $path is a symlink; the archiver would store what it points at"
+    exit 1
+  fi
+  mkdir -p "$STAGE/$(dirname "$path")"
+  cp "$path" "$STAGE/$path"
+done < "$STAGE.list"
+rm -f "$STAGE.list"
+
+# Belt and braces on the staged tree, because the two controls above fail differently: the
+# git list closes ignored and untracked files, this closes anything that reached the stage
+# by another route. A credential must not leave this repository in any form.
+# `.env.example` holds placeholders, is tracked, and the suite reads it from the package
+# root, so it is the one name in this shape that must ship.
+SECRET="$(find "$STAGE" ! -name '.env.example' \
+               \( -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \
+                  -o -name 'id_rsa*' -o -name '*.p12' -o -name '*.pfx' \) -print -quit)"
+[ -z "$SECRET" ] || { echo "FAIL: $SECRET looks like a credential and is in the package"; exit 1; }
+LINK="$(find "$STAGE" -type l -print -quit)"
+[ -z "$LINK" ] || { echo "FAIL: $LINK is a symlink in the staged package"; exit 1; }
 
 # The assertion that would have caught the gate's finding. The suite reads these from the
 # package root, so a package without them fails the platform test stage even though the
@@ -104,6 +145,7 @@ NESTED="$(find "$STAGE" -mindepth 2 -name Dockerfile -print | head -1)"
 # No secret may ride along. `.env.example` holds placeholders only and is checked by the
 # suite; a real `.env` is git-ignored and must never reach the package.
 ! [ -e "$STAGE/.env" ] || { echo "FAIL: .env is in the package"; exit 1; }
+[ -f "$STAGE/.env.example" ] || { echo "FAIL: .env.example must ship; the suite reads it"; exit 1; }
 
 (cd "$STAGE" && zip -q -r -X "../$(basename "$OUT")" . )
 rm -rf "$STAGE"
