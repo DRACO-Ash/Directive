@@ -19,12 +19,31 @@ back what it found, so a burst that stops is flushed by the next refusal from AN
 rather than waiting for the same one to come back. An evicted address hands its pending
 count back the same way instead of losing it.
 
-Three limits, stated because each was claimed away once already.
+A flood spread across MANY source addresses is bounded separately, by
+`GLOBAL_ROWS_PER_WINDOW`, and that bound exists because the per-address one did not reach
+it. This module previously stated that `MAXIMUM_TRACKED` held such a flood to about 4096
+entries and 1.66 MiB per window, putting the 64 MiB cap 3.2 hours away. Measurement
+disproved it: 6000 distinct addresses in one window wrote 6000 entries and 2.44 MiB, 1.46
+times the stated ceiling, scaling linearly, with the cap about 157,000 addresses away.
+`MAXIMUM_TRACKED` bounds the per-address tracker and never bounded rows. The figure is
+corrected here rather than quietly dropped, because it was the sizing on which deferring an
+edge rate limiter rested.
 
-A flood spread across MANY source addresses still writes one entry per address per window.
-At the tracker's cap that is about 4096 entries and 1.66 MiB per five-minute window, so the
-64 MiB cap is roughly 3.2 hours away. Narrowing that needs a real rate limiter at the edge
-or in front of the process, which is the deferred control in `docs/DEPLOYMENT.md`.
+The first version of that fix then traded unbounded rows for unbounded memory, which is
+worse. The set of over-budget addresses had no cap, and the post-budget path does no disk
+writing, so it is the cheapest request this application serves. Measured at 300,000
+addresses in one window: 26.1 MiB resident, against 0.3 MiB once capped. An unauthenticated
+caller could have driven the single worker to an out-of-memory restart, and a restart
+discards every pending count, which is exactly the evidence loss this module exists to
+prevent. The set is capped at `MAXIMUM_TRACKED` and the address count is reported as a floor
+when it hits that, because an exact-looking 1024 where the truth was 300,000 misleads a
+reader more than an honest "at least".
+
+Three limits remain, stated because each was claimed away once already.
+
+Past the global budget, per-address attribution is gone: the overflow is one entry naming a
+count of refusals and a count of addresses. That is deliberate and it is a real loss. The
+addresses are in the platform's ingress log, and a log filled to its cap records nothing.
 
 There is no timer and no shutdown flush. A count pending when the process is KILLED is
 lost, because the sweep only runs when something calls in. Closing that needs a scheduler
@@ -39,7 +58,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 #: How many refusals from one source address are recorded individually per window.
 RECORDED_PER_WINDOW = 3
@@ -47,11 +66,66 @@ RECORDED_PER_WINDOW = 3
 #: The window, in seconds.
 WINDOW_SECONDS = 300.0
 
-#: The most source addresses tracked at once. Bounded so the tracker cannot itself be the
-#: thing an attacker exhausts: without this, one entry per spoofed address is unbounded
-#: memory. At the cap the least recently seen address is dropped, and its pending count is
-#: reported to the caller so it still reaches the log rather than being lost silently.
+#: The most source addresses held at once, in the per-address tracker AND in the set of
+#: over-budget addresses. It bounds MEMORY and never bounded rows, which is worth stating
+#: flatly because it was once written down as though it bounded entries: at the cap the
+#: least recently seen address is dropped, its pending count is handed back, and the NEXT
+#: refusal from a new address is recorded individually all the same. Rows are bounded by
+#: `GLOBAL_ROWS_PER_WINDOW` below, which exists because this constant does not do that job.
 MAXIMUM_TRACKED = 1024
+
+#: The most refusal rows written across ALL addresses in one window: individual refusals,
+#: collapse summaries and flood summaries alike. Every one of them is a row in the log, and
+#: two earlier versions were defeated in turn: the first charged only the first kind, and
+#: the second charged summaries AFTER handing them to the caller, who writes every one it
+#: is handed. Both measured at 666 rows per window under the strategy that maximises
+#: summaries, and the second at 832 when two such strategies are combined. A summary is
+#: now admitted or refused against the budget BEFORE it is handed back, and a refused one
+#: folds into the flood row. It is 500 now, measured under all three strategies.
+#:
+#: This is the bound that exists on the LOG. It is not a bound on the total, and the total
+#: is sized at the field caps, not at the friendly row: see `ROW_BYTES_AT_FIELD_CAPS`.
+#:
+#: Measured rather than reasoned, which is the rule that was broken when the per-address cap
+#: was described as a ceiling on entries. Driving 6000 distinct source addresses through
+#: `/auth/callback` inside a single window wrote 6000 durable entries and 2.44 MiB, at 426
+#: bytes each, against a claimed ceiling of 4096 entries and 1.66 MiB. That is 1.46 times the
+#: figure asserted, it scales linearly with addresses, and it puts the audit log's 64 MiB
+#: refusal cap about 157,000 addresses away rather than 3.2 hours away. An IPv6 /64 holds
+#: more addresses than that by twelve orders of magnitude.
+#:
+#: Beyond this budget a refusal is still counted, and the excess is written as one entry per
+#: window naming the number of refusals and the number of distinct addresses. Per-address
+#: attribution is deliberately traded for a bound at that point: the addresses are in the
+#: platform's ingress log, and an audit log that has been filled to its cap records nothing
+#: at all.
+GLOBAL_ROWS_PER_WINDOW = 500
+
+#: The size of one refusal row AS SERIALISED when the caller fills every field it controls
+#: to the audit boundary's cap and chooses the character that serialises largest: a 512 byte
+#: User-Agent of backslashes and a 45 character source address. The field cap is measured
+#: on the value, the log is measured on the line, and `json.dumps` writes each backslash as
+#: two bytes, so the row at the caps is 1471 bytes and not the 959 that 512 letters make.
+#: Pinned at the next round figure, with a test that writes exactly that row and checks it
+#: still fits, so a field added to the entry or a change to the serialiser moves this number
+#: rather than silently invalidating the sizing below. It is the `LOGIN_FAILED` row that is
+#: pinned: a `LOGIN_FAILED_REPEATED` row at the same caps is up to 24 bytes longer for its
+#: action name and count, and an `AUDIT_KEY_ID` at its 32 character cap adds 30 bytes to
+#: every row, so the largest possible row is about 1526 bytes. At three individual rows to
+#: each summary that moves the figures below by under one per cent, and by 3.5 per cent if
+#: every row were the largest, which changes no decision at the precision they are stated.
+#:
+#: The residual is sized at THIS row, because two earlier figures were not. The first was
+#: measured with the test client's short User-Agent, 426 bytes a row, 58.45 MiB a day, 1.1
+#: days to the log's 64 MiB refusal cap; the second at 512 letters, 959 bytes, 132 MiB a
+#: day, under twelve hours. A caller chooses their own User-Agent and its characters. At the
+#: serialised caps, 500 rows are about 719 KiB a window, so across 288 windows a sustained
+#: flood writes about 202 MiB a day and reaches the cap in about 7.6 hours. The friendly
+#: figure is the typical case and nothing more; the adversarial one is the sizing basis, and
+#: only an edge rate limiter or log rotation closes it. Dropping the backslash from the
+#: field allowlist is a permitted one-way tightening that would return the row to 959 bytes;
+#: it is not taken here, so that the figure is corrected without changing the boundary.
+ROW_BYTES_AT_FIELD_CAPS = 1472
 
 
 @dataclass
@@ -68,10 +142,39 @@ _windows: dict[str, _Window] = {}
 _guard = threading.Lock()
 
 
+@dataclass
+class _Budget:
+    """The global window: how many rows have been written, and what is over the budget."""
+
+    #: ``None`` until the first refusal, never 0.0. A float sentinel collided with a
+    #: legitimate `time.monotonic()` of 0.0, so the window rolled on every call and the
+    #: budget never bit. Caught by its own test rather than in review.
+    started: float | None = None
+    written: int = 0
+    refusals_over: int = 0
+    #: Capped at MAXIMUM_TRACKED. Uncapped, this replaced unbounded ROWS with unbounded
+    #: MEMORY, which is worse: the post-budget path does no disk writing, so it is the
+    #: cheapest request the application serves. Measured at 2,398 refusals a second in
+    #: process, with 300,000 addresses reaching 38.6 MiB resident while `_windows` stayed
+    #: correctly at 1024. An unauthenticated caller could drive the single worker to an
+    #: out-of-memory restart, and a restart discards every pending count, which is the
+    #: evidence loss this module exists to prevent.
+    addresses_over: set[str] = field(default_factory=set)
+    #: Whether the address count above is a floor rather than an exact figure. Reported as
+    #: a floor rather than silently understated: an assessor reading "1024 addresses" when
+    #: it was 300,000 is being misled by a number that looks precise.
+    addresses_capped: bool = False
+
+
+_budget = _Budget()
+
+
 def reset() -> None:
-    """Forget every tracked address. For tests and for a deliberate restart."""
+    """Forget every tracked address and the global budget. For tests and a restart."""
+    global _budget  # noqa: PLW0603 - one process-wide budget, guarded by the lock
     with _guard:
         _windows.clear()
+        _budget = _Budget()
 
 
 @dataclass(frozen=True)
@@ -83,6 +186,16 @@ class Collapsed:
 
 
 @dataclass(frozen=True)
+class Flood:
+    """Refusals dropped past the global budget, with how many addresses they came from."""
+
+    refusals: int
+    addresses: int
+    #: False when the address count is a floor because the tracking set hit its cap.
+    exact: bool = True
+
+
+@dataclass(frozen=True)
 class Decision:
     """What to write for one refusal."""
 
@@ -90,6 +203,9 @@ class Decision:
     #: Counts that closed or were evicted, each with the address it belongs to. Written as
     #: one summary entry apiece, so attribution survives the collapse.
     collapsed: tuple[Collapsed, ...] = ()
+    #: The global overflow of a window that has closed, or ``None``. Written as one entry
+    #: with no per-address attribution, which is the trade the budget exists to make.
+    flood: Flood | None = None
 
 
 def note(address: str, now: float | None = None) -> Decision:
@@ -117,12 +233,92 @@ def note(address: str, now: float | None = None) -> Decision:
             window.recorded = 0
             window.suppressed = 0
 
+        flood = _roll_budget(moment)
+        if flood is not None:
+            # The overflow of the window that just closed is one row in THIS window, and it
+            # is charged first so that it always fits: a bound whose own summary could be
+            # squeezed out by the traffic it summarises would lose the count.
+            _budget.written += 1
+        collapsed = _admit(collapsed)
+
         window.seen = moment
         if window.recorded < RECORDED_PER_WINDOW:
-            window.recorded += 1
-            return Decision(record=True, collapsed=collapsed)
+            if _budget.written < GLOBAL_ROWS_PER_WINDOW:
+                window.recorded += 1
+                _budget.written += 1
+                return Decision(record=True, collapsed=collapsed, flood=flood)
+            # Inside this address's own allowance but past the global budget. Counted
+            # globally rather than against the address, because the address is not the
+            # thing being bounded here: the log is.
+            _count_over(address, 1)
+            return Decision(record=False, collapsed=collapsed, flood=flood)
         window.suppressed += 1
-        return Decision(record=False, collapsed=collapsed)
+        return Decision(record=False, collapsed=collapsed, flood=flood)
+
+
+def _admit(collapsed: tuple[Collapsed, ...]) -> tuple[Collapsed, ...]:
+    """Charge each collapse row to the budget, folding the ones past it into the overflow.
+
+    Called under the lock. The earlier version charged summaries to the budget AFTER the
+    caller had already been handed them, and the caller writes every summary it is handed.
+    So a summary produced once the budget was spent was written on top of it, and the cap
+    was defeated by making summaries arrive late: bank suppressed counts on about 166
+    addresses, spend the budget on fresh ones, then force evictions or let the banked
+    windows expire so each count is swept out as a row. Measured at 666 rows per window
+    from either lever and 832 from both, against a named cap of 500, over the real HTTP
+    path. Charging after the fact cannot bound what has already been emitted; only a row
+    that is refused here is a row that is not written.
+
+    A refused summary is not lost. Its count joins the overflow and its address joins the
+    overflow's address set, so the single flood row for this window carries it.
+    """
+    admitted: list[Collapsed] = []
+    for summary in collapsed:
+        if _budget.written < GLOBAL_ROWS_PER_WINDOW:
+            _budget.written += 1
+            admitted.append(summary)
+        else:
+            _count_over(summary.address, summary.count)
+    return tuple(admitted)
+
+
+def _count_over(address: str, count: int) -> None:
+    """Add refusals past the budget to the overflow, without letting the address set grow.
+
+    Called under the lock. An address already in the set does not flip the floor flag: the
+    flag means the count is a floor because an address could NOT be added, and re-seeing a
+    member is not that.
+    """
+    _budget.refusals_over += count
+    if address in _budget.addresses_over or len(_budget.addresses_over) < MAXIMUM_TRACKED:
+        _budget.addresses_over.add(address)
+    else:
+        _budget.addresses_capped = True
+
+
+def _roll_budget(moment: float) -> Flood | None:
+    """Start a new global window when the current one has expired, returning its overflow.
+
+    Called under the lock. The overflow is handed back rather than dropped, for the same
+    reason a per-address count is: a bound that loses what it bounded records nothing.
+    """
+    if _budget.started is not None and moment - _budget.started < WINDOW_SECONDS:
+        return None
+    over = (
+        Flood(
+            _budget.refusals_over,
+            len(_budget.addresses_over),
+            exact=not _budget.addresses_capped,
+        )
+        if _budget.refusals_over
+        else None
+    )
+    _budget.started = moment
+    _budget.written = 0
+    _budget.refusals_over = 0
+    _budget.addresses_over = set()
+    _budget.addresses_capped = False
+    return over
 
 
 def _sweep(moment: float, *, keep: str) -> tuple[Collapsed, ...]:

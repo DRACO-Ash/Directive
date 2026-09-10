@@ -78,8 +78,24 @@ def append_entry(data_dir: str, entry: AuditEntry) -> None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(asdict(entry), sort_keys=True, separators=(",", ":")) + "\n"
-        descriptor = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        # O_NOFOLLOW and O_NONBLOCK, then `fstat`. The read side gained a regular-file
+        # guard and this, its sibling, did not: opening a FIFO for writing blocks until a
+        # reader appears, so `rm log.jsonl && mkfifo log.jsonl` after boot hangs a mutation
+        # forever and permanently consumes one of the eight gthread workers. Eight of those
+        # and the process serves nothing, including the health paths.
+        #
+        # O_NONBLOCK is cleared immediately after the check: it makes the OPEN non-blocking,
+        # which is what is needed here, and leaving it set would let a large write return
+        # short rather than complete.
+        descriptor = os.open(
+            str(target),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+        )
         try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise JournalError(f"the audit log at {target} is not a regular file")
+            os.set_blocking(descriptor, True)
             os.write(descriptor, line.encode("ascii"))
             os.fsync(descriptor)
         finally:

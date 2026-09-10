@@ -1222,3 +1222,46 @@ def test_a_read_fault_with_no_marker_stays_a_fault(tmp_path: Path, signed_in: Fl
     assert verdict["tampered"] is False
     assert verdict["anchorUnusable"] is True
     assert "not a regular file" in verdict["summary"] or "could not be read" in verdict["summary"]
+
+
+@pytest.mark.parametrize("shape", ["a directory", "a symlink to nothing", "a named pipe"])
+@pytest.mark.parametrize("target_name", ["audit-anchor.json", "audit-initialised", "log.jsonl"])
+def test_no_audit_file_can_be_replaced_by_something_that_is_not_a_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    signed_in: FlaskClient,
+    shape: str,
+    target_name: str,
+) -> None:
+    """All THREE paths, not two. The marker was the one no test reached.
+
+    The anchor and the log were parametrised; `audit-initialised` was not, and its guard
+    survived mutation because of it. `_marker_is_valid` runs from the app factory, so a
+    named pipe there blocks `read_anchor` forever, the worker never finishes loading, and
+    the pod restart-loops with no diagnostics reachable. Identical consequence to the two
+    shapes that were covered, on the path that was not.
+    """
+    signed_in.post(
+        "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
+    )
+    target = (
+        Path(tmp_path) / "audit" / "log.jsonl"
+        if target_name == "log.jsonl"
+        else Path(tmp_path) / target_name
+    )
+    target.unlink()
+    if shape == "a directory":
+        target.mkdir()
+    elif shape == "a symlink to nothing":
+        target.symlink_to(Path(tmp_path) / "does-not-exist")
+    else:
+        os.mkfifo(target)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+
+    restarted = create_app().test_client()
+
+    assert restarted.get("/healthz").status_code == 200, f"{target_name} as {shape} hung the boot"

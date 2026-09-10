@@ -8,9 +8,12 @@ alarm. Every refusal below is asserted as a refusal, not as a fallback.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -402,3 +405,79 @@ def test_a_log_write_that_fails_is_a_journal_error(
             append_entry(str(tmp_path), opened(tmp_path).entries[0])
     finally:
         monkeypatch.setattr(os, "write", real)
+
+
+def test_appending_to_a_named_pipe_is_refused_rather_than_blocking(tmp_path: Path) -> None:
+    """The write side of the guard the read side already had.
+
+    Opening a FIFO for writing blocks until a reader appears, so `rm log.jsonl && mkfifo
+    log.jsonl` after boot hung a mutation forever and permanently consumed one of the eight
+    worker threads. Eight of those and the process serves nothing, health paths included.
+    """
+    written(tmp_path, 1)
+    target = log_path(str(tmp_path))
+    entry = opened(tmp_path).entries[0]
+    target.unlink()
+    os.mkfifo(target)
+
+    # Two paths reach the same refusal and both matter. With no reader, `O_NONBLOCK` makes
+    # the open itself fail with ENXIO; with a reader attached it succeeds and `fstat`
+    # catches the FIFO. Either way it returns rather than blocking, which is the property.
+    started = time.monotonic()
+    with pytest.raises(JournalError, match=r"not a regular file|No such device"):
+        append_entry(str(tmp_path), entry)
+    assert time.monotonic() - started < 5, "it must return, not block on a reader"
+
+
+def test_appending_through_a_symlink_is_refused(tmp_path: Path) -> None:
+    """`O_NOFOLLOW`, so the log cannot be redirected somewhere else on the volume."""
+    written(tmp_path, 1)
+    target = log_path(str(tmp_path))
+    entry = opened(tmp_path).entries[0]
+    elsewhere = Path(tmp_path) / "elsewhere.jsonl"
+    elsewhere.touch()
+    target.unlink()
+    target.symlink_to(elsewhere)
+
+    with pytest.raises(JournalError, match=r"could not be written|not a regular file"):
+        append_entry(str(tmp_path), entry)
+    assert elsewhere.read_text(encoding="utf-8") == "", "nothing may be written through it"
+
+
+def test_appending_to_a_pipe_with_a_reader_is_refused(tmp_path: Path) -> None:
+    """The `fstat` guard, reached only when the open SUCCEEDS on a non-regular file.
+
+    With no reader, `O_NONBLOCK` refuses the open outright and the check below is never
+    reached, which is why it survived mutation until this test existed. Attach a reader and
+    the open succeeds, so something has to notice the file is a pipe before writing an
+    audit entry into it, where it would vanish into the reader instead of onto the volume.
+    """
+    written(tmp_path, 1)
+    target = log_path(str(tmp_path))
+    entry = opened(tmp_path).entries[0]
+    target.unlink()
+    os.mkfifo(target)
+
+    drained: list[bytes] = []
+
+    def drain() -> None:
+        """Hold the read end open so the write end's `open` succeeds."""
+        with contextlib.suppress(OSError):
+            descriptor = os.open(str(target), os.O_RDONLY)
+            try:
+                drained.append(os.read(descriptor, 4096))
+            finally:
+                os.close(descriptor)
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    time.sleep(0.2)
+    try:
+        with pytest.raises(JournalError, match=r"not a regular file|No such device"):
+            append_entry(str(tmp_path), entry)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(os.open(str(target), os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+
+    assert drained in ([], [b""]), "no audit entry may be written into a pipe"
