@@ -24,14 +24,18 @@ echo "interpreter: $PY (Python $ACTUAL, pinned $PINNED)"
 echo "== shell =="
 # Three POSIX scripts carry the verification, packaging and pipeline-simulation logic and
 # nothing statically checked them. `shellcheck` is not in this baseline's toolchain, so the
-# absence is reported rather than passed over: the Continuous Integration job installs it
-# and fails hard, exactly as it does for the dependency scan.
+# absence is reported rather than passed over: the Continuous Integration runner image
+# provides the binary and that job fails hard, exactly as it does for the dependency scan.
+# If a future runner image drops it the step fails on a missing command, which is the right
+# direction. Do not lower the severity to make this leg pass: it exits non-zero on an
+# info-level finding, and it was added to this loop having only ever run its skip path,
+# which is how it shipped red.
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s sh scripts/*.sh
   echo "shellcheck: clean"
 else
   echo "SKIPPED: shellcheck is not installed, so scripts/*.sh was NOT statically checked."
-  echo "Compensating control: the CI job installs it and fails hard on any finding."
+  echo "Compensating control: the CI runner image provides it and that job fails hard."
 fi
 
 echo "== format =="
