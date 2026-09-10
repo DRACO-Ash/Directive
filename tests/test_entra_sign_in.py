@@ -52,6 +52,7 @@ def id_token(**overrides: object) -> str:
         "iss": ISSUER,
         "aud": CLIENT,
         "exp": 4102444800,
+        "amr": ["pwd", "mfa"],
         "preferred_username": "ash.higgins@bluestaq.uk",
     }
     claims.update(overrides)
@@ -367,3 +368,52 @@ def test_the_refused_self_asserted_sign_in_is_collapsed(client: FlaskClient) -> 
     assert len(failed) == refusals.RECORDED_PER_WINDOW, f"{len(failed)} rows for 40 refusals"
     assert not [entry for entry in chain.entries if entry.action == "LOGIN"]
     refusals.reset()
+
+
+@pytest.mark.parametrize(
+    "amr",
+    [["pwd"], [], "mfa", None, ["MFA"], ["pwd", "rsa"], {"mfa": True}],
+    ids=["password-only", "empty", "bare-string", "absent", "wrong-case", "no-mfa", "object"],
+)
+def test_a_token_without_an_mfa_attestation_is_refused(app: Flask, amr: object) -> None:
+    """AMD-001 10.4: Entra ID WITH MFA. The application refuses what the tenant did not do.
+
+    A Conditional Access policy performs MFA; this check stops a policy that was scoped
+    down, excluded, or bypassed from producing a verified actor on the audit log. A bare
+    string "mfa" would satisfy a naive `in` and is refused as the wrong shape.
+    """
+    overrides: dict[str, object] = {"nonce": "n"}
+    if amr is not None:
+        overrides["amr"] = amr
+    else:
+        overrides["amr"] = "DROP"
+    token = id_token(**overrides)
+    if amr is None:
+        # Rebuild without the claim at all rather than with a sentinel value.
+        header, payload, signature = token.split(".")
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=="))
+        del claims["amr"]
+        token = f"{header}.{segment(claims)}.{signature}"
+    with app.test_request_context(), pytest.raises(auth.AuthError, match="multi-factor"):
+        auth.claims_from_id_token(token, nonce="n")
+
+
+def test_a_password_only_token_signs_nobody_in_and_is_audited(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the callback refuses the token and records the refusal."""
+    nonce = None
+
+    def endpoint(url: str, form: dict[str, str]) -> dict[str, Any]:
+        return {"id_token": id_token(nonce=nonce, amr=["pwd"])}
+
+    state = start(client)
+    with client.session_transaction() as stored:
+        nonce = stored["complyops_signin_nonce"]
+    monkeypatch.setattr(auth, "_post_form", endpoint)
+
+    landed = client.get(f"/auth/callback?code=the-code&state={state}")
+    assert landed.headers["Location"].endswith("/sign-in")
+    assert client.get("/api/registers").status_code in (302, 401, 403)
+    chain = client.application.extensions["complyops_chain"]
+    assert chain.entries[-1].action == "LOGIN_FAILED"
