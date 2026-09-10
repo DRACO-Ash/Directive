@@ -38,14 +38,28 @@ fi
 # accepted `dist/3a0661f/comply-ops-2.2-20260101-deadbee.zip` because the commit appeared in
 # a directory name, which is looser than the check reads.
 #
-# `-dirty` closes the remaining gap. Commit granularity alone still admits a package built
-# before an uncommitted edit, so a PASS for a tree whose package was never built stayed
-# reachable inside one commit. The builder stamps a dirty tree and this refuses that stamp
-# from the pointer, because a dirty package is by construction out of date the moment
-# anything changes again.
+# The commit stamp is NOT sufficient on its own, and saying otherwise was an over-claim
+# this file made about itself. It matches the commit the package was BUILT at, and says
+# nothing about what the tree holds NOW: build clean, edit a source file, run from the
+# pointer, and the stale package sails through. Demonstrated with the register state
+# vocabulary check disabled in the tree and SIMULATION: PASS returned anyway.
+#
+# So the tree is checked at simulation time as well, which is a superset of the stamp: any
+# difference between the package and the tree under test, whenever it appeared, shows up as
+# a dirty worktree here. The stamp stays because it marks the artefact itself, so a package
+# file on disk declares its own provenance.
 if [ "$FROM_POINTER" = yes ]; then
+  HEAD_SHORT=nogit
   if command -v git >/dev/null 2>&1; then
     HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  fi
+  if [ "$HEAD_SHORT" = nogit ]; then
+    # Either git is absent or this is not a repository. Both leave the package unchecked,
+    # and a `nogit` stamp would otherwise match a `nogit` package from any tree at any time,
+    # which is a tautology rather than a check.
+    echo "SKIPPED: no commit is resolvable, so the package was NOT checked against the tree."
+    echo "Compensating control: none here. Pass the package explicitly to be sure of it."
+  else
     case "${PKG##*/}" in
       comply-ops-*-"$HEAD_SHORT".zip) ;;
       comply-ops-*-"$HEAD_SHORT"-dirty.zip)
@@ -59,9 +73,11 @@ if [ "$FROM_POINTER" = yes ]; then
         exit 1
         ;;
     esac
-  else
-    echo "SKIPPED: git is unavailable, so the package was NOT checked against the tree."
-    echo "Compensating control: none here. Pass the package explicitly to be sure of it."
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "FAIL: the working tree has changed, so $PKG no longer represents it."
+      echo "Rebuild, or pass the package explicitly to test it anyway."
+      exit 1
+    fi
   fi
 fi
 
@@ -77,7 +93,6 @@ PY312="${PYTHON312:-/usr/bin/python3.12}"
 cd "$WORK"
 "$PY312" -m venv .venv
 echo "== stage 5, install: pip install -r requirements.txt =="
-.venv/bin/python -m pip install -q --upgrade pip >/dev/null 2>&1 || true
 .venv/bin/python -m pip install -q -r requirements.txt
 
 echo "== stage 5, test: pytest with coverage to the path the quality gate reads =="

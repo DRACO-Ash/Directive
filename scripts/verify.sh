@@ -110,9 +110,45 @@ echo "== software bill of materials =="
 # The hashes exist in requirements.txt and merging them in by hand would make this file
 # less trustworthy, not more. Closing that gap needs a real SBOM generator; recorded in
 # docs/DEPLOYMENT.md rather than implied to be done.
-if "$PY" -m pip_audit -r requirements-runtime.txt --format cyclonedx-json \
+#
+# Built from an INSTALL of the runtime lockfile rather than from the lockfile text, because
+# the text route is incomplete and silently so. `pip-audit -r` returned 8 of the 9 pins:
+# `packaging` was absent from the audit AND from the bill of materials, with no skip notice,
+# no warning and exit 0. A package that ships in the image and is examined by nothing is the
+# exact hole a dependency gate exists to close, and the artefact naming 8 of 9 components is
+# evidence that is quietly wrong. Installing the lockfile into a throwaway directory and
+# auditing THAT by path returns all 9. It also inventories what is really there rather than
+# what a parser made of a file, which is the stronger claim to put in front of an assessor.
+TARGET="$(mktemp -d)"
+trap 'rm -f "$REPORT"; rm -rf "$TARGET"' EXIT
+if "$PY" -m pip install -q --require-hashes --no-deps --target "$TARGET" \
+     -r requirements-runtime.txt > "$REPORT" 2>&1 \
+   && "$PY" -m pip_audit --path "$TARGET" --format cyclonedx-json \
      --progress-spinner off -o sbom.cdx.json > "$REPORT" 2>&1; then
   echo "sbom.cdx.json written, $("$PY" -c 'import json,sys; print(len(json.load(open("sbom.cdx.json"))["components"]))') components"
+  # The assertion that makes the omission above impossible to repeat. Nothing compared the
+  # audited set to the pin set, so a missing package looked exactly like a clean scan.
+  "$PY" - <<'COMPLETE'
+import json
+import re
+import sys
+
+pins = {
+    name.lower()
+    for name, _ in re.findall(
+        r"^[ \t]*([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)",
+        open("requirements-runtime.txt", encoding="utf-8").read(),
+        re.MULTILINE,
+    )
+}
+listed = {c["name"].lower() for c in json.load(open("sbom.cdx.json", encoding="utf-8"))["components"]}
+missing = sorted(pins - listed)
+if missing or not pins:
+    print(f"FAIL: the bill of materials omits {missing or 'everything'} from the shipped set")
+    print("      A component nothing inventories is a component nothing scans.")
+    sys.exit(1)
+print(f"every one of the {len(pins)} shipped pins is in the bill of materials")
+COMPLETE
 elif grep -qiE "temporary failure|connection|resolve|timed out|network|unreachable" "$REPORT"; then
   echo "SKIPPED: the advisory service was unreachable, so no SBOM was written."
   echo "Compensating control: the CI job on a networked runner fails hard on this."
@@ -138,7 +174,16 @@ def pins(path):
         print(f"FAIL: {path} was not compiled with --strip-extras, so the pin parser below")
         print("      would silently drop an extras-bearing line out of the subset check")
         raise SystemExit(1)
-    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)", text, re.MULTILINE))
+    found = re.findall(r"^[ \t]*([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)", text, re.MULTILINE)
+    # `^` alone missed a pin written with leading whitespace, which pip honours: an indented
+    # `requests==2.19.1` appended to the runtime lockfile was downloaded by pip while all
+    # three nesting tests stayed green. And an empty parse would satisfy every subset check
+    # vacuously, so the count is compared with the file's own `==` occurrences.
+    declared = len(re.findall(r"^[ \t]*[A-Za-z0-9_.\-]+==", text, re.MULTILINE))
+    if not found or len(found) != declared:
+        print(f"FAIL: {path} parsed {len(found)} pins against {declared} declared")
+        raise SystemExit(1)
+    return dict(found)
 
 failed = False
 for inner, outer in (
