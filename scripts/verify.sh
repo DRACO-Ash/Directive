@@ -23,7 +23,7 @@ echo "interpreter: $PY (Python $ACTUAL, pinned $PINNED)"
 
 echo "== shell =="
 # Three POSIX scripts carry the verification, packaging and pipeline-simulation logic and
-# nothing statically checked them. `shellcheck` is not in this baseline's toolchain, so the
+# nothing statically checked them. `shellcheck` may be absent from a development machine, so the
 # absence is reported rather than passed over: the Continuous Integration runner image
 # provides the binary and that job fails hard, exactly as it does for the dependency scan.
 # If a future runner image drops it the step fails on a missing command, which is the right
@@ -67,7 +67,7 @@ fi
 echo "coverage.xml present and non-empty"
 
 echo "== dependency vulnerabilities =="
-# Both lockfiles. The tooling tree is what executes in the build pipeline, which is
+# All three lockfiles. The tooling tree is what executes in the build pipeline, which is
 # exactly where a compromised dependency lands, so scanning only the runtime tree leaves
 # the more exposed one unchecked.
 #
