@@ -127,7 +127,7 @@ Not tested by request; tested by the verification loop. `pip-audit` runs against
 
 Production sign-in is a redirect to `login.microsoftonline.com` carrying a PKCE challenge, a state and a nonce bound to the session. A callback with a forged or missing state is refused and recorded. The self-asserted development sign-in is refused while Entra ID is configured, and now through the collapser. Hostile actor values (empty, leading `=`, `-`, `@`, over-length, non-ASCII, double quote) are refused without a server error. Sign-out clears the session.
 
-**Declared deviations.** The identity token signature is not verified; the token is accepted only from the direct back-channel response, per OpenID Connect Core 3.1.3.7. Multi-factor authentication is not checked by the application; it depends on the tenant's Conditional Access policy. Both are for the accreditation decision.
+**Declared deviations.** The identity token signature is not verified; the token is accepted only from the direct back-channel response, per OpenID Connect Core 3.1.3.7. Multi-factor authentication was not checked by the application at the tested commit; it depended on the tenant's Conditional Access policy. **Closed in V2.2:** `claims_from_id_token` now refuses a token whose `amr` claim does not contain `mfa` (seven refused shapes and one end-to-end refusal in `tests/test_entra_sign_in.py`, three mutants killed). The signature deviation stands for the accreditation decision.
 
 | Test | Expected | Observed | Result |
 | --- | --- | --- | --- |
@@ -180,8 +180,8 @@ The only outbound call is the token exchange with Entra ID. The host is a consta
 | Action | Owner | When |
 | --- | --- | --- |
 | Verify TLS 1.2 or above at `comply-ops.apps.bluestaq.com` and attach the result to the accreditation record | ISM, after first deploy | Before production use |
-| Confirm user assignment required on the Entra enterprise application, or accept single-role access in the accreditation decision | ISM | Accreditation review |
-| Decide MFA evidence: Conditional Access export, or an `amr` claim check in the application | ISM | Accreditation review |
+| User assignment required on the Entra enterprise application: confirmed by the ISM 2026-09-10; single-role access accepted on that basis | ISM | Done |
+| MFA evidence: Conditional Access export held by the ISM; `amr` claim check added in V2.2 | ISM | Done, V2.2 |
 | Size an edge rate limiter against the A04 residual, or accept it | Platform team, ISM | Before production use |
 | Replace the superseded Application Insights alerting, AUD-001 amendment | ISM | `TBC, re-verify` |
 | Annual re-test | ISM | September 2027, alongside AMD-001 11.5 |

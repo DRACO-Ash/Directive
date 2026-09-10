@@ -261,6 +261,21 @@ CLOCK_SKEW_SECONDS = 60
 TOKEN_TIMEOUT_SECONDS = 10
 
 
+#: The authentication method reference (RFC 8176) Entra ID places in an identity token's
+#: `amr` claim when the sign-in satisfied multi-factor authentication. AMD-001 section 10.4
+#: requires Entra ID with MFA, and the tenant's Conditional Access policy is what performs
+#: it; this check makes the application refuse a token that does not attest it, so a policy
+#: scoped down, excluded for an account, or bypassed by a break-glass path becomes a refused
+#: sign-in and a LOGIN_FAILED row rather than a verified actor on the audit log.
+#:
+#: Be precise about the limit. `amr` says which methods THIS sign-in used. A Conditional
+#: Access grant satisfied by a compliant device or a trusted location without an MFA prompt
+#: yields `["pwd"]`, and this check refuses it. That is deliberate: the policy asks for MFA,
+#: not for a policy that may waive it. If the tenant design relies on such grants, the
+#: design is reconciled first; this constant is not widened to fit it.
+MFA_METHOD = "mfa"
+
+
 class AuthError(RuntimeError):
     """Raised when a sign-in cannot be completed. The caller sees a generic failure."""
 
@@ -386,8 +401,9 @@ def claims_from_id_token(id_token: str, *, nonce: str, now: float | None = None)
     """Return the claims of an identity token, checking everything this build checks.
 
     Be precise about what this does and does not do, because it is the kind of thing that
-    gets over-claimed. It checks the issuer, the audience, the expiry and the nonce. It does
-    NOT verify the token's signature.
+    gets over-claimed. It checks the issuer, the audience, the expiry, the nonce, and that
+    the `amr` claim attests multi-factor authentication. It does NOT verify the token's
+    signature.
 
     That is sound only because of where this token came from, and only here: it was received
     in the direct response to :func:`exchange_code`, which is an HTTPS POST this process
@@ -418,6 +434,12 @@ def claims_from_id_token(id_token: str, *, nonce: str, now: float | None = None)
     expiry = claims.get("exp")
     if not isinstance(expiry, int | float) or moment > float(expiry) + CLOCK_SKEW_SECONDS:
         raise AuthError("the identity token has expired")
+
+    # A list, by the claim's definition. A bare string "mfa" would satisfy `in` and is not
+    # what Entra ID issues, so it is refused rather than read generously.
+    methods = claims.get("amr")
+    if not isinstance(methods, list) or MFA_METHOD not in methods:
+        raise AuthError("the identity token does not attest multi-factor authentication")
     return claims
 
 
