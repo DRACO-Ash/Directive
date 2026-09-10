@@ -20,7 +20,7 @@ Bluestaq Ltd, Compliance Operations Console (`comply-ops`). Required by AMD-001 
 
 Every mutating and every reading API route is behind `auth.required`; every mutating route also needs the cross-site request forgery (CSRF) token, compared in constant time and failing closed on a non-ASCII value. Register and record identifiers that do not exist are refused with 400, and the response body is generic. The `next` parameter after sign-in is constrained to a same-site path and refuses protocol-relative, backslash and scheme forms.
 
-**Observation, not a failure.** The application has one role. Any authenticated actor can read and write every register and read the audit log. Least privilege is therefore enforced by WHO can authenticate, which is the Entra ID app registration's user assignment, not by the application. That is adequate for a single-team console operated by the ISM and recorded here so it is not mistaken for role-based access control. `TBC, re-verify` that user assignment is required on the enterprise application in the tenant.
+**Observation, not a failure.** The application has one role. Any authenticated actor can read and write every register and read the audit log. Least privilege is therefore enforced by WHO can authenticate, which is the Entra ID app registration's user assignment, not by the application. That is adequate for a single-team console operated by the ISM and recorded here so it is not mistaken for role-based access control. User assignment is required on the enterprise application, confirmed by the ISM on 2026-09-10; that assignment list is the access list.
 
 | Test | Expected | Observed | Result |
 | --- | --- | --- | --- |
