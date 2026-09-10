@@ -158,9 +158,10 @@ def recordable(name: str, value: str) -> str:
     and discarded the whole entry, so an unauthenticated caller could still probe the
     callback route leaving nothing behind. Two rule sets drift; one does not.
 
-    Use this ONLY for a caller-influenced context field, the source address and the user
-    agent. Never for the actor: an actor is the subject of the record, so a name that cannot
-    be recorded refuses the sign-in instead.
+    Use this ONLY for a caller-influenced context field: the source address, the user agent,
+    and the one `resource_id` on the sign-in refusal path, which carries a caller-derived
+    count. Those three, and no others. Never for the actor: an actor is the subject of the
+    record, so a name that cannot be recorded refuses the sign-in instead.
     """
     # FIELD_LIMITS[name], never .get(name, 0). A typo at a call site would otherwise slice
     # to nothing, `_check_one` would accept the empty string as an optional field, and the

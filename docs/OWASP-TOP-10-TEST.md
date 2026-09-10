@@ -121,7 +121,7 @@ All four AMD-001 10.6 headers (Content-Security-Policy, Strict-Transport-Securit
 
 ## A06:2021 Vulnerable and Outdated Components
 
-Not tested by request; tested by the verification loop. `pip-audit` runs against all three hash-locked lockfiles on every change and in Continuous Integration, and returned no known vulnerabilities on this commit. Dependabot raises weekly pull requests for pip, GitHub Actions and Docker. A CycloneDX software bill of materials is produced on every run.
+Not tested by request; tested by the verification loop. `pip-audit` runs against all three hash-locked lockfiles on every change and in Continuous Integration, and returned no known vulnerabilities on this commit. The runtime tree is additionally installed with `--require-hashes --no-deps --target` and audited by path, and that is not belt and braces: the lockfile-text route returned 8 of the 9 shipped pins, dropping `packaging` from both the audit and the bill of materials with no skip notice and exit 0. A component nothing inventories is a component nothing scans, so an assertion now fails the loop and the job if any shipped pin is missing from the inventory. Dependabot raises weekly pull requests for pip, GitHub Actions and Docker. A CycloneDX software bill of materials is produced on every run.
 
 ## A07:2021 Identification and Authentication Failures
 

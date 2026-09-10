@@ -81,6 +81,10 @@ for LOCKFILE in requirements-runtime.txt requirements.txt requirements-dev.txt; 
   echo "-- $LOCKFILE"
   if "$PY" -m pip_audit -r "$LOCKFILE" > "$REPORT" 2>&1; then
     cat "$REPORT"
+  elif grep -qiE "vulnerabilit|found [0-9]+ known" "$REPORT"; then
+    cat "$REPORT"
+    echo "FAIL: a known vulnerability was reported in $LOCKFILE"
+    exit 1
   elif grep -qiE "temporary failure|connection|resolve|timed out|network|unreachable" "$REPORT"; then
     echo "SKIPPED: the advisory service was unreachable, so $LOCKFILE was NOT checked."
     echo "Compensating control: the CI job on a networked runner fails hard on this."
@@ -121,9 +125,17 @@ echo "== software bill of materials =="
 # what a parser made of a file, which is the stronger claim to put in front of an assessor.
 TARGET="$(mktemp -d)"
 trap 'rm -f "$REPORT"; rm -rf "$TARGET"' EXIT
-if "$PY" -m pip install -q --require-hashes --no-deps --target "$TARGET" \
-     -r requirements-runtime.txt > "$REPORT" 2>&1 \
-   && "$PY" -m pip_audit --path "$TARGET" --format cyclonedx-json \
+if ! "$PY" -m pip install -q --require-hashes --no-deps --target "$TARGET" \
+       -r requirements-runtime.txt > "$REPORT" 2>&1; then
+  cat "$REPORT"
+  echo "FAIL: the runtime tree could not be installed for the bill of materials"
+  exit 1
+fi
+# Split from the install above, because `pip-audit` exits non-zero on a FINDING as well as
+# on a failure. Folded together, a genuine vulnerability in a shipped package reported as
+# "the SBOM could not be generated", which mis-triages the one case this leg uniquely
+# catches: `packaging` is audited here and nowhere else.
+if "$PY" -m pip_audit --path "$TARGET" --format cyclonedx-json \
      --progress-spinner off -o sbom.cdx.json > "$REPORT" 2>&1; then
   echo "sbom.cdx.json written, $("$PY" -c 'import json,sys; print(len(json.load(open("sbom.cdx.json"))["components"]))') components"
   # The assertion that makes the omission above impossible to repeat. Nothing compared the
@@ -152,6 +164,10 @@ COMPLETE
 elif grep -qiE "temporary failure|connection|resolve|timed out|network|unreachable" "$REPORT"; then
   echo "SKIPPED: the advisory service was unreachable, so no SBOM was written."
   echo "Compensating control: the CI job on a networked runner fails hard on this."
+elif grep -qiE "vulnerabilit|found [0-9]+ known" "$REPORT"; then
+  cat "$REPORT"
+  echo "FAIL: a known vulnerability was reported in the tree the image installs"
+  exit 1
 else
   cat "$REPORT"
   echo "FAIL: the SBOM could not be generated"
