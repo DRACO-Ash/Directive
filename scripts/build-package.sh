@@ -79,8 +79,11 @@ find "$STAGE" -name '.DS_Store' -delete 2>/dev/null || true
 # The assertion that would have caught the gate's finding. The suite reads these from the
 # package root, so a package without them fails the platform test stage even though the
 # same suite is green in the repository. Derived from the tests, not from memory:
-# `grep -rn "parents\[1\]" tests/` names every one.
-for needed in .env.example docs/DEPLOYMENT.md pyproject.toml Dockerfile; do
+# `grep -rn "parents\[1\]" tests/` names every one, and the list below is that grep's
+# answer in full. The lockfiles are named here as well as in the allowlist above, because
+# `_pins` reads all three from the package root and a second check costs nothing.
+for needed in .env.example docs/DEPLOYMENT.md pyproject.toml Dockerfile \
+              requirements-runtime.txt requirements.txt requirements-dev.txt; do
   [ -e "$STAGE/$needed" ] || { echo "FAIL: the suite reads $needed from the package root and it is not in the package"; exit 1; }
 done
 # A nested Dockerfile breaks template detection. There must be exactly one, at the root.

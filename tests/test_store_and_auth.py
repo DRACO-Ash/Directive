@@ -551,9 +551,17 @@ def test_the_container_runs_one_worker(tmp_path: Path) -> None:
 
 
 def _pins(name: str) -> dict[str, str]:
-    """Return the pinned versions in one lockfile, read from the PACKAGE root."""
+    """Return the pinned versions in one lockfile, read from the PACKAGE root.
+
+    The `--strip-extras` check is not decoration. This parser drops a line carrying extras,
+    `celery[redis]==5.0.0`, rather than failing on it, so such a package would vanish from
+    the inner set and escape the subset check below entirely. Today no such line exists
+    because all three files are compiled with that flag, and nothing else asserted the flag
+    survives the next recompile. Now something does.
+    """
     text = (Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8")
-    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ \\\n]+)", text, re.MULTILINE))
+    assert "--strip-extras" in text, f"{name} was not compiled with --strip-extras"
+    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)", text, re.MULTILINE))
 
 
 def test_the_platform_test_stage_can_install_its_own_test_runner() -> None:
@@ -584,6 +592,40 @@ def test_the_image_never_installs_the_test_toolchain() -> None:
     assert any("-r requirements-runtime.txt" in line for line in build)
     assert not [line for line in build if "-r requirements.txt" in line]
     assert "pytest" not in _pins("requirements-runtime.txt")
+
+
+def test_the_build_context_hides_the_test_inclusive_lockfile() -> None:
+    """Defence in depth behind the Dockerfile, and it would regress silently without this.
+
+    The control that keeps the test toolchain out of the image is the COPY above. This is
+    the second lock on the same door: a future edit that copies `requirements.txt` would
+    find the file absent from the build context rather than installing it.
+    """
+    ignored = (Path(__file__).resolve().parents[1] / ".dockerignore").read_text(encoding="utf-8")
+    entries = [line.strip() for line in ignored.splitlines() if not line.startswith("#")]
+    assert "requirements.txt" in entries
+    assert "requirements-runtime.txt" not in entries, "the image needs this one"
+
+
+def test_the_shipped_stage_adds_no_layer_after_the_flattening_copy() -> None:
+    """One layer is a hard rule, and a WORKDIR is a filesystem mutation like any other.
+
+    `WORKDIR /app` sat after the `COPY --from=prep / /` and cost a second layer: measured at
+    2 with it and 1 without, on a real build. Gunicorn takes `--chdir /app` instead, which
+    sets the working directory at start-up rather than at build time. Any instruction that
+    writes to the filesystem after the COPY brings the second layer back.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    ship = dockerfile.split("FROM scratch", 1)[1]
+    instructions = [
+        line.split()[0].upper()
+        for line in ship.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert "COPY" in instructions, "the flattening COPY must be in this stage"
+    mutating = {"WORKDIR", "RUN", "ADD"}
+    assert not mutating.intersection(instructions[instructions.index("COPY") + 1 :])
+    assert "--chdir /app" in dockerfile, "gunicorn supplies the working directory instead"
 
 
 @pytest.mark.parametrize(

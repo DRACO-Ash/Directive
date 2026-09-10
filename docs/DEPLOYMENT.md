@@ -139,7 +139,14 @@ tampering, but unverifiable either way.
 
 ## Rollback
 
-There is no separate rollback on this platform. Roll back by resubmitting the previous package through `resubmit_app`. This is the first release, so no previous package exists yet: state that honestly at the deploy gate rather than claiming a tested rollback. The `deploy-gate` requires a known rollback before an irreversible step.
+For a release with a predecessor, roll back by resubmitting the previous package through `resubmit_app`.
+
+**For the FIRST release there is no predecessor, and the reversal is deletion of the application on the platform.** Confirmed by Ash Higgins, 2026-09-10. That is the known rollback the deploy gate requires, and it is a different operation from a resubmission: it removes the application rather than replacing its version.
+
+Two consequences, both of which matter more than the deletion itself.
+
+● **Deletion does not revert the volume.** The audit journal, its anchor and the anchor's first-use marker live on the persistent volume, and the anchor refuses to move backwards. A deletion followed by a fresh deploy onto a volume that still carries them is not a clean slate: it is a new application meeting an existing chain. Establish with the platform team whether deleting the application also destroys its FILE_STORAGE claim, because the answer changes what a redeploy is. `TBC, re-verify`.
+● **Archive the package before submitting.** `scripts/build-package.sh` writes a dated, commit-stamped zip and prints its SHA-256. Keep the V2.2 artefact and its digest, so V2.3 has a real predecessor to resubmit and this section stops depending on deletion.
 
 ## App Store supply-chain gate readiness
 
@@ -172,7 +179,8 @@ here, and one does.
   what the image installs, and `requirements-dev.txt` adds the analyser tooling. The three
   are nested at the `.in` level, so the subset relation holds by construction, and it is
   asserted twice, by the verification loop's nesting leg and by
-  `tests/test_lockfiles_nest_at_identical_versions`. That assertion is not ceremony: the
+  `tests/test_store_and_auth.py::test_the_lockfiles_nest_at_identical_versions`. That
+  assertion is not ceremony: the
   first attempt at this split resolved click to 8.4.2 in the file that ships and 8.5.0 in
   the file that is scanned, which is precisely the failure the bullet describes.
 ● **The base image is digest-pinned**, not tag-pinned. FACT.
@@ -254,7 +262,7 @@ a later reviewer, a gate, or a fresh session.
 
 ## Known gaps before the first submission
 
-● The image has not been built or probed. The Docker daemon is unavailable in the build environment, so the non-root user, the port binding, the absence of a package manager, the absence of setuid bits, and the flattened single layer are verified by construction against the Dockerfile, not by running the container. Before the deploy gate, build it and run: `docker run --rm --entrypoint sh comply-ops -c 'command -v apt-get dpkg apt pip pip3; find / -xdev -perm /6000; id'` and expect no command found, no path listed, and `uid=10001`.
+● ~~The image has not been built or probed.~~ **Closed.** The deploy gate built and ran the image on 2026-09-10 and probed every claim: `uid=10001(appuser)`, no package manager, zero setuid or setgid bits across files and directories, no `ENV PORT=`, an injected `PORT=9137` honoured, all six health paths 200 with no redirect, lean context, and production fail-closed with the boot narrative written before the refusal. It found the image was **2 layers, not 1**, because a `WORKDIR /app` followed the flattening `COPY`. Fixed in V2.2 by removing it and giving gunicorn `--chdir /app`; rebuilt and measured at 1 layer, booting in production with `audit log resumed, chain intact`, health 200, and a refusal writing a chained entry to the volume. Pinned by `test_the_shipped_stage_adds_no_layer_after_the_flattening_copy`.
 ● Entra ID sign-in is implemented and has never run against a real tenant. `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `SESSION_KEY` and `REDIRECT_URI` are consumed by the authentication module, which refuses to serve a production environment without them and refuses the self-asserted sign-in path whenever a tenant is configured. The full authorisation code flow with Proof Key for Code Exchange is in place and is driven end to end in `tests/test_entra_sign_in.py` against a fake token endpoint, so what is proved is this application's half of the exchange. No request has ever reached Microsoft. `TBC, re-verify` on first deploy: the reply URL registered against the app registration, the tenant's real issuer string, and the wire format of the token response.
 ● **The identity token's signature is not verified, deliberately, and it needs sign-off.** The token is read only where it arrives in the direct HTTPS response to this application's own back-channel POST carrying its own client secret, which is the case OpenID Connect Core section 3.1.3.7 permits TLS server validation for in place of signature checking. The issuer, audience, expiry and nonce ARE all checked. Adding signature verification means a JSON Web Key Set fetch and an RSA implementation, so a new hash-locked dependency. Recorded as a deviation for Adam Field's sign-off; `claims_from_id_token` must never be called on a token from any other source, and its docstring says so.
 ● The in-process append lock is still not an inter-process lock on the storage volume. The container runs a single gunicorn worker so that no second process holds a competing view of the chain head, which is a mitigation and not a fix: any other process touching the same volume reopens it. Closed at V2.1: the anchor IS now written on every append, and entries are persisted to `DATA_DIR/audit/log.jsonl` before the call returns.

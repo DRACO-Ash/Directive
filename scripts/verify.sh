@@ -21,6 +21,19 @@ if [ "$PINNED" != "$ACTUAL" ]; then
 fi
 echo "interpreter: $PY (Python $ACTUAL, pinned $PINNED)"
 
+echo "== shell =="
+# Three POSIX scripts carry the verification, packaging and pipeline-simulation logic and
+# nothing statically checked them. `shellcheck` is not in this baseline's toolchain, so the
+# absence is reported rather than passed over: the Continuous Integration job installs it
+# and fails hard, exactly as it does for the dependency scan.
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -s sh scripts/*.sh
+  echo "shellcheck: clean"
+else
+  echo "SKIPPED: shellcheck is not installed, so scripts/*.sh was NOT statically checked."
+  echo "Compensating control: the CI job installs it and fails hard on any finding."
+fi
+
 echo "== format =="
 "$PY" -m ruff format --check .
 
@@ -117,7 +130,11 @@ import sys
 
 def pins(path):
     text = open(path, encoding="utf-8").read()
-    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ \\\n]+)", text, re.MULTILINE))
+    if "--strip-extras" not in text:
+        print(f"FAIL: {path} was not compiled with --strip-extras, so the pin parser below")
+        print("      would silently drop an extras-bearing line out of the subset check")
+        raise SystemExit(1)
+    return dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^ ;\\\n]+)", text, re.MULTILINE))
 
 failed = False
 for inner, outer in (

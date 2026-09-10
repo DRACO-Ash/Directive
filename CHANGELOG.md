@@ -10,12 +10,11 @@ deployed yet, so every row below records a release that was cut, gated and merge
 
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
-**Gates.** Security review PASS on the identity-token change at `b3b798c`. Verification
-loop PASS, 790 tests, 2 skipped, coverage 98.84%. Deploy gate **FAIL**, first run, on the
-wrapper around the build rather than the build: no upload package existed, no rollback
-exists, AMD-001 10.4 accreditation is unsigned, the Managing Director's sign-off on the App
-Store target is outstanding, three submission fields have no value, and the engineering
-review for this release was not corroborated from the tree.
+**Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
+review PASS at `b3b798c`. Deploy gate **FAIL**, first run, at `ee7a1e1`. Engineering review
+**FAIL** at `c4a33cf`, on the Continuous Integration bill of materials still describing the
+pre-split dependency tree and on a test count in this file that had never been measured.
+Verification loop PASS, 793 passed, 2 skipped, coverage 98.84%, measured after those fixes.
 
 **Changed.**
 
@@ -34,8 +33,15 @@ review for this release was not corroborated from the tree.
   uploaded had never been built or tested; both failures found by running it are now
   assertions in the build script.
 ● `docs/OWASP-TOP-10-TEST.md`, the AMD-001 10.6 pre-deployment test, 82 checks, none failed.
-● `docs/ACCREDITATION-REVIEW.md`, the AMD-001 10.4 review drafted for the UK Information
-  Security Officer's decision. Unsigned.
+● `docs/ACCREDITATION-REVIEW.md`, the AMD-001 10.4 review. **Signed, accredited with
+  conditions**, by Ash Higgins as UK Information Security Officer, 2026-09-10.
+● `docs/GATE-RECORDS.md`, so a gate verdict is an artefact in the tree rather than a claim
+  in a commit message. Two separate gates failed on exactly that absence.
+● The shipped image is one layer again. A `WORKDIR /app` after the flattening `COPY` cost a
+  second one; gunicorn takes `--chdir /app` instead. Measured on a real build, 2 layers
+  before and 1 after, booting in production mode with the chain intact.
+● Rollback for a first release is deletion of the application on the platform, confirmed by
+  the ISM. Deletion does not revert the volume, which is the part that matters.
 
 **Deviations open at this release.** Secrets as App Store environment variables rather than
 Azure Key Vault. Identity token signature not verified, back-channel only, OpenID Connect

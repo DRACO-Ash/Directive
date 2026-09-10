@@ -29,6 +29,13 @@ jobs:
       - name: Confirm the lockfiles are unchanged by the install
         run: git diff --exit-code -- requirements-runtime.txt requirements.txt requirements-dev.txt
 
+      # Three POSIX scripts now carry the verification, packaging and pipeline-simulation
+      # logic and nothing statically checked them. `shellcheck` is not installed on the
+      # development machine, so the local loop reports an honest skip and this runner is the
+      # binding leg, exactly as it is for the dependency scan.
+      - name: Shell
+        run: shellcheck -s sh scripts/*.sh
+
       - name: Format
         run: python -m ruff format --check .
 
@@ -54,7 +61,15 @@ jobs:
       # This runner has network access, so an unreachable advisory service is a hard
       # failure here, never an honest skip. This job is the binding source of truth for
       # the dependency scan.
-      - name: Dependency vulnerabilities (runtime)
+      # All three lockfiles, named for what each one is. When the files split three ways
+      # these two steps kept pointing at `requirements.txt`, which had just stopped being
+      # the runtime set and become the test-inclusive superset, so the file that actually
+      # ships was scanned nowhere in Continuous Integration while a step still called
+      # itself "(runtime)".
+      - name: Dependency vulnerabilities (runtime, the tree the image installs)
+        run: python -m pip_audit -r requirements-runtime.txt
+
+      - name: Dependency vulnerabilities (test set, what the App Store installs and scans)
         run: python -m pip_audit -r requirements.txt
 
       - name: Dependency vulnerabilities (tooling)
@@ -65,9 +80,16 @@ jobs:
       # network access, so a failure to generate is a hard failure rather than a skip.
       # The artefact is what distinguishes an App Store analyser crash from a genuine
       # advisory, and the Cyber Resilience Act reporting duty binds on 11 September 2026.
+      #
+      # Of `requirements-runtime.txt`, the tree the image installs. It read
+      # `requirements.txt` until the lockfiles split three ways, and from that moment this
+      # artefact described a product that does not exist: 15 components including pytest and
+      # coverage, against the 8 the container actually carries. An inaccurate bill of
+      # materials is worse than none, because this is the artefact the reporting duty rests
+      # on and an assessor has no way to tell it is wrong.
       - name: Software bill of materials
         run: |
-          python -m pip_audit -r requirements.txt --format cyclonedx-json \
+          python -m pip_audit -r requirements-runtime.txt --format cyclonedx-json \
             --progress-spinner off -o sbom.cdx.json
           test -s sbom.cdx.json
 
