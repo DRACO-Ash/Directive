@@ -22,7 +22,14 @@ row says so rather than reconstructing it.
 | 2026-09-10 | `engineering-reviewer`, fourth pass | `3a0661f` | **PASS** | Six MINORs, all advisory: an over-claim in the retrospective section of this file, an unstated third disposition for the server-owned register fields, a silent skip when git is absent, a filename match looser than it read, a residual that still admitted a package built before an uncommitted edit, and a 313-character line. |
 | 2026-09-10 | `engineering-reviewer`, fifth pass | `973378d` | **FAIL** | One MAJOR: the `-dirty` stamp added for the previous pass caught only a build made on an already-dirty tree, never an edit made after the build, so the gap its own comment claimed to close was still open and still reached SIMULATION: PASS. Four MINORs. |
 | 2026-09-10 | `security-reviewer`, supply chain and build machinery | `973378d` | **FAIL** | Five MAJORs, two of them holes in the script that decides what leaves this repository: a git-ignored `src/.env` shipped inside a clean-stamped package, and a symlink in an allowlisted directory exfiltrated content from outside the tree because the archiver dereferences it. Also the staleness gap above, `packaging` shipping in the image while audited and inventoried by nothing, and the register-validation over-claim in a third document. Four MINORs. |
-| 2026-09-10 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
+| 2026-09-10 | `engineering-reviewer`, fourth pass | `3a0661f` | **PASS** | Six MINORs, all advisory. |
+| 2026-09-10 | `engineering-reviewer`, fifth pass | `973378d` | **FAIL** | The `-dirty` stamp caught only a build made on an already-dirty tree, never an edit made after it, so the gap its own comment claimed to close still reached SIMULATION: PASS. |
+| 2026-09-10 | `security-reviewer`, supply chain | `973378d` | **FAIL** | Five MAJORs. A git-ignored `src/.env` shipped inside a clean-stamped package, and a symlink in an allowlisted directory exfiltrated content from outside the tree. |
+| 2026-09-11 | `security-reviewer`, second run | `3ead4dd` | **FAIL** | One MAJOR: `cp` dereferences a symlinked INTERMEDIATE component, so the fix narrowed the class rather than closing it. Eight MINORs. |
+| 2026-09-11 | `security-reviewer`, third run | `e0095df` | **FAIL** | Four MAJORs. `git archive` honours `.gitattributes` and host conversion config, so `export-ignore` deleted a security control's test from the package with the build green; the credential sweep skipped anything it could not decode; `skip-worktree` reports uppercase and the guard matched lower case only; and no test held any of it. |
+| 2026-09-11 | `security-reviewer`, fourth run | `533fa5c` | **FAIL** | Three MAJORs. The exemption matched `tests` anywhere in the absolute path; UTF-16 carried a plain credential through the sweep; twenty-one controls survived deletion with the suite green. |
+| 2026-09-11 | `security-reviewer`, fifth run | `496f312` | **FAIL** | Three MAJORs. The pointer temporary race was still open at the `mv`; the exemption budget counted lines rather than matches or paths; and the coverage claim written for the previous MAJOR was itself false. |
+| 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## V2.1
 
@@ -34,7 +41,7 @@ row says so rather than reconstructing it.
 
 ## What these rows show
 
-Five gate FAILs across V2.2, and not one of them was in the application. The `amr` check
+Eight gate FAILs across V2.2, and not one of them was in the application. The `amr` check
 and the lockfile split were sound at the first pass, and the container needed only the
 one-layer correction recorded above.
 

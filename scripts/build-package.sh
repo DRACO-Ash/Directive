@@ -86,7 +86,8 @@ scripts"
 # pointed at, and the simulation would test that stale artefact and report PASS for a tree
 # whose package never built. Reproduced in a throwaway clone.
 mkdir -p dist
-rm -f dist/latest dist/latest.sha256 dist/.latest.tmp dist/.latest.sha.tmp
+rm -f dist/latest dist/latest.sha256
+rm -f dist/.latest.?????? 2>/dev/null || true
 rm -rf "$STAGE" "$OUT" "$MANIFEST"
 mkdir -p "$STAGE"
 
@@ -213,6 +214,7 @@ SECRET="$(find "$STAGE" ! -name '.env.example' \
 # `tests/*.py`, anchored to the package root rather than matched anywhere in the path,
 # because outside that the marker is a seven-character bypass for anyone who can commit.
 "$PY_FOR_SWEEP" - "$STAGE" <<'SWEEP'
+import collections
 import pathlib
 import re
 import sys
@@ -231,12 +233,15 @@ RULES = [
 ]
 COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in RULES]
 
-#: How many lines in the whole package may claim the exemption. It is honoured only for a
-#: test module, because the exemption is a seven-character bypass for anyone who can commit:
-#: appending `  # nosec` to a credential line made it ship. Exactly one line in this tree
-#: needs it, the Entra test double, and pinning the count makes a second one a reviewed
-#: change rather than a silent one.
-EXEMPT_EXPECTED = 1
+#: WHICH path may claim the exemption, and how many findings it may suppress there. A bare
+#: total was spendable two ways, both demonstrated. One exempt LINE holding a tuple of three
+#: credentials shipped an AWS key, an LLM provider key and a GitLab token while the count
+#: still read one, because the counter incremented per line rather than per match. And
+#: shortening the legitimate double so it no longer matched, then adding a marked credential
+#: under `tests/nested/`, kept the total at one while the credential moved to a path that had
+#: never carried one, with byte-identical build output. Pinning the identity rather than the
+#: arithmetic makes a substitution and a multiple both visible.
+EXEMPT_ALLOWED = {"tests/test_entra_sign_in.py": 1}
 EXEMPT_MARKERS = ("# noqa: S105", "# nosec")
 
 
@@ -250,15 +255,14 @@ def _exempt(path, line):
     """
     if not any(marker in line for marker in EXEMPT_MARKERS):
         return False
-    parts = path.relative_to(STAGE).parts
-    return len(parts) > 1 and parts[0] == "tests" and path.suffix == ".py"
+    return str(path.relative_to(STAGE)) in EXEMPT_ALLOWED
 
 
 STAGE = pathlib.Path(sys.argv[1])
 
 hits = []
 examined = 0
-exempted = 0
+suppressed = collections.Counter()
 found_on_a_line = set()
 for path in pathlib.Path(sys.argv[1]).rglob("*"):
     if not path.is_file():
@@ -287,14 +291,17 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # What this still does NOT see, recorded because the accreditation record now names
     # this sweep as the compensating control for the whole secret regime: base64 or other
     # encodings of a credential, anything inside a compressed container, and a credential
-    # carried in a filename rather than a file body. The last of those is closed just
-    # below; the first two are open and are a real limit, not a theoretical one.
+    # carried in a filename or a directory name rather than a file body, and an assignment
+    # split across lines by an intervening COMMENT, which neither pass sees because the
+    # rule's whitespace class cannot cross the comment text. The path case is closed just
+    # below, for every component. The rest are open and are real limits, not theoretical.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
     # Two passes over the same text. The line pass gives a number to report; the whole-file
     # pass catches an assignment split across lines, which the pre-write hook sees because
-    # it matches one joined blob and a line-based sweep does not. Exempted lines are removed
+    # it matches one joined blob and a line-based sweep does not, though only where the halves
+    # are separated by whitespace and not by a comment, which is recorded above. Exempted lines are removed
     # before both, so the exemption cannot be defeated by the whole-file pass and cannot be
     # claimed by it either.
     scannable = []
@@ -307,9 +314,11 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
             # do when they write a probe, is not relying on it, and counting those made the
             # pinned total meaningless.
             if _exempt(path, line):
-                exempted += 1
+                # By the number of MATCHES, not by one: a single line carrying three
+                # credentials spent a budget of one and shipped all three.
+                suppressed[str(path.relative_to(STAGE))] += len(matched)
                 continue
-            hits.append(f"{path}:{number}: an exemption marker outside tests/*.py")
+            hits.append(f"{path}:{number}: an exemption marker outside the allowed paths")
         scannable.append(line)
         for label in matched:
             hits.append(f"{path}:{number}: {label}")
@@ -321,21 +330,23 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
         for label, rule in COMPILED:
             if rule.search(stripped) and (str(path), label) not in found_on_a_line:
                 hits.append(f"{path}: {label}, in a NUL-separated encoding such as UTF-16")
-    # The NAME as well as the body. A key pasted as a filename never reaches the body scan.
-    for label, rule in COMPILED:
-        if rule.search(path.name):
-            hits.append(f"{path.name}: {label}, in the filename")
+    # Every PATH COMPONENT, not just the leaf. A key pasted as a filename never reaches the
+    # body scan, and `docs/glpat-<token>/notes.md` put one in a directory name instead.
+    for part in path.relative_to(STAGE).parts:
+        for label, rule in COMPILED:
+            if rule.search(part):
+                hits.append(f"{path.relative_to(STAGE)}: {label}, in a path component")
 
 if not examined:
     print("FAIL: the credential sweep examined no files at all")
     sys.exit(1)
-if exempted != EXEMPT_EXPECTED:
-    hits.append(f"{exempted} lines claimed the exemption against {EXEMPT_EXPECTED} expected")
+if dict(suppressed) != EXEMPT_ALLOWED:
+    hits.append(f"exemptions claimed {dict(suppressed)} against {EXEMPT_ALLOWED} allowed")
 for hit in hits:
     print(f"FAIL: {hit}")
 if hits:
     sys.exit(1)
-print(f"credential sweep: {examined} files examined, {EXEMPT_EXPECTED} declared exemption honoured")
+print(f"credential sweep: {examined} files examined, exemptions {EXEMPT_ALLOWED} honoured")
 SWEEP
 
 # The assertion that would have caught the gate's finding. The suite reads these from the
@@ -366,17 +377,18 @@ rm -rf "$STAGE"
 # through whatever path exists at that moment: a symlink planted in the build's own window
 # redirected the pointer, and the artefact was written outside `dist/`. The SHA-256 goes
 # beside it so the simulation can bind the pointer to the bytes rather than to a filename.
-# Each temporary is removed IMMEDIATELY before it is written, not only at build start. A
-# symlink planted at `dist/.latest.tmp` during the build was followed by the redirect and
-# then moved onto `dist/latest` by `mv`, so the pointer itself became a link to a file
-# outside `dist/`. Clearing the path at the moment of use closes the window the earlier
-# fix left open.
-rm -f "dist/.latest.tmp"
-printf '%s\n' "$OUT" > "dist/.latest.tmp"
-mv -f "dist/.latest.tmp" dist/latest
-rm -f "dist/.latest.sha.tmp"
-sha256sum "$OUT" | cut -d' ' -f1 > "dist/.latest.sha.tmp"
-mv -f "dist/.latest.sha.tmp" dist/latest.sha256
+# `mktemp`, because a FIXED temporary name is a redirect target however carefully it is
+# cleared. Removing it immediately before the write closed the first window and left the
+# second, between the write and the `mv`, wide open: six threads calling `symlink()` in a
+# loop won it eight times out of eight, overwriting a file outside the repository with the
+# package digest and leaving both pointers as links out of `dist/`. `mktemp` opens with
+# O_EXCL under a name nobody can predict, so there is no window to race.
+LATEST_TMP="$(mktemp "dist/.latest.XXXXXX")"
+printf '%s\n' "$OUT" > "$LATEST_TMP"
+mv -f "$LATEST_TMP" dist/latest
+DIGEST_TMP="$(mktemp "dist/.latest.XXXXXX")"
+sha256sum "$OUT" | cut -d' ' -f1 > "$DIGEST_TMP"
+mv -f "$DIGEST_TMP" dist/latest.sha256
 
 echo "package: $OUT"
 echo "size:    $(wc -c < "$OUT") bytes"
