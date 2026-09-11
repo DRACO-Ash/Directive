@@ -85,10 +85,19 @@ def _build(work: Path) -> subprocess.CompletedProcess[str]:
 
 @pytest.fixture
 def clone(tmp_path: Path) -> Path:
-    """Return a clone, skipping rather than failing where the tools are absent."""
+    """Return a clone, skipping rather than failing where it cannot be made.
+
+    The platform runs this suite against the UNPACKED PACKAGE, which is a directory of
+    files and not a repository, so there is nothing to clone and nothing to build. Skipping
+    there is honest; failing there would turn a green local loop into a red upload for a
+    reason that has nothing to do with the code. Caught by the pipeline simulation on the
+    first run after these tests were written, which is what that simulation is for.
+    """
     for tool in ("git", "zip"):
         if shutil.which(tool) is None:
             pytest.skip(f"{tool} is not available")
+    if not (ROOT / ".git").exists():
+        pytest.skip("not a git repository; the packaging script cannot run here")
     return _clone(tmp_path)
 
 
