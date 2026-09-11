@@ -32,6 +32,8 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, ninth run | `52f3e14` | **FAIL** | Two MAJORs. The work-directory test asserted a literal name and, in its own docstring, a mode it never read, so a fixed name and a `chmod 755` both survived. And this table's eighth row carried a figure the source did not support. |
 | 2026-09-11 | `security-reviewer`, tenth run | `2819cf5` | **FAIL** | First run scored against the stated threat model. Three binding MAJORs: the credential sweep only matched a QUOTED assignment, so an unquoted `CLIENT_SECRET=...` in `.env.example` shipped at the package root, demonstrated end to end; the accreditation record pointed at a limits list that did not name it; and four constant-time comparisons were held by no test, replacing each with `==` leaving all 845 green. The reviewer endorsed the boundary and named two under-specifications, both since written in. |
 | 2026-09-11 | `security-reviewer`, eleventh run | `ff2c5d7` | **FAIL** | One BLOCKER and five MAJORs. The Accepted residual row written in that very commit spelled two probe names out in full, so the sweep matched its own record and the build refused: no package, twenty red tests, the loop exit 1. The new unquoted rule was anchored to the start of a line, so the same credential behind `ENV`, `ARG`, `-e` or a bullet, or between the pipes of a parameter table, shipped. The sweep compiled without MULTILINE, which made both anchored rules dead in exactly the NUL-stripped pass that exists to see a UTF-16 credential. `.gitignore` missed `.env.production`, `.env.prod` and `.env.staging`. And two controls were held by no test: the `.env.example` filename exemption and `set -e` in the simulation. |
+| 2026-09-11 | `security-reviewer`, twelfth run | `5e28df4` | **FAIL** | Four MAJORs, three of them demonstrated by a package that built green while shipping a live-shaped client secret in a document. The table rule read the cell after the name and the table it was written for has three columns, so it scanned Source and never the column headed Value. A backtick between the bullet and the name defeated the whole prefix set, which is this project's own house style. The ignore rules left the whole key and certificate family trackable, and those names are outside the package allowlist, so the sweep that refuses them inside a package would never have seen one at the repository root. And the Open in scope section recorded none of it. |
+| 2026-09-11 | `engineering-reviewer`, fifth run | `5e28df4` | **FAIL** | Three MAJORs, one shared with the run above. The `$PWD` clause of the simulation's location assertion was held by no test: the guards above it fire first with a different message, and deleting it left all eleven simulation tests green. And two rule sets were duplicated across two runtimes with no parity test, in a delta whose own comment records that they had diverged. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -58,17 +60,34 @@ in `SECURITY.md` and carried as an accreditation condition.
 ## Open in scope
 
 Not residual, and deliberately not in the table above: these are inside the threat model and
-are open. They are here so the next reviewer scores them as known rather than as new.
+are open. They are here so the next reviewer scores them as known rather than as new. The
+section has been wrong once by omission, which is why it now states what the rules match
+before stating what they do not.
 
-● The content sweep matches `NAME=value` and a `| NAME | value |` table row. It does NOT
-  match `NAME = value` with spaces around the equals, and it does not match a `name: value`
-  mapping in YAML or JavaScript Object Notation (JSON). The spaces form was measured rather
-  than assumed: widening the equals to allow them flags sixteen ordinary Python constants in
-  this tree, so the rule would fire on every build and be switched off within a week. The
-  cost of closing it is a rule nobody keeps.
+**What the content sweep matches.** An assignment at the start of a line, behind any run of
+`ENV`, `ARG`, `export`, `-e`, `--env` or a list marker, at any indent, with an optional
+opening quote or backtick; the same assignment anywhere in a line of prose, for an UPPER
+case name; and a credential-shaped token in any cell of a document table row whose name cell
+carries one of these names. Case is folded everywhere except the prose rule.
+
+**What it does not, and why each is left open.**
+
+● `NAME = value` with spaces around the equals. Measured rather than assumed: allowing them
+  flags sixteen ordinary Python constants in this tree, so the rule would fire on every
+  build and be switched off within a week. The cost of closing it is a rule nobody keeps.
+● A `name: value` mapping in YAML or JavaScript Object Notation (JSON), unquoted.
+● A LOWER case name mid-line, such as `set client_secret=<value> in the console`. The prose
+  rule is the one rule that does not fold case, because folding it flags 23 ordinary Python
+  keyword arguments here (`outgoing_key=`, `sort_keys=`). The anchored rule and the table
+  rule both fold, so a lower-case name is caught in those two shapes and not in this one.
+● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it is skipped whole. That is a
+  bypass for someone who adds `TBC` to a row on purpose, and it is the right trade: a
+  cell-level exemption let the engine match a different cell instead, and the adversary
+  this rule is for is an honest committer pasting a value into a table.
 ● The sweep is a pattern sweep over text. Base64 or any other re-encoding, and anything
   inside a compressed container, pass it. That limit is structural and is recorded beside
   the sweep as well as here.
+
 
 ## Deletion matrix
 

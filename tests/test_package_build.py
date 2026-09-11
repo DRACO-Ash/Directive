@@ -800,6 +800,48 @@ def test_the_cleanup_trap_survives_a_signal(clone: Path) -> None:
     assert not list((clone / "dist").glob(".build*")), "a signal left the work directory behind"
 
 
+@pytest.mark.timeout(SIMULATION_TIMEOUT_SECONDS)
+def test_the_simulations_cleanup_trap_survives_a_signal(clone: Path) -> None:
+    """The same defect in the sibling script, which was fixed in one copy and not the other.
+
+    `scripts/simulate-pipeline.sh` unpacks the whole package into a temporary directory, and
+    its trap was armed on `EXIT` alone. Dash runs an EXIT trap for neither a signal nor a
+    closed pipe, so every interrupted run left an unpacked copy of the package behind,
+    unbounded in number. `TMPDIR` points into the clone so the orphan is observable; the
+    script reads it through `mktemp`, which is the same path an operator's own `TMPDIR`
+    takes.
+    """
+    assert _build(clone).returncode == 0
+    scratch = clone.parent / "simulation-tmp"
+    scratch.mkdir()
+    environment = dict(os.environ, TMPDIR=str(scratch))
+
+    simulation = subprocess.Popen(  # noqa: S603
+        [_tool("sh"), "scripts/simulate-pipeline.sh"],
+        cwd=clone,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if list(scratch.iterdir()):
+                break
+            if simulation.poll() is not None:
+                pytest.skip("the simulation finished before its work directory was observed")
+            time.sleep(0.01)
+        else:
+            pytest.skip("the work directory was never observed")
+        simulation.send_signal(signal.SIGTERM)
+        simulation.wait(timeout=60)
+    finally:
+        if simulation.poll() is None:
+            simulation.kill()
+
+    assert not list(scratch.iterdir()), "a signal left the unpacked package behind"
+
+
 def test_a_symlinked_dist_is_refused(clone: Path) -> None:
     """`mkdir -p dist` follows a link, and every artefact then lands wherever it points."""
     outside = clone.parent / "outside-dist"
