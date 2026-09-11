@@ -228,11 +228,23 @@ LINK="$(find "$STAGE" -type l -print -quit)"
 
 # By name. `.env.example` holds placeholders, is tracked, and the suite reads it from the
 # package root, so it is the one name in this shape that must ship.
+#
+# This list and the one in `.gitignore` are NOT the same list, and the difference is
+# deliberate. This one refuses a name INSIDE the package, which is what a `git add -f` or an
+# edited ignore file reaches; the ignore list refuses a name reaching the repository at all.
+# The ignore list is therefore the wider of the two, carrying `.netrc`, `.pypirc`,
+# `secrets.yaml`, `secrets.yml`, `credentials.json` and `client_secret*.json` as well: those
+# are configuration files that carry credentials rather than credential files, so an ignore
+# rule is proportionate and refusing them from a package nobody would put them in is not.
+# Every name below is held by a probe in `tests/test_package_build.py`, parametrised over
+# this list, because five of these names were added in one commit and deleting all five
+# left the whole suite green.
 SECRET="$(find "$STAGE" ! -name '.env.example' \
                \( -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \
                   -o -name 'id_rsa*' -o -name 'id_ed25519*' -o -name 'id_ecdsa*' \
                   -o -name 'id_dsa*' -o -name '*.jks' -o -name '*.p12' \
-                  -o -name '*.pfx' \) -print -quit)"
+                  -o -name '*.pfx' -o -name '*.ppk' -o -name '*.keytab' \
+                  -o -name '*.kdbx' -o -name '*.p8' \) -print -quit)"
 [ -z "$SECRET" ] || { echo "FAIL: $SECRET looks like a credential and is in the package"; exit 1; }
 
 # By CONTENT, because a name sweep is only a name sweep. A tracked file with an innocuous
@@ -240,7 +252,8 @@ SECRET="$(find "$STAGE" ! -name '.env.example' \
 # that would have caught it only runs on this assistant's own edits, so a human `git add`,
 # a heredoc or a paste never passes through it. These are the hook's own patterns, so one
 # rule set governs both routes into the repository. Be exact about "one rule set", because
-# it is not identical: the hook's tenth rule (`Dockerfile ENV PORT`) is a build-contract
+# it is not identical: the one rule the hook carries and this sweep does not
+# (`Dockerfile ENV PORT`, pinned by name in `tests/test_secret_rule_parity.py`) is a build-contract
 # check rather than a credential check and lives in the suite instead, and the hook matches
 # one joined blob while this sweep matches line by line AND joined, so a split assignment is
 # caught by both ONLY where its halves are separated by whitespace: neither route crosses an
@@ -275,14 +288,19 @@ RULES = [
     # control over it. The shape is written here by description rather than as a literal,
     # because the prose rule below correctly matched this very comment twice.
     #
-    # Matched on the dotenv SHAPE rather than by widening the quoted rule, which flagged
-    # sixteen ordinary Python constants. Python writes `SUITE_KEY = bytes(...)` with spaces
+    # Matched on the dotenv SHAPE rather than by widening this rule's equals to allow spaces
+    # around it, which flags 22 findings on 22 lines across all 157 tracked files at
+    # `72ab2d0`. State the experiment with the figure, always: this number has been written
+    # three times and measured three different ways, because the experiment behind it was
+    # never recorded. The experiment is: leave every other part of this rule alone, replace
+    # `=` with `[ \t]*=[ \t]*`, scan every tracked file. Python writes `SUITE_KEY = bytes(...)` with spaces
     # around the equals; dotenv never does. The trailing `[A-Z0-9_]*` is there because the
     # keyword need not END the name: `CLIENT_SECRET_V2=` walked past without it. The name
     # must still CONTAIN one of these words and not begin with one, and that restriction is
-    # deliberate and measured: making the leading part optional flags twelve indented
-    # `key_id=` keyword arguments in `src/`, so `SECRET_FOR_ENTRA=` is left open and
-    # recorded rather than bought at that price. `[REDACTED:...]` is the placeholder the hard
+    # deliberate and measured: making the leading `[A-Z][A-Z0-9_]*` optional gives 14
+    # findings across the tracked tree, 9 of them in `src/` (eight `key_id=` and one
+    # `keys=`), at `72ab2d0`. So `SECRET_FOR_ENTRA=` is left open and recorded rather than
+    # bought at that price. `[REDACTED:...]` is the placeholder the hard
     # rule mandates and is allowed through. The optional opening delimiter is not decoration:
     # a backtick between the bullet and the name defeated the whole prefix set, and this
     # project's own house style puts every identifier in backticks behind a bullet, so the
@@ -293,12 +311,15 @@ RULES = [
     # The same assignment anywhere in a LINE OF PROSE, which is how a runbook writes it:
     # "Set NAME=value in the console", or a `docker run -e NAME=value` that does not begin
     # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
-    # than a relaxed anchor on the one above. Folding case here flags 19 ordinary Python
-    # keyword arguments in this tree (`outgoing_key=`, `sort_keys=`); requiring the upper
-    # case name that every environment variable actually has leaves zero. Re-measure that
-    # figure if you change this rule or the tree: it read 23 for one commit, which was the
-    # count before the `MISSING(` carve-out existed, and a stale figure in a shipped file
-    # is a finding here. The one carve-out
+    # than a relaxed anchor on the one above. Folding case here gives 26 matches on 18 lines
+    # across all 157 tracked files at `72ab2d0`: 19 Python keyword arguments
+    # (`outgoing_key=`, `sort_keys=`) and 7 `sonar.projectKey=` lines in the skill
+    # templates, the latter admitted by the preceding-character widening in this same
+    # commit. Requiring the upper case name that every environment variable actually has
+    # leaves zero. Re-measure whenever you change this rule OR the tree, and say which
+    # experiment the number came from: this figure read 23 and then 19 at earlier commits,
+    # each time correct for an experiment nobody wrote down, and a stale figure in a file
+    # that ships is a finding here. The one carve-out
     # is the diagnostics read-out shape `NAME=MISSING(n)`, which is a value-ABSENT marker
     # this application prints on purpose and which appears in a document and a test.
     #

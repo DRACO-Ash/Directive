@@ -11,12 +11,12 @@ deployed yet, so every row below records a release that was cut, gated and merge
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
-review PASS at `b3b798c`, then thirteen further runs against the packaging and verification
+review PASS at `b3b798c`, then fourteen further runs against the packaging and verification
 machinery, every one of them FAIL and every finding in that machinery or in a shipped
 document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
-never been measured. Verification loop PASS, 925 passed, 2 skipped, coverage 98.98%, measured at the
+never been measured. Verification loop PASS, 951 passed, 2 skipped, coverage 98.98%, measured at the
 last commit of this release rather than at the commit this row is headed by. The test count here was once replaced with a LATER commit's figure while the commit
 name stayed, inside the sentence below that criticises that very mistake; both halves are now
 measured at the commit named. An earlier row here recorded a 98.84 to 98.89 range and was not
@@ -59,7 +59,11 @@ records against others.
   with one named exception. Both files claimed to be in step in a comment, and the claim
   was false twice. The same module also EXECUTES the hook against a probe per rule: the text
   comparison alone was defeated by leaving the rule array untouched and iterating only its
-  first element, which stopped eleven of twelve rules blocking with the suite green.
+  first element, which stopped twelve of thirteen rules blocking with the suite green.
+  It now also asserts WHICH fields of a write reach the rules, and that both registration
+  files carry the matcher: narrowing the hook's input collection to one field blinded it to
+  every `Edit` and `MultiEdit` with the suite green, which is a separate control from the
+  rule set and was found the same way.
 ● `.gitignore` refuses `.env.*` with `.env.example` excepted, and the same key and
   certificate family the packaging sweep refuses inside a package. The two controls
   disagreed: an `audit.key` at the repository root was trackable and is outside the package

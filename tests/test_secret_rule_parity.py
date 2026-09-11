@@ -185,12 +185,37 @@ PROBES = {
 }
 
 
-def _hook_verdict(content: str) -> subprocess.CompletedProcess[str]:
+#: Every field a write can carry its new content in, and the tool that carries it. A hook
+#: that reads only the first of these is blind to every `Edit` and `MultiEdit`, which is the
+#: majority of writes to the very files these rules exist for, and every probe below went
+#: through `content` alone until a reviewer cut the other three and left the suite green.
+PAYLOAD_SHAPES = {
+    "Write, content": ("Write", lambda probe: {"content": probe}),
+    "Edit, new_string": ("Edit", lambda probe: {"new_string": probe}),
+    "Write, file_text": ("Write", lambda probe: {"file_text": probe}),
+    "MultiEdit, edits": ("MultiEdit", lambda probe: {"edits": [{"new_string": probe}]}),
+}
+
+#: The matcher both registration files must carry. A hook that is correct and unregistered
+#: for `Edit` is a hook that never runs on an edit, which is the same outcome as a hook that
+#: cannot read `new_string`, and neither file ships so nothing else would notice.
+REQUIRED_MATCHER = "Write|Edit|MultiEdit"
+REGISTRATIONS = (
+    ROOT / ".claude" / "settings.json",
+    ROOT / ".claude" / "hooks" / "hooks.json",
+)
+
+
+def _hook_verdict(content: str, shape: str = "Write, content") -> subprocess.CompletedProcess[str]:
     """Run the hook exactly as Claude Code runs it: a JSON payload on standard input."""
-    payload = json.dumps({"tool_name": "Write", "tool_input": {"content": content}})
+    tool, build = PAYLOAD_SHAPES[shape]
+    payload = json.dumps({"tool_name": tool, "tool_input": build(content)})
     node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is not available, so the hook cannot be executed")
+    # NOT a skip. The module already established that this is the developer tree rather than
+    # the unpacked package, and in the developer tree `node` is the hook's own prerequisite:
+    # without it the hook has never run on a single write. Skipping printed LOOP: PASS with
+    # the control unheld, which is the failure mode this module exists to stop.
+    assert node is not None, "node is missing, so the pre-write hook has never run here"
     return subprocess.run(  # noqa: S603
         [node, str(HOOK)], input=payload, capture_output=True, text=True, check=False
     )
@@ -206,15 +231,50 @@ def test_every_rule_the_hook_carries_has_a_probe() -> None:
     )
 
 
+@pytest.mark.parametrize("shape", sorted(PAYLOAD_SHAPES))
+def test_the_hook_reads_every_field_a_write_can_carry(shape: str) -> None:
+    """WHICH text reaches the rules, which is a separate control from what the rules are.
+
+    A reviewer reduced the hook's input collection to `tool_input.content` alone and left
+    all twenty-one tests green while every `Edit` and `MultiEdit` write stopped being
+    scanned. The rule array was untouched, so the parity tests could not see it: they
+    compare rules, and this compares reach.
+    """
+    blocked = _hook_verdict(PROBES["Unquoted environment-file credential"], shape)
+
+    assert blocked.returncode == 2, f"{shape} was not scanned: exit {blocked.returncode}"
+    assert "Unquoted environment-file credential" in blocked.stderr, blocked.stderr
+
+
+@pytest.mark.parametrize("registration", REGISTRATIONS)
+def test_the_hook_is_registered_for_every_write_tool(registration: Path) -> None:
+    """A hook unregistered for `Edit` is a hook that never runs on an edit.
+
+    Neither registration file ships in the package, and nothing else in the suite reads
+    them, so deleting `Edit|MultiEdit` from either matcher was green.
+    """
+    if not registration.is_file():
+        pytest.skip(f"{registration.name} is not present in this tree")
+    declared = json.loads(registration.read_text(encoding="utf-8"))
+
+    matchers = [
+        entry.get("matcher")
+        for entry in declared.get("hooks", declared).get("PreToolUse", [])
+        if any("secret-scan" in hook.get("command", "") for hook in entry.get("hooks", []))
+    ]
+
+    assert matchers, f"{registration.name} does not register the secret scan at all"
+    assert all(matcher == REQUIRED_MATCHER for matcher in matchers), matchers
+
+
 @pytest.mark.parametrize("label", sorted(PROBES))
 def test_the_hook_actually_blocks_each_rule(label: str) -> None:
     """Behaviour, not text, because the parity test above compares only the rule array.
 
     A reviewer defeated that by leaving the array untouched and iterating only its first
-    element: eleven
-    of twelve rules stopped blocking with every parity test green. CLAUDE.md names this hook
-    in its first hard rule, and the threat model says a control that exists must be held by
-    a test, so the hook is executed here rather than read.
+    element: twelve of thirteen rules stopped blocking with every parity test green.
+    CLAUDE.md names this hook in its first hard rule, and the threat model says a control
+    that exists must be held by a test, so the hook is executed here rather than read.
     """
     result = _hook_verdict(PROBES[label])
 
