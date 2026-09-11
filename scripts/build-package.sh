@@ -87,7 +87,7 @@ scripts"
 # whose package never built. Reproduced in a throwaway clone.
 mkdir -p dist
 rm -f dist/latest dist/latest.sha256
-rm -f dist/.latest.?????? 2>/dev/null || true
+rm -rf dist/.latest.?????? 2>/dev/null || true
 rm -rf "$STAGE" "$OUT" "$MANIFEST"
 mkdir -p "$STAGE"
 
@@ -209,12 +209,14 @@ SECRET="$(find "$STAGE" ! -name '.env.example' \
 # it is not identical: the hook's tenth rule (`Dockerfile ENV PORT`) is a build-contract
 # check rather than a credential check and lives in the suite instead, and the hook matches
 # one joined blob while this sweep matches line by line AND joined, so a split assignment is
-# caught by both. A line carrying the project's existing `# noqa: S105` or `# nosec` marker
+# caught by both ONLY where its halves are separated by whitespace: neither route crosses an
+# intervening comment, which is recorded with the sweep's other limits below. A line carrying the project's existing `# noqa: S105` or `# nosec` marker
 # is a declared test double and is skipped only inside the package's own top-level
 # `tests/*.py`, anchored to the package root rather than matched anywhere in the path,
 # because outside that the marker is a seven-character bypass for anyone who can commit.
 "$PY_FOR_SWEEP" - "$STAGE" <<'SWEEP'
 import collections
+import hashlib
 import pathlib
 import re
 import sys
@@ -240,8 +242,15 @@ COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in RU
 #: shortening the legitimate double so it no longer matched, then adding a marked credential
 #: under `tests/nested/`, kept the total at one while the credential moved to a path that had
 #: never carried one, with byte-identical build output. Pinning the identity rather than the
-#: arithmetic makes a substitution and a multiple both visible.
-EXEMPT_ALLOWED = {"tests/test_entra_sign_in.py": 1}
+#: arithmetic is what makes RELOCATION visible; the match count and the line digest below
+#: are what make a multiple and a substitution visible. All three were needed, and each was
+#: added only after the previous one had been defeated.
+EXEMPT_ALLOWED = {
+    "tests/test_entra_sign_in.py": {
+        "matches": 1,
+        "sha256": "7ed7ec605bec24f1d85af16e870e8f722b9ceea4fd06f88c0eec9f9a5504b21e",
+    }
+}
 EXEMPT_MARKERS = ("# noqa: S105", "# nosec")
 
 
@@ -300,8 +309,8 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     examined += 1
     # Two passes over the same text. The line pass gives a number to report; the whole-file
     # pass catches an assignment split across lines, which the pre-write hook sees because
-    # it matches one joined blob and a line-based sweep does not, though only where the halves
-    # are separated by whitespace and not by a comment, which is recorded above. Exempted lines are removed
+    # it matches one joined blob and a line-based sweep does not. Only where the halves are
+    # separated by whitespace: neither route crosses an intervening comment, recorded above. Exempted lines are removed
     # before both, so the exemption cannot be defeated by the whole-file pass and cannot be
     # claimed by it either.
     scannable = []
@@ -314,9 +323,18 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
             # do when they write a probe, is not relying on it, and counting those made the
             # pinned total meaningless.
             if _exempt(path, line):
-                # By the number of MATCHES, not by one: a single line carrying three
-                # credentials spent a budget of one and shipped all three.
-                suppressed[str(path.relative_to(STAGE))] += len(matched)
+                # By the number of real MATCHES. `matched` holds one entry per RULE, so a
+                # line carrying three credentials of the same shape scored one and shipped
+                # all three. `findall` counts the credentials, not the kinds.
+                suppressed[str(path.relative_to(STAGE))] += sum(
+                    len(rule.findall(line)) for _, rule in COMPILED
+                )
+                # And the line is pinned by digest, so substituting a real secret for the
+                # declared double is a change to the allowance rather than a silent one.
+                # Swapping the double for a production-shaped secret shipped it, exit 0.
+                digest = hashlib.sha256(line.strip().encode("utf-8")).hexdigest()
+                if digest != EXEMPT_ALLOWED[str(path.relative_to(STAGE))]["sha256"]:
+                    hits.append(f"{path}:{number}: the exempt line has changed; review it")
                 continue
             hits.append(f"{path}:{number}: an exemption marker outside the allowed paths")
         scannable.append(line)
@@ -332,21 +350,29 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
                 hits.append(f"{path}: {label}, in a NUL-separated encoding such as UTF-16")
     # Every PATH COMPONENT, not just the leaf. A key pasted as a filename never reaches the
     # body scan, and `docs/glpat-<token>/notes.md` put one in a directory name instead.
-    for part in path.relative_to(STAGE).parts:
+    # Every component AND the joined path. A credential whose assignment opens in one
+    # directory name and closes in the next is invisible to a per-component scan, and the
+    # example is not written out here because the sweep would, correctly, match it.
+    relative = path.relative_to(STAGE)
+    path_labels = set()
+    for candidate in (*relative.parts, str(relative)):
         for label, rule in COMPILED:
-            if rule.search(part):
-                hits.append(f"{path.relative_to(STAGE)}: {label}, in a path component")
+            if rule.search(candidate):
+                path_labels.add(label)
+    for label in sorted(path_labels):
+        hits.append(f"{relative}: {label}, in the path")
 
 if not examined:
     print("FAIL: the credential sweep examined no files at all")
     sys.exit(1)
-if dict(suppressed) != EXEMPT_ALLOWED:
-    hits.append(f"exemptions claimed {dict(suppressed)} against {EXEMPT_ALLOWED} allowed")
+allowed_counts = {path: rule["matches"] for path, rule in EXEMPT_ALLOWED.items()}
+if dict(suppressed) != allowed_counts:
+    hits.append(f"exemptions claimed {dict(suppressed)} against {allowed_counts} allowed")
 for hit in hits:
     print(f"FAIL: {hit}")
 if hits:
     sys.exit(1)
-print(f"credential sweep: {examined} files examined, exemptions {EXEMPT_ALLOWED} honoured")
+print(f"credential sweep: {examined} files examined, exemptions {allowed_counts} honoured")
 SWEEP
 
 # The assertion that would have caught the gate's finding. The suite reads these from the
@@ -377,18 +403,24 @@ rm -rf "$STAGE"
 # through whatever path exists at that moment: a symlink planted in the build's own window
 # redirected the pointer, and the artefact was written outside `dist/`. The SHA-256 goes
 # beside it so the simulation can bind the pointer to the bytes rather than to a filename.
-# `mktemp`, because a FIXED temporary name is a redirect target however carefully it is
-# cleared. Removing it immediately before the write closed the first window and left the
-# second, between the write and the `mv`, wide open: six threads calling `symlink()` in a
-# loop won it eight times out of eight, overwriting a file outside the repository with the
-# package digest and leaving both pointers as links out of `dist/`. `mktemp` opens with
-# O_EXCL under a name nobody can predict, so there is no window to race.
-LATEST_TMP="$(mktemp "dist/.latest.XXXXXX")"
-printf '%s\n' "$OUT" > "$LATEST_TMP"
-mv -f "$LATEST_TMP" dist/latest
-DIGEST_TMP="$(mktemp "dist/.latest.XXXXXX")"
-sha256sum "$OUT" | cut -d' ' -f1 > "$DIGEST_TMP"
-mv -f "$DIGEST_TMP" dist/latest.sha256
+# Written inside a PRIVATE DIRECTORY, not to a temporary file name.
+#
+# Three attempts and three defeats, each narrower than the last. A fixed name was a redirect
+# target; clearing it immediately before the write closed the first window and left the one
+# between the write and the `mv`; `mktemp` made the name unguessable and the file O_EXCL,
+# and the shell then threw that descriptor away and RE-OPENED the name with `>`, which an
+# inotify watcher won on four real builds out of five, two of them exiting 0, destroying a
+# file outside the repository and leaving both pointers as links out of `dist/`.
+#
+# `mktemp -d` gives a directory at mode 0700. A non-owner cannot traverse it, so the path
+# the shell re-opens is one nobody else can reach, and the window stops existing rather than
+# getting smaller.
+PTR_DIR="$(mktemp -d "dist/.latest.XXXXXX")"
+printf '%s\n' "$OUT" > "$PTR_DIR/pointer"
+mv -f "$PTR_DIR/pointer" dist/latest
+sha256sum "$OUT" | cut -d' ' -f1 > "$PTR_DIR/digest"
+mv -f "$PTR_DIR/digest" dist/latest.sha256
+rmdir "$PTR_DIR"
 
 echo "package: $OUT"
 echo "size:    $(wc -c < "$OUT") bytes"

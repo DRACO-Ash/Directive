@@ -236,7 +236,7 @@ def test_a_credential_in_a_filename_is_caught(clone: Path) -> None:
     result = _build(clone)
 
     assert result.returncode != 0, result.stdout
-    assert "in a path component" in result.stdout
+    assert "in the path" in result.stdout
 
 
 def test_a_second_exemption_is_refused(clone: Path) -> None:
@@ -402,7 +402,7 @@ def test_a_credential_in_a_directory_name_is_caught(clone: Path) -> None:
     result = _build(clone)
 
     assert result.returncode != 0, result.stdout
-    assert "in a path component" in result.stdout
+    assert "in the path" in result.stdout
 
 
 def test_a_dirty_tree_stamps_the_package(clone: Path) -> None:
@@ -457,3 +457,90 @@ def test_the_simulation_refuses_a_tree_edited_after_the_build(clone: Path) -> No
 
     assert result.returncode != 0, result.stdout
     assert "working tree has changed" in result.stdout
+
+
+def test_the_simulation_refuses_a_red_suite(clone: Path) -> None:
+    """The simulation's central guard, held by no test until now.
+
+    Deleted, a genuinely failing suite returned `SIMULATION: PASS` and exit 0 while the
+    twenty-seven packaging tests stayed green. That is the one answer this script exists to
+    never give, and nothing was holding it.
+    """
+    failing = clone / "tests" / "test_deliberately_red.py"
+    failing.write_text("def test_red() -> None:\n    raise AssertionError\n", encoding="utf-8")
+    _commit(clone, "probe: a red suite")
+    assert _build(clone).returncode == 0
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "SIMULATION: PASS" not in result.stdout
+    assert "SIMULATION: FAIL" in result.stdout
+
+
+def test_the_simulation_refuses_when_no_package_exists(clone: Path) -> None:
+    """Nothing to test is a refusal, not a pass."""
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "no package" in result.stdout
+
+
+def test_several_credentials_on_the_one_exempt_line_are_refused(clone: Path) -> None:
+    """The budget counted RULE LABELS, so three secrets of one shape scored one.
+
+    All three shipped with the banner still reading a single exemption honoured.
+    """
+    suite = clone / "tests" / "test_entra_sign_in.py"
+    text = suite.read_text(encoding="utf-8")
+    extra = f"; OTHER = {PROBE_CREDENTIAL!r}; THIRD = {PROBE_CREDENTIAL!r}"
+    suite.write_text(text.replace("  # noqa: S105", f"{extra}  # noqa: S105", 1), encoding="utf-8")
+    _commit(clone, "probe: several credentials on one exempt line")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "exemptions claimed" in result.stdout or "exempt line has changed" in result.stdout
+
+
+def test_substituting_a_real_secret_for_the_declared_double_is_refused(clone: Path) -> None:
+    """The allowance pins the line by digest, so an edit to it is a reviewed change."""
+    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite.write_text(
+        suite.read_text(encoding="utf-8").replace(
+            '"not-a-real-secret"', '"P@ssw0rd-prod-entra-2026"'
+        ),
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: substitute the declared double")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "the exempt line has changed" in result.stdout
+
+
+def test_a_credential_split_across_path_components_is_caught(clone: Path) -> None:
+    """Components were scanned one by one, so a token spanning a separator was invisible."""
+    # Assembled from parts, like the other probes: written whole, the rule under test
+    # matches this module and the build refuses.
+    opening = "tok" + "en=" + chr(39) + "abcdefgh"
+    closing = "ijklmnop" + chr(39) + ".md"
+    nested = clone / "docs" / opening
+    nested.mkdir()
+    (nested / closing).write_text("notes\n", encoding="utf-8")
+    _commit(clone, "probe: credential across path components")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "in the path" in result.stdout
+
+
+def test_the_pointer_is_never_a_symlink_after_a_build(clone: Path) -> None:
+    """Three attempts at this race were defeated in turn.
+
+    The pointer is written inside a 0700 directory now, so the path the shell re-opens is
+    one no other user can reach.
+    """
+    assert _build(clone).returncode == 0
+
+    for name in ("latest", "latest.sha256"):
+        assert not (clone / "dist" / name).is_symlink(), name
+    assert not list((clone / "dist").glob(".latest.??????")), "the private directory leaked"
