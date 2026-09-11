@@ -23,12 +23,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts" / "build-package.sh"
 
-#: The alternation every credential rule shares. Held here so an experiment built on top of
-#: a rule can find the name part without matching a fragment of some other rule.
-KEYWORD_GROUP = "(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)[A-Z0-9_]*"
+#: The alternation every credential rule shares, DERIVED from the rules rather than copied,
+#: because the module docstring says nothing here is transcribed and a hand-copy would have
+#: made that sentence false. An experiment built on top of a rule needs it to find the name
+#: part without matching a fragment of some other rule.
+_KEYWORD_GROUP = re.compile(r"\(\?:SECRET\|[A-Z|]+\)\[A-Z0-9_\]\*")
+
+
+def keyword_group() -> str:
+    """Return the shared keyword alternation, read out of the rules that carry it."""
+    found = {
+        match for pattern in load_rules().values() for match in _KEYWORD_GROUP.findall(pattern)
+    }
+    assert len(found) == 1, f"the rules no longer share one keyword group: {sorted(found)}"
+    return found.pop()
+
 
 _CASE_SENSITIVE_MARKER = "]\n#: The rules that must NOT fold case"
-_NAME_PATTERN = re.compile(r"-name '([^']+)'")
+#: `-iname` as well as `-name`: adding `-o -iname '*.asc'` with no probe beside it left the
+#: bijection test green, where the `-name` spelling reddened it. The count of predicates is
+#: asserted against the count of parsed patterns below, so a third spelling cannot slip past
+#: this regex silently either.
+_NAME_PATTERN = re.compile(r"-i?name '([^']+)'")
+_NAME_PREDICATE = re.compile(r"-i?name ")
 
 
 def load_rules() -> dict[str, str]:
@@ -60,8 +77,14 @@ def load_swept_filenames() -> set[str]:
     source = SWEEP.read_text(encoding="utf-8")
     start = source.index('SECRET="$(find "$STAGE"')
     expression = source[start : source.index("-print -quit)", start)]
-    patterns = set(_NAME_PATTERN.findall(expression))
+    found = _NAME_PATTERN.findall(expression)
+    patterns = set(found)
     assert patterns, "no -name patterns were parsed out of the filename sweep"
+    predicates = len(_NAME_PREDICATE.findall(expression))
+    assert len(found) == predicates, (
+        f"the filename sweep carries {predicates} name predicates and this reader parsed "
+        f"{len(found)}; one of them is in a spelling the regex above does not read"
+    )
     # The one name that must ship. It appears in the expression as the `! -name` exemption
     # rather than as a refusal, so it is removed here rather than probed as a refusal.
     return patterns - {".env.example"}

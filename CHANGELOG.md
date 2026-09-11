@@ -11,13 +11,14 @@ deployed yet, so every row below records a release that was cut, gated and merge
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
-review PASS at `b3b798c`, then fifteen further runs against the packaging and verification
+review PASS at `b3b798c`, then sixteen further runs against the packaging and verification
 machinery, every one of them FAIL and every finding in that machinery or in a shipped
 document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
-never been measured. Verification loop PASS, 967 passed, 2 skipped, coverage 98.98%, measured at the
-last commit of this release rather than at the commit this row is headed by. The test count here was once replaced with a LATER commit's figure while the commit
+never been measured. Verification loop PASS, 973 passed, 2 skipped, coverage 98.98%,
+measured at the last commit of this release rather than at the commit this row is headed
+by. The test count here was once replaced with a LATER commit's figure while the commit
 name stayed, inside the sentence below that criticises that very mistake; both halves are now
 measured at the commit named. An earlier row here recorded a 98.84 to 98.89 range and was not
 re-measured when the test count beside it was updated, which is the same defect this file
@@ -50,11 +51,12 @@ records against others.
   row. Everything compiles with MULTILINE, and with IGNORECASE except the prose rule,
   which must not fold case. Without MULTILINE the anchored
   rules matched only at the first byte of a file and a UTF-16 credential below line one
-  shipped. Measured at zero false positives across all 157 tracked files. What is still
+  shipped. Measured at zero false positives across all 159 tracked files. What is still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
   closed, and the largest item is `NAME = value` with spaces: closing it gives 22 findings
-  on 22 lines across all 157 tracked files, the experiment being to replace `=` with
-  `[ \t]*=[ \t]*` in that rule alone.
+  on 22 lines across all 159 tracked files, the experiment being to replace `=` with
+  `[ \t]*=[ \t]*` in that rule alone. Every figure in this bullet is asserted by
+  `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by
   `tests/test_secret_rule_parity.py`, patterns and flags compared character for character,
   with one named exception. Both files claimed to be in step in a comment, and the claim
@@ -63,8 +65,9 @@ records against others.
   first element, which stopped twelve of thirteen rules blocking with the suite green.
   It now also asserts WHICH fields of a write reach the rules, that a write is scanned
   whatever file it is aimed at and however long it is, that both registration files carry
-  the matcher, and that each registration points at a hook that exists and is this one: narrowing the hook's input collection to one field blinded it to
-  every `Edit` and `MultiEdit` with the suite green. So did a `file_path` carve-out for
+  the matcher, and that each registration points at a hook that exists and is this one.
+  Narrowing the hook's input collection to one field blinded it to every `Edit` and
+  `MultiEdit` with the suite green. So did a `file_path` carve-out for
   `.env`, a 400-byte length bound, and a registration pointing at a filename that does
   not exist. Which rules run, which fields are read, what those rules see, and whether
   the hook runs at all are four separate controls, and each was found by a reviewer

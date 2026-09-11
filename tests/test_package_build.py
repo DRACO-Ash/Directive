@@ -333,13 +333,18 @@ def test_every_swept_pattern_has_exactly_one_probe() -> None:
         pattern: [name for name in SWEPT_NAMES if fnmatch(name, pattern)] for pattern in patterns
     }
 
-    unprobed = sorted(pattern for pattern, names in matched.items() if not names)
-    assert not unprobed, f"patterns in the sweep with no probe in SWEPT_NAMES: {unprobed}"
+    # EXACTLY one, each way, because the docstring says bijection and a pattern matching two
+    # probes would otherwise pass a test named for one.
+    unprobed = sorted(pattern for pattern, names in matched.items() if len(names) != 1)
+    assert not unprobed, (
+        "every pattern needs exactly one probe; these have none or several: "
+        f"{ {pattern: matched[pattern] for pattern in unprobed} }"
+    )
 
     stray = sorted(
-        name for name in SWEPT_NAMES if not any(fnmatch(name, pattern) for pattern in patterns)
+        name for name in SWEPT_NAMES if sum(fnmatch(name, pattern) for pattern in patterns) != 1
     )
-    assert not stray, f"probes in SWEPT_NAMES matching no pattern in the sweep: {stray}"
+    assert not stray, f"probes matching no pattern, or more than one: {stray}"
 
 
 @pytest.mark.parametrize("name", SWEPT_NAMES)

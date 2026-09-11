@@ -39,6 +39,8 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `engineering-reviewer`, seventh pass | `72ab2d0` | **FAIL** | Three MAJORs, all three shared with the run above or its consequence: the five filename patterns added in that delta were held by no test; "eleven of twelve rules" was twelve of thirteen; and the leading-part cost figure read 12 where 9 findings in `src/` is measurable, eight of them `key_id=`. It also confirmed the hook-execution tests hold the rule set, and that the two former skips cannot flake. |
 | 2026-09-11 | `security-reviewer`, fifteenth run | `1bdbdb8` | **FAIL** | Three MAJORs. The hook was defeated a THIRD way, by a dimension the previous two rounds did not cover: what the rules see. A one-line `file_path` carve-out exempting `.env` passed all twenty-seven tests while letting a client secret into `.env.production`, and a `.slice(0, 400)` let a credential past 400 bytes into any document, because every probe was a short single line with no path. The registration test asserted the substring `secret-scan`, so pointing both files at a hook that does not exist was green. And a fourth cost figure was stale in two shipped documents and in the sweep, which contradicted itself about one experiment 154 lines apart. |
 | 2026-09-11 | `engineering-reviewer`, eighth pass | `1bdbdb8` | **FAIL** | Four MAJORs, three of them created by the delta under review. A count written stale in the commit that grew the list it counted; the same fourth figure; the filename mirror drifting in the ADD direction, where a pattern with no probe was green; and a `pytest.skip` reintroduced forty lines below the comment condemning the one it removed. It confirmed by mutation that the sweep, the hook's reach and the rule set are all genuinely held. |
+| 2026-09-11 | `security-reviewer`, sixteenth run | `e89e18d` | **FAIL** | Three MAJORs. The hook was retired by one `rm`: this module's skip condition was keyed on the hook itself, so deleting it skipped all thirty-six tests including the two written to catch that, and the suite exited 0. The figure pinning was half a fix: the MEASUREMENT could no longer drift, the PROSE reporting it still could, demonstrated by rewriting 22 to 47 and 26 to 99 in all three documents with the suite green. And the tracked-file count was stale in `CHANGELOG.md`, unanchored, in the commit that changed it. |
+| 2026-09-11 | `engineering-reviewer`, ninth pass | `e89e18d` | **FAIL** | Three MAJORs, two shared with the run above. The third was the new cost-figure module hardcoding `/usr/bin/git` with a guard that only reads the return code, so on any image that puts git elsewhere it raises rather than skips: five errors at the platform's test stage, a failed upload and every later stage skipped. Every other module in the suite resolves a tool with `shutil.which`. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -79,33 +81,38 @@ these names. The keyword may be followed by more of the name, so `CLIENT_SECRET_
 caught. Case is folded everywhere except the prose rule.
 
 Every figure below is pinned by `tests/test_sweep_cost_figures.py`, which re-runs each
-experiment against the live rules and the live tree. Prose cannot hold a number: four of
-these went stale, one of them written stale in the commit that measured it, and one file
-contradicted itself about one experiment 154 lines apart. If a figure here disagrees with
-that test, the test is right and this section is out of date.
+experiment against the live rules and the live tree AND asserts the sentences here, in
+`CHANGELOG.md` and in `scripts/build-package.sh` that report it. Both halves, because the
+first four attempts at this pinned only the measurement: the number could still be rewritten
+to anything in all three documents with the suite green, which a reviewer demonstrated by
+rewriting 22 to 47 and 26 to 99. Prose cannot hold a number on its own. Five figures went
+stale before this, one of them written stale in the commit that measured it, and one file
+contradicted itself about one experiment 154 lines apart. No commit hash is cited with any
+figure below, deliberately: a hash is one more thing to go stale, and a red test is a better
+anchor than a citation.
 
 **What it does not, and why each is left open.**
 
 ● `NAME = value` with spaces around the equals. Measured rather than assumed: allowing them
-  gives 22 findings on 22 lines across all 157 tracked files at `1bdbdb8`, so the rule would
-  fire on every build and be switched off within a week. The experiment is to replace `=`
+  gives 22 findings on 22 lines across all 159 tracked files, so the rule would fire on
+  every build and be switched off within a week. The experiment is to replace `=`
   with `[ \t]*=[ \t]*` in that rule alone and scan every tracked file. The cost of closing
   it is a rule nobody keeps.
 ● A `name: value` mapping in YAML or JavaScript Object Notation (JSON), unquoted.
 ● A LOWER case name mid-line, such as `set client_secret=<value> in the console`. The prose
   rule is the one rule that does not fold case. Folding it gives 26 matches on 18 lines
-  across all 157 tracked files, measured at `1bdbdb8`: 19 Python keyword arguments
-  (`outgoing_key=`, `sort_keys=`) and 7 `sonar.projectKey=` lines in the skill templates,
-  the latter admitted by the preceding-character widening made in the same commit. The
+  across all 159 tracked files: 19 Python keyword arguments (`outgoing_key=`, `sort_keys=`)
+  and 7 `sonar.projectKey=` lines, six of them in the skill templates and one in this
+  project's own `sonar-project.properties`, all admitted by the preceding-character
+  widening. The
   anchored rule and the table rule both fold, so a lower-case name is caught in those two
   shapes and not in this one. This figure has been written three times and measured three
   ways, reading 23 and then 19 at earlier commits, each correct for an experiment nobody
-  recorded. State the experiment, the scope and the commit with the number, or do not write
-  the number.
+  recorded. State the experiment and the scope with the number, and let the test hold both.
 ● A name that BEGINS with one of the keywords, such as `SECRET_FOR_ENTRA=<value>`. The name
   must contain one of these words and have at least one character before it. Making that
   leading part optional gives 14 findings across the tracked tree, 9 of them in `src/`
-  (eight `key_id=` and one `keys=`), at `1bdbdb8`. Left open at a measured price rather
+  (eight `key_id=` and one `keys=`). Left open at a measured price rather
   than bought.
 ● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it, in EITHER case, is skipped
   whole, because the rule folds case. That is a
