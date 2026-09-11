@@ -112,6 +112,27 @@ def test_the_rule_sets_are_in_the_same_order() -> None:
     assert [label for label, _, _ in sweep] == [label for label, _, _ in hook]
 
 
+def test_every_line_of_the_hook_array_was_parsed() -> None:
+    """A line the parser cannot read is invisible, and the comparison then proves nothing.
+
+    Set inequality catches a rule that is DROPPED from the hook, so the hole is
+    one-directional: an unparsed hook-only rule passes the exception test above while
+    nothing ever reads it. The sweep wraps its own long rules across lines, so that style
+    is one edit away from being used here too.
+    """
+    source = HOOK.read_text(encoding="utf-8")
+    start = source.index("const RULES = [")
+    array = source[start + len("const RULES = [") : source.index("];", start)]
+    substantive = [
+        line for line in array.splitlines() if line.strip() and not line.strip().startswith("//")
+    ]
+
+    assert len(substantive) == len(_hook_rules()), (
+        "the hook array holds lines the parser did not read:\n  "
+        + "\n  ".join(line for line in substantive if not _HOOK_ENTRY.match(line))
+    )
+
+
 def test_the_hook_only_exception_is_exactly_one_rule() -> None:
     """The exception is a licence to differ, so it is pinned rather than described."""
     hook_labels = {label for label, _, _ in _hook_rules()}
