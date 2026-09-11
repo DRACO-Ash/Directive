@@ -25,6 +25,18 @@ if [ -z "$PKG" ] && [ -f dist/latest ]; then
   PKG="$(cat dist/latest)"
   FROM_POINTER=yes
 fi
+
+# The pointer is unauthenticated input: it is a file in `dist/`, and anything that can write
+# there can name a different archive. Matching only the filename accepted a package from any
+# directory, so the builder records the artefact's SHA-256 beside the pointer and it is
+# re-checked here. A mismatch means the bytes changed under the name.
+if [ "$FROM_POINTER" = yes ] && [ -f dist/latest.sha256 ] && [ -f "$PKG" ]; then
+  if [ "$(sha256sum "$PKG" | cut -d' ' -f1)" != "$(cat dist/latest.sha256)" ]; then
+    echo "FAIL: $PKG does not match the digest the builder recorded for it."
+    echo "Rebuild, or pass the package explicitly to test it anyway."
+    exit 1
+  fi
+fi
 if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
   echo "FAIL: no package at '${PKG:-dist/latest}'. Run scripts/build-package.sh first."
   exit 1
@@ -73,10 +85,12 @@ if [ "$FROM_POINTER" = yes ]; then
         exit 1
         ;;
     esac
-    # A skip bit makes a modified file invisible to `git status`, so the guard below reads
-    # a clean tree and the stale package sails through. `git ls-files -v` reports a lower
-    # case tag for any path with `assume-unchanged` or `skip-worktree` set.
-    if git ls-files -v | grep -q '^[a-z]'; then
+    # A skip bit makes a modified file invisible to `git status`, so the guard below reads a
+    # clean tree and the stale package sails through. `git ls-files -v` lower-cases the tag
+    # for `assume-unchanged` and reports `S` for `skip-worktree`, so `^[a-z]` caught the
+    # first and silently missed the second while the message claimed both. Demonstrated with
+    # a security control gutted in the tree and SIMULATION: PASS returned anyway.
+    if git ls-files -v | grep -qE '^[a-zS]'; then
       echo "FAIL: a tracked path carries an assume-unchanged or skip-worktree bit,"
       echo "      so the tree cannot be compared. Clear it with git update-index --no-assume-unchanged."
       exit 1

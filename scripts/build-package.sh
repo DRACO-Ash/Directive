@@ -43,6 +43,9 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 fi
 OUT="dist/comply-ops-${VERSION}-${STAMP}-${COMMIT}.zip"
 STAGE="dist/.stage"
+# Under the stage prefix so the same `rm -rf` clears it, and so it is never written
+# through a path an attacker can place in `dist/` ahead of the build.
+MANIFEST="dist/.stage.manifest"
 
 # Every path that ships. Anything not named here is not in the package, so a new file
 # that a test reads must be added HERE as well as written, and the assertion below is
@@ -83,8 +86,8 @@ scripts"
 # pointed at, and the simulation would test that stale artefact and report PASS for a tree
 # whose package never built. Reproduced in a throwaway clone.
 mkdir -p dist
-rm -f dist/latest
-rm -rf "$STAGE" "$OUT"
+rm -f dist/latest dist/latest.sha256 dist/.latest.tmp dist/.latest.sha.tmp
+rm -rf "$STAGE" "$OUT" "$MANIFEST"
 mkdir -p "$STAGE"
 
 for path in $FILES; do
@@ -120,6 +123,67 @@ done
 git archive HEAD -- $FILES $DIRS | tar -x -C "$STAGE"
 [ -n "$(find "$STAGE" -type f -print -quit)" ] || { echo "FAIL: git archive produced nothing"; exit 1; }
 
+# `git archive` is NOT a byte-faithful copy of HEAD, and believing it was is what the
+# comment above got wrong. It applies the archived tree's own `.gitattributes` and the build
+# host's conversion settings, all of which an attacker reaches from a single committed file:
+#
+#   export-ignore   removes a path from the archive. One committed line deleted the
+#                   AMD-001 10.6 security header test from the package, the build exited 0,
+#                   and the pipeline simulation returned SIMULATION: PASS on an artefact
+#                   with the control's test missing.
+#   export-subst    substitutes attacker-chosen commit-message text into a shipped file.
+#   ident           expands $Id$ in a shipped file.
+#   filter          a smudge driver rewrites shipped bytes wholesale.
+#   core.autocrlf   host config alone rewrites every text file, CRLF-ing the shell scripts.
+#
+# There is no switch that disables tree attributes, so the archive is verified against the
+# object database instead. `git ls-tree` reports the mode and the blob hash of every path
+# HEAD actually contains; a git blob hash is sha1("blob <len>\0" + bytes), which the checker
+# recomputes from what landed in the stage. A missing path, an extra path, a changed byte, a
+# committed symlink and a committed gitlink all fail here, together, for one reason: the
+# stage must equal HEAD or nothing ships.
+# shellcheck disable=SC2086  # deliberate, as above: newline-separated literal allowlists.
+git ls-tree -r HEAD -- $FILES $DIRS > "$MANIFEST"
+[ -s "$MANIFEST" ] || { echo "FAIL: HEAD contains none of the allowlisted paths"; exit 1; }
+"$PY_FOR_SWEEP" - "$STAGE" "$MANIFEST" <<'VERIFY'
+import hashlib
+import pathlib
+import sys
+
+stage = pathlib.Path(sys.argv[1])
+failures = []
+expected = set()
+
+for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
+    meta, path = line.split("\t", 1)
+    mode, kind, blob = meta.split()
+    if path.startswith('"'):
+        failures.append(f"{path}: the path needs quoting, so it carries a control character")
+        continue
+    if mode == "120000" or kind != "blob":
+        failures.append(f"{path}: committed as mode {mode} ({kind}), which may not ship")
+        continue
+    expected.add(path)
+    landed = stage / path
+    if not landed.is_file():
+        failures.append(f"{path}: in HEAD and not in the package (a .gitattributes export-ignore does this)")
+        continue
+    raw = landed.read_bytes()
+    digest = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()  # noqa: S324
+    if digest != blob:
+        failures.append(f"{path}: {digest} in the package against {blob} in HEAD")
+
+for landed in stage.rglob("*"):
+    if landed.is_file() and str(landed.relative_to(stage)) not in expected:
+        failures.append(f"{landed.relative_to(stage)}: in the package and not in HEAD")
+
+for failure in failures:
+    print(f"FAIL: {failure}")
+if failures:
+    sys.exit(1)
+print(f"package verified against HEAD: {len(expected)} paths, every byte matching")
+VERIFY
+
 # A symlink can still be COMMITTED, and `git archive` faithfully restores it as a link.
 # Nothing in this package has any reason to be one, and `zip -r` without `-y` would store
 # what it points at, so any link is refused rather than followed or preserved.
@@ -137,9 +201,13 @@ SECRET="$(find "$STAGE" ! -name '.env.example' \
 # name and a credential inside it shipped in a clean-stamped package; the pre-write hook
 # that would have caught it only runs on this assistant's own edits, so a human `git add`,
 # a heredoc or a paste never passes through it. These are the hook's own patterns, so one
-# rule set governs both routes into the repository. A line carrying the project's existing
-# `# noqa: S105` or `# nosec` marker is a declared test double and is skipped, which is the
-# convention the code already uses rather than a new one invented here.
+# rule set governs both routes into the repository. Be exact about "one rule set", because
+# it is not identical: the hook's tenth rule (`Dockerfile ENV PORT`) is a build-contract
+# check rather than a credential check and lives in the suite instead, and the hook matches
+# one joined blob while this sweep matches line by line AND joined, so a split assignment is
+# caught by both. A line carrying the project's existing `# noqa: S105` or `# nosec` marker
+# is a declared test double and is skipped ONLY inside `tests/*.py`, with the count pinned,
+# because outside that the marker is a seven-character bypass for anyone who can commit.
 "$PY_FOR_SWEEP" - "$STAGE" <<'SWEEP'
 import pathlib
 import re
@@ -159,23 +227,78 @@ RULES = [
 ]
 COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in RULES]
 
+#: How many lines in the whole package may claim the exemption. It is honoured only for a
+#: test module, because the exemption is a seven-character bypass for anyone who can commit:
+#: appending `  # nosec` to a credential line made it ship. Exactly one line in this tree
+#: needs it, the Entra test double, and pinning the count makes a second one a reviewed
+#: change rather than a silent one.
+EXEMPT_EXPECTED = 1
+EXEMPT_MARKERS = ("# noqa: S105", "# nosec")
+
+
+def _exempt(path, line):
+    """Whether this line may claim the declared-test-double exemption."""
+    if not any(marker in line for marker in EXEMPT_MARKERS):
+        return False
+    parts = path.parts
+    return "tests" in parts and path.suffix == ".py"
+
+
 hits = []
+examined = 0
+exempted = 0
+found_on_a_line = set()
 for path in pathlib.Path(sys.argv[1]).rglob("*"):
     if not path.is_file():
         continue
     try:
-        text = path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
+        raw = path.read_bytes()
+    except OSError as error:
+        # NOT a `continue`. A file the sweep cannot open is a file the sweep did not check,
+        # and this is a credential control: the unexamined file is exactly where a secret
+        # would be. The same principle the interpreter check above already states.
+        hits.append(f"{path}: could not be read ({error.__class__.__name__})")
         continue
+    # Decoded with replacement rather than skipped on a decode error. A single trailing
+    # 0xFF byte appended to a Markdown file made `read_text` raise, the sweep moved on, and
+    # the credential shipped in a package the build called clean. A credential inside a PNG
+    # shipped the same way. Replacement never raises and still matches an ASCII pattern
+    # embedded in binary, which is the shape that actually gets exfiltrated.
+    text = raw.decode("utf-8", errors="replace")
+    examined += 1
+    # Two passes over the same text. The line pass gives a number to report; the whole-file
+    # pass catches an assignment split across lines, which the pre-write hook sees because
+    # it matches one joined blob and a line-based sweep does not. Exempted lines are removed
+    # before both, so the exemption cannot be defeated by the whole-file pass and cannot be
+    # claimed by it either.
+    scannable = []
     for number, line in enumerate(text.splitlines(), start=1):
-        if "# noqa: S105" in line or "# nosec" in line:
+        if _exempt(path, line):
+            exempted += 1
             continue
+        if any(marker in line for marker in EXEMPT_MARKERS) and any(
+            rule.search(line) for _, rule in COMPILED
+        ):
+            hits.append(f"{path}:{number}: an exemption marker outside tests/*.py")
+        scannable.append(line)
         for label, rule in COMPILED:
             if rule.search(line):
                 hits.append(f"{path}:{number}: {label}")
+                found_on_a_line.add((str(path), label))
+    for label, rule in COMPILED:
+        if rule.search("\n".join(scannable)) and (str(path), label) not in found_on_a_line:
+            hits.append(f"{path}: {label}, split across lines")
+
+if not examined:
+    print("FAIL: the credential sweep examined no files at all")
+    sys.exit(1)
+if exempted != EXEMPT_EXPECTED:
+    hits.append(f"{exempted} lines claimed the exemption against {EXEMPT_EXPECTED} expected")
 for hit in hits:
     print(f"FAIL: {hit}")
-sys.exit(1 if hits else 0)
+if hits:
+    sys.exit(1)
+print(f"credential sweep: {examined} files examined, {EXEMPT_EXPECTED} declared exemption honoured")
 SWEEP
 
 # The assertion that would have caught the gate's finding. The suite reads these from the
@@ -202,7 +325,14 @@ rm -rf "$STAGE"
 # The builder names what it built. The simulation used to pick the newest zip by
 # modification time, which meant parsing `ls` output and guessing; with two packages in
 # `dist/` from different commits it is a guess that can be wrong, and it was.
-printf '%s\n' "$OUT" > dist/latest
+# Written through a temporary name and moved into place, because `> dist/latest` writes
+# through whatever path exists at that moment: a symlink planted in the build's own window
+# redirected the pointer, and the artefact was written outside `dist/`. The SHA-256 goes
+# beside it so the simulation can bind the pointer to the bytes rather than to a filename.
+printf '%s\n' "$OUT" > "dist/.latest.tmp"
+mv -f "dist/.latest.tmp" dist/latest
+sha256sum "$OUT" | cut -d' ' -f1 > "dist/.latest.sha.tmp"
+mv -f "dist/.latest.sha.tmp" dist/latest.sha256
 
 echo "package: $OUT"
 echo "size:    $(wc -c < "$OUT") bytes"
