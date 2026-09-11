@@ -302,12 +302,17 @@ RULES = [
     # Source cell and never the one literally headed Value, which is where a credential
     # lands; the row shipped clean, demonstrated. Any cell of the row is scanned now. The
     # value cell must be one token with no spaces, which is what separates a credential from
-    # the prose the live rows actually hold; `[REDACTED:...]` and `TBC` are the two
-    # placeholders the hard rules mandate and both pass.
+    # the prose the live rows actually hold. The placeholder exemption is ROW-level rather
+    # than cell-level, and that is the second attempt: a lookahead on the value cell let the
+    # engine try a different cell instead, so `| NAME | Operator-set | [REDACTED:secret] |`
+    # matched on `Operator-set`, a legitimate lone token. A row carrying `[REDACTED:...]` or
+    # `TBC` anywhere in it is a documented parameter row and is skipped whole. That is a
+    # bypass for anyone who adds `TBC` to a row on purpose, and it is the right trade: the
+    # adversary this rule is for is an honest committer pasting a value into a table.
     ("Credential in a document table row",
-     r"^[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*"
+     r"^[ \t]*\|(?![^\n]*(?:\[REDACTED:|TBC))(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*"
      r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|(?:[^|\n]*\|)*?"
-     r"[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)"),
+     r"[ \t]*`?[^ \t|]{8,}`?[ \t]*(?:\||$)"),
 ]
 #: The rules that must NOT fold case. Every other rule folds, because `client_secret=` is a
 #: real spelling and a sweep that misses it is a sweep with a hole. This one is the
