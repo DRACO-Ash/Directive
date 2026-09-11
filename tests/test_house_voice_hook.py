@@ -49,6 +49,16 @@ CONTENT_FIELDS = {
     "NotebookEdit": "new_source",
 }
 
+#: `Bash` is registered too, and it is a different branch of the hook with a different rule:
+#: it inspects a commit MESSAGE, which is where the `+` meaning "and" is caught. Carving it
+#: out of the matcher comparison left that whole branch held by nothing, and it is the only
+#: enforcement anywhere of one of the hard rules in `CLAUDE.md`.
+COMMIT_COMMAND = 'git commit -m "[AUDIT] tighten auth '
+PLUS_PROBE = COMMIT_COMMAND + 'and config"'.replace("and", "+")
+EM_DASH_PROBE = COMMIT_COMMAND + "and config" + EM_DASH + ' properly"'
+#: The same `+` outside a commit message, which is arithmetic or a flag and must pass.
+INNOCENT_COMMAND = 'python -c "print(2 + 2)"'
+
 
 def _verdict(tool: str, content: str) -> subprocess.CompletedProcess[str]:
     """Run the hook the way Claude Code runs it: a JSON payload on standard input."""
@@ -60,6 +70,16 @@ def _verdict(tool: str, content: str) -> subprocess.CompletedProcess[str]:
     node = shutil.which("node")
     assert node is not None, "node is missing, so this hook has never run here"
     payload = json.dumps({"tool_name": tool, "tool_input": written})
+    return subprocess.run(  # noqa: S603
+        [node, str(HOOK)], input=payload, capture_output=True, text=True, check=False
+    )
+
+
+def _run_bash(command: str) -> subprocess.CompletedProcess[str]:
+    """Run the hook against a `Bash` payload, which reaches its other branch."""
+    node = shutil.which("node")
+    assert node is not None, "node is missing, so this hook has never run here"
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
     return subprocess.run(  # noqa: S603
         [node, str(HOOK)], input=payload, capture_output=True, text=True, check=False
     )
@@ -86,6 +106,34 @@ def test_the_hook_allows_ordinary_prose() -> None:
     assert allowed.returncode == 0, allowed.stderr
 
 
+@pytest.mark.parametrize(
+    ("probe", "expected"),
+    [(PLUS_PROBE, "+"), (EM_DASH_PROBE, "em-dash")],
+)
+def test_the_hook_inspects_a_commit_message(probe: str, expected: str) -> None:
+    """The Bash branch, which was carved out of the matcher check and held by nothing.
+
+    Deleting the whole branch left this module green, and it is the only place the house
+    rule against a `+` meaning "and" is enforced at all.
+    """
+    blocked = _run_bash(probe)
+
+    assert blocked.returncode == 2, f"the commit message was not inspected: {blocked.stderr}"
+    assert expected in blocked.stderr, blocked.stderr
+
+
+def test_the_hook_leaves_an_ordinary_command_alone() -> None:
+    """The negative control, and it is load-bearing rather than decorative.
+
+    A `+` is arithmetic or a flag nearly everywhere. A hook that refused every one of them
+    would be switched off within a day, which is why the branch inspects commit messages
+    only.
+    """
+    allowed = _run_bash(INNOCENT_COMMAND)
+
+    assert allowed.returncode == 0, allowed.stderr
+
+
 def test_every_tool_in_the_registration_has_a_probe() -> None:
     """The matcher is the source of truth for which tools this hook must handle.
 
@@ -102,6 +150,9 @@ def test_every_tool_in_the_registration_has_a_probe() -> None:
     assert matchers, "the registration does not mention this hook at all"
     registered = {tool for matcher in matchers for tool in matcher.split("|")}
 
-    assert registered - {"Bash"} == set(CONTENT_FIELDS), (
-        f"registered for {sorted(registered)}, probed for {sorted(CONTENT_FIELDS)}"
+    probed = set(CONTENT_FIELDS) | {"Bash"}
+
+    assert registered == probed, (
+        f"registered for {sorted(registered)}, probed for {sorted(probed)}. Every registered "
+        "tool needs a probe: carving one out left that whole branch of the hook unheld."
     )
