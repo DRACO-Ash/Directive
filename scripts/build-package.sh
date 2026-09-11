@@ -16,6 +16,7 @@ set -eu
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
+mkdir -p dist
 
 # The content sweep below needs an interpreter. The project's own is preferred; a system
 # python3 is accepted so the package can still be built on a machine without the virtual
@@ -42,10 +43,25 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
   COMMIT="${COMMIT}-dirty"
 fi
 OUT="dist/comply-ops-${VERSION}-${STAMP}-${COMMIT}.zip"
-STAGE="dist/.stage"
-# Under the stage prefix so the same `rm -rf` clears it, and so it is never written
-# through a path an attacker can place in `dist/` ahead of the build.
-MANIFEST="dist/.stage.manifest"
+# EVERY intermediate is created inside one private directory, and only the finished archive
+# is moved out of it.
+#
+# The pointer race was fixed three times and each fix narrowed the class instead of closing
+# it, because `dist/` held four writes to names an attacker could predict: the stage, the
+# manifest, the archive and the pointer. A symlink planted at any one of them is followed by
+# a `>` redirect or entered by `tar`. The manifest was taken on the FIRST attempt, truncating
+# a file outside the repository and leaving the build to exit 0; the stage went the same way.
+#
+# `mktemp -d` is mode 0700, so a non-owner cannot traverse it, and every predictable name
+# inside it is unreachable. What leaves it does so by `mv`, which uses `rename(2)` and
+# REPLACES a symlink at the destination rather than following it. So the class ends here
+# rather than being narrowed again.
+WORK="$(mktemp -d dist/.build.XXXXXX)"
+# Removed however the build ends, so a failure leaves no half-built stage behind.
+trap 'rm -rf "$WORK"' EXIT
+STAGE="$WORK/stage"
+MANIFEST="$WORK/manifest"
+BUILT="$WORK/package.zip"
 
 # Every path that ships. Anything not named here is not in the package, so a new file
 # that a test reads must be added HERE as well as written, and the assertion below is
@@ -85,10 +101,7 @@ scripts"
 # and never cleared, so a build that failed left the previous commit's package still
 # pointed at, and the simulation would test that stale artefact and report PASS for a tree
 # whose package never built. Reproduced in a throwaway clone.
-mkdir -p dist
-rm -f dist/latest dist/latest.sha256
-rm -rf dist/.latest.?????? 2>/dev/null || true
-rm -rf "$STAGE" "$OUT" "$MANIFEST"
+rm -f dist/latest dist/latest.sha256 "$OUT"
 mkdir -p "$STAGE"
 
 for path in $FILES; do
@@ -393,8 +406,8 @@ NESTED="$(find "$STAGE" -mindepth 2 -name Dockerfile -print | head -1)"
 ! [ -e "$STAGE/.env" ] || { echo "FAIL: .env is in the package"; exit 1; }
 [ -f "$STAGE/.env.example" ] || { echo "FAIL: .env.example must ship; the suite reads it"; exit 1; }
 
-(cd "$STAGE" && zip -q -r -X "../$(basename "$OUT")" . )
-rm -rf "$STAGE"
+(cd "$STAGE" && zip -q -r -X "../package.zip" . )
+mv -f "$BUILT" "$OUT"
 
 # The builder names what it built. The simulation used to pick the newest zip by
 # modification time, which meant parsing `ls` output and guessing; with two packages in
@@ -415,12 +428,10 @@ rm -rf "$STAGE"
 # `mktemp -d` gives a directory at mode 0700. A non-owner cannot traverse it, so the path
 # the shell re-opens is one nobody else can reach, and the window stops existing rather than
 # getting smaller.
-PTR_DIR="$(mktemp -d "dist/.latest.XXXXXX")"
-printf '%s\n' "$OUT" > "$PTR_DIR/pointer"
-mv -f "$PTR_DIR/pointer" dist/latest
-sha256sum "$OUT" | cut -d' ' -f1 > "$PTR_DIR/digest"
-mv -f "$PTR_DIR/digest" dist/latest.sha256
-rmdir "$PTR_DIR"
+printf '%s\n' "$OUT" > "$WORK/pointer"
+mv -f "$WORK/pointer" dist/latest
+sha256sum "$OUT" | cut -d' ' -f1 > "$WORK/digest"
+mv -f "$WORK/digest" dist/latest.sha256
 
 echo "package: $OUT"
 echo "size:    $(wc -c < "$OUT") bytes"
