@@ -303,7 +303,8 @@ RULES = [
     # `CLIENT_SECRET_V2=` walked past without it. The name must still CONTAIN one of these
     # words and not begin with one, and that restriction is deliberate and measured: making
     # the leading `[A-Z][A-Z0-9_]*` optional gives 14 findings across the tracked tree, 9 of
-    # them in `src/` (eight `key_id=` and one `keys=`). So `SECRET_FOR_ENTRA=` is left open
+    # them in `src/`, of which 8 are `key_id=` and 1 is `keys=`. So `SECRET_FOR_ENTRA=` is
+    # left open
     # and recorded rather than bought at that price. `[REDACTED:...]` is the placeholder the
     # hard rule mandates and is allowed through. The optional opening delimiter is not
     # decoration:
@@ -318,8 +319,8 @@ RULES = [
     # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
     # than a relaxed anchor on the one above. Folding case here gives 26 matches on 18 lines
     # across all 159 tracked files: 19 Python keyword arguments (`outgoing_key=`,
-    # `sort_keys=`) and 7 `sonar.projectKey=` lines, six of them in the skill templates and
-    # one in this project's own `sonar-project.properties`, all admitted by the
+    # `sort_keys=`) and 7 `sonar.projectKey=` lines, 6 of them in the skill templates and 1
+    # in this project's own `sonar-project.properties`, all admitted by the
     # preceding-character widening. Requiring the upper case name that every environment
     # variable actually has leaves zero. The one carve-out
     # is the diagnostics read-out shape `NAME=MISSING(n)`, which is a value-ABSENT marker
@@ -576,4 +577,4 @@ mv -f "$WORK/digest" dist/latest.sha256
 echo "package: $OUT"
 echo "size:    $(wc -c < "$OUT") bytes"
 echo "sha256:  $(sha256sum "$OUT" | cut -d' ' -f1)"
-echo "files:   $(unzip -Z1 "$OUT" | wc -l)"
+echo "entries: $(unzip -Z1 "$OUT" | wc -l) ($(unzip -Z1 "$OUT" | grep -cv '/$') files, the rest directory entries)"

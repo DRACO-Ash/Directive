@@ -34,13 +34,15 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, eleventh run | `ff2c5d7` | **FAIL** | One BLOCKER and five MAJORs. The Accepted residual row written in that very commit spelled two probe names out in full, so the sweep matched its own record and the build refused: no package, twenty red tests, the loop exit 1. The new unquoted rule was anchored to the start of a line, so the same credential behind `ENV`, `ARG`, `-e` or a bullet, or between the pipes of a parameter table, shipped. The sweep compiled without MULTILINE, which made both anchored rules dead in exactly the NUL-stripped pass that exists to see a UTF-16 credential. `.gitignore` missed `.env.production`, `.env.prod` and `.env.staging`. And two controls were held by no test: the `.env.example` filename exemption and `set -e` in the simulation. |
 | 2026-09-11 | `security-reviewer`, twelfth run | `5e28df4` | **FAIL** | Four MAJORs, three of them demonstrated by a package that built green while shipping a live-shaped client secret in a document. The table rule read the cell after the name and the table it was written for has three columns, so it scanned Source and never the column headed Value. A backtick between the bullet and the name defeated the whole prefix set, which is this project's own house style. The ignore rules left the whole key and certificate family trackable, and those names are outside the package allowlist, so the sweep that refuses them inside a package would never have seen one at the repository root. And the Open in scope section recorded none of it. |
 | 2026-09-11 | `engineering-reviewer`, sixth pass | `5e28df4` | **FAIL** | Three MAJORs, one shared with the run above. The `$PWD` clause of the simulation's location assertion was held by no test: the guards above it fire first with a different message, and deleting it left all eleven simulation tests green. And two rule sets were duplicated across two runtimes with no parity test, in a delta whose own comment records that they had diverged. |
-| 2026-09-11 | `security-reviewer`, thirteenth run | `6d9394f` | **FAIL** | Four MAJORs. The hook's BEHAVIOUR was held by no test: leaving its rule array untouched and iterating only its first element stopped twelve of thirteen rules blocking with every parity test green, because the parity test compares rule text and nothing executed the hook. `ssh-keygen -t ed25519` writes an extensionless file that neither `*.pem` nor `*.key` matches, so an OpenSSH private key was still trackable. And two figures in shipped documents were not supported: 23 keyword arguments against 19 measured, and 156 tracked files against 157. |
+| 2026-09-11 | `security-reviewer`, thirteenth run | `6d9394f` | **FAIL** | Four MAJORs. The hook's BEHAVIOUR was held by no test: leaving its rule array untouched and iterating only its first element stopped twelve of thirteen rules blocking with every parity test green, because the parity test compares rule text and nothing executed the hook. `ssh-keygen -t ed25519` writes an extensionless file that neither `*.pem` nor `*.key` matches, so an OpenSSH private key was still trackable. And two figures in shipped documents were not supported: 23 keyword arguments against 19 measured, and a tracked-file count one short of the tree. |
 | 2026-09-11 | `security-reviewer`, fourteenth run | `72ab2d0` | **FAIL** | Three MAJORs. The hook was blinded again, this time by narrowing WHAT it reads rather than which rules it runs: every probe reached it through `tool_input.content`, so cutting `new_string`, `file_text` and the `edits` loop left all twenty-one tests green while every `Edit` and `MultiEdit` write stopped being scanned. Eight of the eleven filename patterns could be deleted with the suite green, because one test probed one name. And two cost figures in shipped files were unsupported. |
 | 2026-09-11 | `engineering-reviewer`, seventh pass | `72ab2d0` | **FAIL** | Three MAJORs, all three shared with the run above or its consequence: the five filename patterns added in that delta were held by no test; "eleven of twelve rules" was twelve of thirteen; and the leading-part cost figure read 12 where 9 findings in `src/` is measurable, eight of them `key_id=`. It also confirmed the hook-execution tests hold the rule set, and that the two former skips cannot flake. |
 | 2026-09-11 | `security-reviewer`, fifteenth run | `1bdbdb8` | **FAIL** | Three MAJORs. The hook was defeated a THIRD way, by a dimension the previous two rounds did not cover: what the rules see. A one-line `file_path` carve-out exempting `.env` passed all twenty-seven tests while letting a client secret into `.env.production`, and a `.slice(0, 400)` let a credential past 400 bytes into any document, because every probe was a short single line with no path. The registration test asserted the substring `secret-scan`, so pointing both files at a hook that does not exist was green. And a fourth cost figure was stale in two shipped documents and in the sweep, which contradicted itself about one experiment 154 lines apart. |
 | 2026-09-11 | `engineering-reviewer`, eighth pass | `1bdbdb8` | **FAIL** | Four MAJORs, three of them created by the delta under review. A count written stale in the commit that grew the list it counted; the same fourth figure; the filename mirror drifting in the ADD direction, where a pattern with no probe was green; and a `pytest.skip` reintroduced forty lines below the comment condemning the one it removed. It confirmed by mutation that the sweep, the hook's reach and the rule set are all genuinely held. |
 | 2026-09-11 | `security-reviewer`, sixteenth run | `e89e18d` | **FAIL** | Three MAJORs. The hook was retired by one `rm`: this module's skip condition was keyed on the hook itself, so deleting it skipped all thirty-six tests including the two written to catch that, and the suite exited 0. The figure pinning was half a fix: the MEASUREMENT could no longer drift, the PROSE reporting it still could, demonstrated by rewriting 22 to 47 and 26 to 99 in all three documents with the suite green. And the tracked-file count was stale in `CHANGELOG.md`, unanchored, in the commit that changed it. |
 | 2026-09-11 | `engineering-reviewer`, ninth pass | `e89e18d` | **FAIL** | Three MAJORs, two shared with the run above. The third was the new cost-figure module hardcoding `/usr/bin/git` with a guard that only reads the return code, so on any image that puts git elsewhere it raises rather than skips: five errors at the platform's test stage, a failed upload and every later stage skipped. Every other module in the suite resolves a tool with `shutil.which`. |
+| 2026-09-11 | `security-reviewer`, seventeenth run | `7a7a642` | **FAIL** | Two MAJORs, both the figure class narrowed rather than closed for the third pass running. The clauses INSIDE a pinned sentence were free, so the Python keyword-argument count and the sonar split could be set to anything with the suite green, and one of them is the very figure this table records as wrong at the thirteenth run. And the sweep read three declared files, so false figures placed in `README.md` and in the accreditation record, both of which ship, were never read. |
+| 2026-09-11 | `engineering-reviewer`, tenth pass | `7a7a642` | **FAIL** | Two MAJORs, one shared. The other: the previous pass's `NotebookEdit` fix added the field to the house-voice hook's payload list but not to its tool gate, so it was unreachable for exactly the tool it was added for and the hook still exited 0 on every notebook write, with a comment beside it claiming the fix. Nothing in the suite referenced that hook at all, which is why it shipped broken. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -81,15 +83,23 @@ these names. The keyword may be followed by more of the name, so `CLIENT_SECRET_
 caught. Case is folded everywhere except the prose rule.
 
 Every figure below is pinned by `tests/test_sweep_cost_figures.py`, which re-runs each
-experiment against the live rules and the live tree AND asserts the sentences here, in
-`CHANGELOG.md` and in `scripts/build-package.sh` that report it. Both halves, because the
-first four attempts at this pinned only the measurement: the number could still be rewritten
-to anything in all three documents with the suite green, which a reviewer demonstrated by
-rewriting 22 to 47 and 26 to 99. Prose cannot hold a number on its own. Five figures went
-stale before this, one of them written stale in the commit that measured it, and one file
-contradicted itself about one experiment 154 lines apart. No commit hash is cited with any
-figure below, deliberately: a hash is one more thing to go stale, and a red test is a better
-anchor than a citation.
+experiment against the live rules and the live tree, asserts the sentences that report it,
+and then sweeps EVERY tracked file for anything written in the same shapes and asserts that
+too. All three parts, because each of the first five attempts closed one and left the next
+open: pinning the measurement left the prose free, and a reviewer rewrote 22 to 47 and 26 to
+99 in three documents with the suite green; pinning three named files left every other
+shipped document free, and a reviewer put false figures in `README.md` and in the
+accreditation record; and pinning whole sentences left the clauses inside them free, so 19
+became 31 and a figure written as the word "eight" became "twelve", which is the exact
+defect this table records at the thirteenth run. Every figure is a digit now, so the sweep
+can read it.
+
+Prose cannot hold a number on its own. Six went stale before this, one written stale in the
+commit that measured it, and one file contradicted itself about one experiment 154 lines
+apart. No commit hash is cited with any figure below, deliberately: a hash is one more thing
+to go stale, and a red test is a better anchor than a citation. The rows in the table above
+narrate figures that were WRONG at the time, which is their purpose, and they are written so
+that no sweep mistakes them for a live measurement.
 
 **What it does not, and why each is left open.**
 
@@ -102,17 +112,16 @@ anchor than a citation.
 ● A LOWER case name mid-line, such as `set client_secret=<value> in the console`. The prose
   rule is the one rule that does not fold case. Folding it gives 26 matches on 18 lines
   across all 159 tracked files: 19 Python keyword arguments (`outgoing_key=`, `sort_keys=`)
-  and 7 `sonar.projectKey=` lines, six of them in the skill templates and one in this
-  project's own `sonar-project.properties`, all admitted by the preceding-character
-  widening. The
+  and 7 `sonar.projectKey=` lines, 6 of them in the skill templates and 1 in this project's
+  own `sonar-project.properties`, all admitted by the preceding-character widening. The
   anchored rule and the table rule both fold, so a lower-case name is caught in those two
   shapes and not in this one. This figure has been written three times and measured three
   ways, reading 23 and then 19 at earlier commits, each correct for an experiment nobody
   recorded. State the experiment and the scope with the number, and let the test hold both.
 ● A name that BEGINS with one of the keywords, such as `SECRET_FOR_ENTRA=<value>`. The name
   must contain one of these words and have at least one character before it. Making that
-  leading part optional gives 14 findings across the tracked tree, 9 of them in `src/`
-  (eight `key_id=` and one `keys=`). Left open at a measured price rather
+  leading part optional gives 14 findings across the tracked tree, 9 of them in `src/`, of
+  which 8 are `key_id=` and 1 is `keys=`. Left open at a measured price rather
   than bought.
 ● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it, in EITHER case, is skipped
   whole, because the rule folds case. That is a
