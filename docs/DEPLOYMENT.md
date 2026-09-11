@@ -262,6 +262,12 @@ Neither existed before V2.2, which meant the artefact that would be uploaded had
 
 What is deliberately not shipped, and why, is listed in the script itself so the next person does not add it back. `.gitlab-ci.yml` in particular: the platform generates its own pipeline, and a shipped copy is inert at best and misleading at worst.
 
+## Threat model
+
+The boundary the security gate scores against is in `CLAUDE.md`, recorded on 2026-09-11 after nine gate runs. In scope: an unauthenticated caller over HTTP, an authenticated actor exceeding their remit, a supply-chain adversary upstream of a dependency, anyone reading the repository or the package, and anyone reading a shipped document. Out of scope: an adversary who can commit to this repository, and one who can write to the build host during a build, both of whom already hold enough to change the application or the artefact directly.
+
+Stated here because an assessor will ask what the security testing covered, and "everything anyone could think of" is not an answer that survives the question. The exclusion does not weaken a hard rule, and it does not excuse a control from being held by a test: this build narrowed and re-defeated the same packaging control over five consecutive releases, every time because nothing held it.
+
 ## Recorded decisions
 
 Settled by the Information Security Manager. Recorded here so they are not re-litigated by

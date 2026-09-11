@@ -94,6 +94,15 @@ def _build(work: Path) -> subprocess.CompletedProcess[str]:
     return _run([_tool("sh"), "scripts/build-package.sh"], cwd=work)
 
 
+# A measured allowance, not a guess. These two let the simulation run all the way through:
+# a fresh virtual environment, a hash-locked install, and the entire suite inside it. They
+# take about 28 and 27 seconds on an idle machine against the project-wide 60 second cap,
+# and a loaded runner ate that margin and reddened the loop on a documentation-only commit.
+# The cap exists to turn a hang in the audit path into a red test in seconds, and it still
+# does for every other test; these two are long by nature rather than stuck.
+SIMULATION_TIMEOUT_SECONDS = 300
+
+
 @pytest.fixture
 def clone(tmp_path: Path) -> Path:
     """Return a clone, skipping rather than failing where it cannot be made.
@@ -469,6 +478,7 @@ def test_the_simulation_refuses_a_tree_edited_after_the_build(clone: Path) -> No
     assert "working tree has changed" in result.stdout
 
 
+@pytest.mark.timeout(SIMULATION_TIMEOUT_SECONDS)
 def test_the_simulation_refuses_a_red_suite(clone: Path) -> None:
     """The simulation's central guard, held by no test until now.
 
@@ -614,6 +624,7 @@ def test_one_credential_shape_repeated_spends_the_whole_budget(clone: Path) -> N
     assert "exemptions claimed" in result.stdout, "the count, not the digest, must catch this"
 
 
+@pytest.mark.timeout(SIMULATION_TIMEOUT_SECONDS)
 def test_the_simulation_asserts_the_coverage_artefact(clone: Path) -> None:
     """The quality gate reads `coverage.xml` at exactly that path.
 
