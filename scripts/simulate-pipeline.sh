@@ -30,7 +30,15 @@ fi
 # there can name a different archive. Matching only the filename accepted a package from any
 # directory, so the builder records the artefact's SHA-256 beside the pointer and it is
 # re-checked here. A mismatch means the bytes changed under the name.
-if [ "$FROM_POINTER" = yes ] && [ -f dist/latest.sha256 ] && [ -f "$PKG" ]; then
+if [ "$FROM_POINTER" = yes ]; then
+  # A MISSING digest is a refusal, not a skip. Guarding on `[ -f dist/latest.sha256 ]` let
+  # the same actor the check exists to stop remove the control with `rm`: repoint
+  # `dist/latest` at a foreign archive, delete the digest, and the simulation unpacked it.
+  if [ ! -f dist/latest.sha256 ]; then
+    echo "FAIL: dist/latest.sha256 is missing, so the pointer cannot be trusted."
+    echo "Run scripts/build-package.sh, or pass the package explicitly to test it anyway."
+    exit 1
+  fi
   if [ "$(sha256sum "$PKG" | cut -d' ' -f1)" != "$(cat dist/latest.sha256)" ]; then
     echo "FAIL: $PKG does not match the digest the builder recorded for it."
     echo "Rebuild, or pass the package explicitly to test it anyway."

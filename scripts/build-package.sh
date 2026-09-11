@@ -168,6 +168,9 @@ for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
     if not landed.is_file():
         failures.append(f"{path}: in HEAD and not in the package (a .gitattributes export-ignore does this)")
         continue
+    landed_mode = "100755" if landed.stat().st_mode & 0o111 else "100644"
+    if landed_mode != mode:
+        failures.append(f"{path}: mode {landed_mode} in the package against {mode} in HEAD")
     raw = landed.read_bytes()
     digest = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()  # noqa: S324
     if digest != blob:
@@ -181,7 +184,7 @@ for failure in failures:
     print(f"FAIL: {failure}")
 if failures:
     sys.exit(1)
-print(f"package verified against HEAD: {len(expected)} paths, every byte matching")
+print(f"package verified against HEAD: {len(expected)} paths, every byte and mode matching")
 VERIFY
 
 # A symlink can still be COMMITTED, and `git archive` faithfully restores it as a link.
@@ -206,7 +209,8 @@ SECRET="$(find "$STAGE" ! -name '.env.example' \
 # check rather than a credential check and lives in the suite instead, and the hook matches
 # one joined blob while this sweep matches line by line AND joined, so a split assignment is
 # caught by both. A line carrying the project's existing `# noqa: S105` or `# nosec` marker
-# is a declared test double and is skipped ONLY inside `tests/*.py`, with the count pinned,
+# is a declared test double and is skipped only inside the package's own top-level
+# `tests/*.py`, anchored to the package root rather than matched anywhere in the path,
 # because outside that the marker is a seven-character bypass for anyone who can commit.
 "$PY_FOR_SWEEP" - "$STAGE" <<'SWEEP'
 import pathlib
@@ -237,12 +241,20 @@ EXEMPT_MARKERS = ("# noqa: S105", "# nosec")
 
 
 def _exempt(path, line):
-    """Whether this line may claim the declared-test-double exemption."""
+    """Whether this line may claim the declared-test-double exemption.
+
+    Anchored to the PACKAGE ROOT. `"tests" in path.parts` tested the absolute stage path,
+    so any committed directory named `tests` anywhere satisfied it: `docs/tests/probe.py`
+    with a marked credential shipped in a clean-stamped package, and the comment claiming
+    the exemption applies only inside `tests/*.py` was false.
+    """
     if not any(marker in line for marker in EXEMPT_MARKERS):
         return False
-    parts = path.parts
-    return "tests" in parts and path.suffix == ".py"
+    parts = path.relative_to(STAGE).parts
+    return len(parts) > 1 and parts[0] == "tests" and path.suffix == ".py"
 
+
+STAGE = pathlib.Path(sys.argv[1])
 
 hits = []
 examined = 0
@@ -264,7 +276,21 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # the credential shipped in a package the build called clean. A credential inside a PNG
     # shipped the same way. Replacement never raises and still matches an ASCII pattern
     # embedded in binary, which is the shape that actually gets exfiltrated.
+    # Two views of the same bytes. UTF-8 with replacement never raises, and it does not
+    # SEE a UTF-16 file: the credential is there in plain sight as `s\x00k\x00-\x00`, and
+    # no ASCII rule matches it. That is not an exotic encoding, it is what PowerShell's
+    # `Out-File` and `>` produce by default, so a redirected capture pasted into the
+    # repository lands in exactly this shape. Stripping the NUL bytes gives a second view
+    # in which the same credential is ordinary ASCII, and it also covers UTF-32 and plain
+    # NUL-interleaved text.
+    #
+    # What this still does NOT see, recorded because the accreditation record now names
+    # this sweep as the compensating control for the whole secret regime: base64 or other
+    # encodings of a credential, anything inside a compressed container, and a credential
+    # carried in a filename rather than a file body. The last of those is closed just
+    # below; the first two are open and are a real limit, not a theoretical one.
     text = raw.decode("utf-8", errors="replace")
+    stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
     # Two passes over the same text. The line pass gives a number to report; the whole-file
     # pass catches an assignment split across lines, which the pre-write hook sees because
@@ -291,6 +317,14 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     for label, rule in COMPILED:
         if rule.search("\n".join(scannable)) and (str(path), label) not in found_on_a_line:
             hits.append(f"{path}: {label}, split across lines")
+    if stripped != text:
+        for label, rule in COMPILED:
+            if rule.search(stripped) and (str(path), label) not in found_on_a_line:
+                hits.append(f"{path}: {label}, in a NUL-separated encoding such as UTF-16")
+    # The NAME as well as the body. A key pasted as a filename never reaches the body scan.
+    for label, rule in COMPILED:
+        if rule.search(path.name):
+            hits.append(f"{path.name}: {label}, in the filename")
 
 if not examined:
     print("FAIL: the credential sweep examined no files at all")
@@ -332,8 +366,15 @@ rm -rf "$STAGE"
 # through whatever path exists at that moment: a symlink planted in the build's own window
 # redirected the pointer, and the artefact was written outside `dist/`. The SHA-256 goes
 # beside it so the simulation can bind the pointer to the bytes rather than to a filename.
+# Each temporary is removed IMMEDIATELY before it is written, not only at build start. A
+# symlink planted at `dist/.latest.tmp` during the build was followed by the redirect and
+# then moved onto `dist/latest` by `mv`, so the pointer itself became a link to a file
+# outside `dist/`. Clearing the path at the moment of use closes the window the earlier
+# fix left open.
+rm -f "dist/.latest.tmp"
 printf '%s\n' "$OUT" > "dist/.latest.tmp"
 mv -f "dist/.latest.tmp" dist/latest
+rm -f "dist/.latest.sha.tmp"
 sha256sum "$OUT" | cut -d' ' -f1 > "dist/.latest.sha.tmp"
 mv -f "dist/.latest.sha.tmp" dist/latest.sha256
 
