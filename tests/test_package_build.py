@@ -1055,7 +1055,7 @@ def test_a_credential_is_refused_wherever_the_line_starts(
     A runbook writes the credential behind `ENV`, `ARG`, `-e` or a bullet, and a parameter
     table writes it between pipes. Every shape below is one a careless human produces in a
     document that ships, which is the honest-committer case the sweep exists for. The
-    prefix set was measured at zero false positives across every tracked file, and so was
+    prefix set was measured at 0 false positives across every tracked file, and so was
     the table rule against the four live rows of the deployment parameter table.
     """
     probe = clone / "docs" / "probe-shape.md"

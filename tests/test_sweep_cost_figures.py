@@ -53,6 +53,18 @@ EXPECTED_SONAR_IN_TEMPLATES = 6
 #: with nothing red. A figure decomposed into parts needs every part held, not all but one.
 EXPECTED_SONAR_IN_PROJECT = 1
 
+#: What the rules as they SHIP cost on this tree. One, and it is the declared test double
+#: the exemption ledger pins by path, digest and match count. It was written as the word
+#: "zero" in three documents, which was imprecise as well as unreadable by any scanner, and
+#: when it became a digit it was still wired to nothing: rewriting it to 0 was green.
+EXPECTED_LIVE_FINDINGS = 1
+
+#: What the rules cost on content they were NOT meant to match. The distinction matters: the
+#: one live finding is a true positive on a declared double, so "no false positives" and
+#: "one finding" are both true and say different things. Written as the word "zero" in two
+#: shipped files, where no scanner could read it.
+EXPECTED_FALSE_POSITIVES = 0
+
 #: The tree size is NOT pinned and is no longer written in any document. It was decoration:
 #: the argument a reader needs is "this many findings across the tracked tree", and the
 #: cardinality of the tree adds nothing to it. As a figure it went stale three times,
@@ -196,6 +208,8 @@ def _breakdowns() -> dict[str, int]:
         "`sonar.projectKey=` lines": EXPECTED_SONAR,
         "of them in the skill templates": EXPECTED_SONAR_IN_TEMPLATES,
         "in this project's own": EXPECTED_SONAR_IN_PROJECT,
+        "finding across every tracked file": EXPECTED_LIVE_FINDINGS,
+        "false positives": EXPECTED_FALSE_POSITIVES,
         "are `key_id=`": EXPECTED_KEY_ID_IN_SRC,
         "is `keys=`": EXPECTED_KEYS_IN_SRC,
     }
@@ -205,10 +219,23 @@ def _breakdowns() -> dict[str, int]:
 #: is wrong; it cannot catch one that is deleted or reworded away, and a reviewer rewrote
 #: `8 are key_id= and 1 is keys=` into a form carrying 12 and 3 with the suite green. A
 #: figure needs both: nothing says it wrongly, and the thing that should say it does.
-BREAKDOWN_CARRIERS = (
-    ROOT / "scripts" / "build-package.sh",
-    ROOT / "docs" / "GATE-RECORDS.md",
-)
+_SWEEP = ROOT / "scripts" / "build-package.sh"
+_RECORDS = ROOT / "docs" / "GATE-RECORDS.md"
+_CHANGELOG = ROOT / "CHANGELOG.md"
+
+#: WHICH file must carry WHICH clause, one entry each rather than a blanket "both files".
+#: The blanket form was correct only while every clause happened to live in both; the first
+#: clause that legitimately belongs in one would have forced a false demand on the other.
+BREAKDOWN_CARRIERS = {
+    "Python keyword arguments": (_SWEEP, _RECORDS),
+    "`sonar.projectKey=` lines": (_SWEEP, _RECORDS),
+    "of them in the skill templates": (_SWEEP, _RECORDS),
+    "in this project's own": (_SWEEP, _RECORDS),
+    "are `key_id=`": (_SWEEP, _RECORDS),
+    "is `keys=`": (_SWEEP, _RECORDS),
+    "finding across every tracked file": (_CHANGELOG,),
+    "false positives": (_SWEEP,),
+}
 
 
 #: Every shape a figure of this kind is written in. The sweep reads each occurrence in every
@@ -232,25 +259,44 @@ _RENDERINGS = re.compile(
     r"|(?:\d+) of them in the skill templates"
     r"|(?:\d+) are `key_id=`"
     r"|(?:\d+) is `keys=`"
+    r"|(?:\d+) findings? across every tracked file"
+    r"|(?:\d+) false positives"
 )
 
 
-#: Markdown emphasis around a digit. `` `97` `` and `**44**` render to a reader as ordinary
-#: numbers and were invisible to a scanner anchored on a bare digit, so a whole false
-#: section shipped in `README.md` with the suite green. Stripped before matching, which is
-#: the only way a scanner sees what a reader sees.
-_EMPHASIS = re.compile(r"[`*_]+(?=\d)|(?<=\d)[`*_]+")
+#: Markdown emphasis. `` `97` ``, `**44**` and `~~22~~` all render to a reader as ordinary
+#: numbers, and a scanner that does not strip them reads something else. Stripping only
+#: where the markup ABUTS a digit was the first attempt and it was half a fix: `**47
+#: findings**` kept its trailing pair, because that one follows a letter, and the match
+#: broke. So it is stripped everywhere.
+#:
+#: Backtick, asterisk and tilde, and NOT underscore: this repository writes `key_id=` and
+#: `sonar.projectKey=` as figures in their own clauses, and no document here uses underscore
+#: emphasis (measured: none). Stripping it would mangle the identifiers the clauses are
+#: about, for no gain.
+_EMPHASIS = re.compile(r"[`*~]+")
+
+
+def _normalise(text: str) -> str:
+    """Render text the way a reader sees it: no wrapping, no comment markers, no emphasis.
+
+    Applied to BOTH sides of every comparison. Normalising only the file would make the
+    expected clauses unmatchable, because several of them carry backticks themselves.
+    """
+    return " ".join(_EMPHASIS.sub("", text).replace("#", " ").split())
 
 
 def _flowed(path: Path) -> str:
-    """Read a file as a reader sees it: no wrapping, no comment markers, no emphasis."""
+    """Read one file, normalised."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        # The same guard `_scan` carries. A tracked binary would otherwise turn two tests
-        # into a decode traceback rather than a finding about figures.
+        # The same guard `_scan` carries, and defensive by symmetry rather than by
+        # measurement: no tracked file fails a UTF-8 read today, so no mutation shows it
+        # failing. It is here so the first tracked binary is a finding about figures rather
+        # than a decode traceback.
         return ""
-    return " ".join(_EMPHASIS.sub("", text).replace("#", " ").split())
+    return _normalise(text)
 
 
 @pytest.mark.parametrize("experiment", sorted(EXPECTED))
@@ -262,7 +308,7 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
     """
     sentence = _rendered()[experiment]
     for path in REPORTS[experiment]:
-        assert sentence in _flowed(path), (
+        assert _normalise(sentence) in _flowed(path), (
             f"{path.name} does not report {experiment} as measured.\n  expected to find: {sentence}"
         )
 
@@ -275,8 +321,8 @@ def test_no_tracked_file_reports_a_figure_that_was_never_measured() -> None:
     where the reviewer pointed and left standing 154 lines away, then false figures placed in
     two shipped documents outside the declared three with the whole suite green.
     """
-    allowed = set(_rendered().values())
-    allowed |= {f"{count} {clause}" for clause, count in _breakdowns().items()}
+    allowed = {_normalise(value) for value in _rendered().values()}
+    allowed |= {_normalise(f"{count} {clause}") for clause, count in _breakdowns().items()}
 
     for path in _tracked():
         if path.resolve() == SELF:
@@ -316,12 +362,13 @@ def test_the_leading_part_breakdown_is_what_the_records_say() -> None:
     assert len(in_src) - len(key_id) == EXPECTED_KEYS_IN_SRC
 
 
-def test_the_shipped_rules_themselves_cost_nothing() -> None:
-    """The claim every record makes about the rules as they actually ship: zero.
+def test_the_shipped_rules_themselves_cost_what_the_records_say() -> None:
+    """What the rules as they ship actually cost on this tree: 1, the declared exemption.
 
-    Restored after being dropped in an edit, which is its own small lesson: it is the only
-    test asserting that the live rule set does not fire on this tree, and the "zero false
-    positives" sentence in three documents rests on it.
+    It is the only test asserting that the live rule set does not fire on ordinary content,
+    and every "no false positives" sentence in the shipped documents rests on it. The figure
+    is `EXPECTED_LIVE_FINDINGS` rather than a literal here, so the documents and this
+    assertion move together.
     """
     files = _tracked()
     findings = []
@@ -329,9 +376,14 @@ def test_the_shipped_rules_themselves_cost_nothing() -> None:
         flags = re.MULTILINE | (0 if label in load_case_sensitive() else re.IGNORECASE)
         findings += [(label, *entry) for entry in _scan(pattern, flags, files)]
 
-    # One, and it is the pinned and declared test double the exemption ledger allows.
-    assert len(findings) == 1, findings
+    # The declared test double the exemption ledger pins by path, digest and match count.
+    assert len(findings) == EXPECTED_LIVE_FINDINGS, findings
     assert findings[0][1] == "tests/test_entra_sign_in.py", findings
+
+    # And separately: nothing the rules were not meant to match. The two figures are written
+    # in different documents and mean different things, so both are held.
+    false_positives = [entry for entry in findings if entry[1] != "tests/test_entra_sign_in.py"]
+    assert len(false_positives) == EXPECTED_FALSE_POSITIVES, false_positives
 
 
 def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None:
@@ -347,7 +399,7 @@ def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None
         if path.resolve() in declared or path.resolve() == SELF:
             continue
         flowed = _flowed(path)
-        carried = [name for name, sentence in sentences.items() if sentence in flowed]
+        carried = [name for name, sentence in sentences.items() if _normalise(sentence) in flowed]
 
         assert not carried, (
             f"{path.relative_to(ROOT)} reports {carried} and is not in REPORTS; add it there "
@@ -364,8 +416,8 @@ def test_every_breakdown_clause_is_still_said_where_it_belongs(clause: str) -> N
     sentence carrying 12 and 3 passed everything. Both halves, for clauses as for sentences.
     """
     rendered = f"{_breakdowns()[clause]} {clause}"
-    for path in BREAKDOWN_CARRIERS:
-        assert rendered in _flowed(path), (
+    for path in BREAKDOWN_CARRIERS[clause]:
+        assert _normalise(rendered) in _flowed(path), (
             f"{path.name} no longer says {rendered!r}; if the wording changed, change it here "
             "too, and if the measurement changed, re-measure and change both"
         )
