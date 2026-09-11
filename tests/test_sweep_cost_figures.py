@@ -1,16 +1,22 @@
 r"""The measured costs of the widenings the credential sweep deliberately does NOT make.
 
-Three figures justify three open gaps, and all three ship: in `scripts/build-package.sh`
-beside the rules, in `docs/GATE-RECORDS.md` under Open in scope, and in `CHANGELOG.md`. A
-figure is the whole argument for leaving a gap open, so a stale one is an argument nobody
-can check, and this project has shipped a wrong one ten times. Twice the same number was
-written three ways because the experiment behind it was never recorded, and once one file
-contradicted itself about one experiment 154 lines apart.
+Three figures justify three open gaps, and each ships in one or more of
+`scripts/build-package.sh` beside the rules, `docs/GATE-RECORDS.md` under Open in scope, and
+`CHANGELOG.md`. Which figure lives where is declared in `REPORTS` and in
+`BREAKDOWN_CARRIERS` and is asserted; demanding all three of every file would be false, and
+an earlier version of this sentence said it anyway.
+
+A figure is the whole argument for leaving a gap open, so a stale one is an argument nobody
+can check, and this project has shipped a wrong one repeatedly: the same number written
+three ways because the experiment behind it was never recorded, one file contradicting
+itself about one experiment 154 lines apart, and a count that went stale in the commit that
+changed what it counted.
 
 Prose cannot hold a number. This module re-runs each experiment against the live rules and
-the live tree and asserts the figure, so changing either turns the suite red and the number
-is re-measured rather than carried forward. The experiments are the documentation: read them
-here, not in a comment.
+the live tree, asserts that each figure is still SAID where it belongs, and sweeps every
+tracked file for anything written in the same shapes. What it does NOT hold is stated with
+the shapes below, because every previous version of this docstring claimed a closure the
+code did not deliver, and each claim became the next finding.
 """
 
 from __future__ import annotations
@@ -249,41 +255,64 @@ BREAKDOWN_CARRIERS = {
 #: every declared clause must be present, but adding a new phrasing to a document without
 #: adding it here still drifts silently. There is no way to close that with a regular
 #: expression, so it is written down instead.
-_RENDERINGS = re.compile(
-    r"(?:\d+) (?:findings|matches) on (?:\d+) lines across every tracked file"
-    r"|(?:\d+) (?:findings|matches) on (?:\d+) lines"
-    r"|(?:\d+) findings across the tracked tree, (?:\d+) of them in `src/`"
-    r"|(?:\d+) tracked files"
-    r"|(?:\d+) Python keyword arguments"
-    r"|(?:\d+) `sonar\.projectKey=` lines"
-    r"|(?:\d+) of them in the skill templates"
-    r"|(?:\d+) are `key_id=`"
-    r"|(?:\d+) is `keys=`"
-    r"|(?:\d+) findings? across every tracked file"
-    r"|(?:\d+) false positives"
-)
 
 
-#: Markdown emphasis. `` `97` ``, `**44**` and `~~22~~` all render to a reader as ordinary
-#: numbers, and a scanner that does not strip them reads something else. Stripping only
-#: where the markup ABUTS a digit was the first attempt and it was half a fix: `**47
-#: findings**` kept its trailing pair, because that one follows a letter, and the match
-#: broke. So it is stripped everywhere.
+#: Markdown emphasis. `` `97` ``, `**44**`, `~~22~~` and `_88_` all render to a reader as
+#: ordinary numbers, and a scanner that does not strip them reads something else. Stripping
+#: only where the markup ABUTS a digit was the first attempt and it was half a fix: `**47
+#: findings**` kept its trailing pair, because that one follows a letter. So it is stripped
+#: everywhere, including underscore.
 #:
-#: Backtick, asterisk and tilde, and NOT underscore: this repository writes `key_id=` and
-#: `sonar.projectKey=` as figures in their own clauses, and no document here uses underscore
-#: emphasis (measured: none). Stripping it would mangle the identifiers the clauses are
-#: about, for no gain.
-_EMPHASIS = re.compile(r"[`*~]+")
+#: Underscore was excluded once, on the reasoning that it appears inside `key_id=` and
+#: `sonar.projectKey=`, which are part of the clauses being matched. That reasoning was
+#: wrong: normalisation is applied to BOTH sides of every comparison, so mangling is
+#: symmetric and harmless, and `_99_ matches on _88_ lines` was invisible for one character's
+#: worth of caution.
+_EMPHASIS = re.compile(r"[`*~_]+")
 
 
 def _normalise(text: str) -> str:
     """Render text the way a reader sees it: no wrapping, no comment markers, no emphasis.
 
-    Applied to BOTH sides of every comparison. Normalising only the file would make the
-    expected clauses unmatchable, because several of them carry backticks themselves.
+    Applied to BOTH sides of every comparison, and to the SHAPES below before they are
+    compiled. Normalising only one side is not a smaller version of this control, it is a
+    hole: widening the stripper to remove backticks while four shapes still contained
+    literal backticks made those four unmatchable, and a false figure of that shape shipped
+    green in the accreditation record. That is what `test_every_shape_matches_its_own_rendering`
+    exists to catch, and it is the check to keep whenever this function changes.
     """
     return " ".join(_EMPHASIS.sub("", text).replace("#", " ").split())
+
+
+#: Every shape a figure of this kind is written in, as a TEMPLATE with `{n}` where a number
+#: goes. Written once, normalised through `_normalise`, then compiled: pattern and haystack
+#: therefore agree by construction, which is the thing that broke when the stripper was
+#: widened and four hand-written alternatives kept their backticks.
+_SHAPES = (
+    "{n} findings on {n} lines across every tracked file",
+    "{n} matches on {n} lines across every tracked file",
+    "{n} findings on {n} lines",
+    "{n} matches on {n} lines",
+    "{n} findings across the tracked tree, {n} of them in `src/`",
+    "{n} tracked files",
+    "{n} Python keyword arguments",
+    "{n} `sonar.projectKey=` lines",
+    "{n} of them in the skill templates",
+    "{n} in this project's own",
+    "{n} are `key_id=`",
+    "{n} is `keys=`",
+    "{n} findings across every tracked file",
+    "{n} finding across every tracked file",
+    "{n} false positives",
+)
+
+
+def _shape_pattern(template: str) -> str:
+    """Compile one template against normalised text, escaping everything but the numbers."""
+    return r"\d+".join(re.escape(part) for part in _normalise(template).split("{n}"))
+
+
+_RENDERINGS = re.compile("|".join(_shape_pattern(shape) for shape in _SHAPES))
 
 
 def _flowed(path: Path) -> str:
@@ -437,3 +466,44 @@ def test_the_sonar_split_adds_up() -> None:
     templates = [entry for entry in sonar if "/templates/" in entry[0]]
 
     assert len(sonar) - len(templates) == EXPECTED_SONAR_IN_PROJECT
+
+
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_every_shape_matches_its_own_rendering(shape: str) -> None:
+    """The scanner must be able to read what it is written to read.
+
+    Widening `_EMPHASIS` to strip backticks made four hand-written alternatives unmatchable,
+    because they still carried backticks themselves, and the sweep went silently blind to a
+    whole canonical sentence and three clauses. Nothing failed. A false figure of that shape
+    then shipped in the accreditation record, which is the document the sweep's own comment
+    sends an assessor to.
+
+    This asserts the property that was violated: each shape, rendered with a number and put
+    through the same normalisation as a file, is found by the compiled pattern. It is the
+    check to keep whenever `_EMPHASIS` or `_SHAPES` changes.
+    """
+    rendered = _normalise(shape.replace("{n}", "42"))
+
+    assert _RENDERINGS.search(rendered), (
+        f"the scanner cannot read its own shape {shape!r}, which renders as {rendered!r}. "
+        "Something normalised on one side of the comparison and not the other."
+    )
+
+
+def test_every_declared_figure_is_a_shape_the_scanner_reads() -> None:
+    """And the other direction: every figure this module asserts is one it can also find.
+
+    A constant with a carrier but no shape is held in one direction only: the sentence must
+    be present, but a SECOND wrong copy elsewhere goes unread. That was the state of the
+    live-cost figure for a commit.
+    """
+    rendered = list(_rendered().values())
+    rendered += [f"{count} {clause}" for clause, count in _breakdowns().items()]
+
+    for sentence in rendered:
+        normalised = _normalise(sentence)
+
+        assert _RENDERINGS.search(normalised), (
+            f"{sentence!r} is asserted but matches no shape, so a wrong copy of it "
+            "elsewhere in the tree would not be read back"
+        )
