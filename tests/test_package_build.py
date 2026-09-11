@@ -290,6 +290,63 @@ def test_a_second_exemption_is_refused(clone: Path) -> None:
     assert "exemptions claimed" in result.stdout
 
 
+#: Every name the package filename sweep refuses, mirrored from the `find` expression in
+#: `scripts/build-package.sh`. It is a list rather than one probe because five of these were
+#: added in a single commit and deleting all five left the whole suite green: the only test
+#: of the sweep probed `deploy.pem`, and the 22-name parametrised test below it asserts
+#: `git check-ignore`, which holds `.gitignore` and never runs the sweep at all. The two
+#: lists are deliberately different and the difference is recorded beside the `find`.
+SWEPT_NAMES = [
+    ".env",
+    ".env.production",
+    "deploy.pem",
+    "tls.key",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+    "keystore.jks",
+    "cert.p12",
+    "cert.pfx",
+    "deploy.ppk",
+    "service.keytab",
+    "vault.kdbx",
+    "signing.p8",
+]
+
+
+@pytest.mark.parametrize("name", SWEPT_NAMES)
+def test_every_swept_name_is_refused_by_name(clone: Path, name: str) -> None:
+    """The name sweep, every name of it, which the body sweep does not subsume.
+
+    The binary members are the reason this cannot be left to the content rules: a
+    `keystore.jks` or a `cert.p12` carries no text any pattern matches, so the filename
+    check is the only control over it. Every probe is force-added because `.gitignore`
+    refuses most of these names first; that is two controls on one path, and this test is
+    about the second one, which is what a `git add -f` or an edited ignore file reaches.
+    """
+    probe = clone / "docs" / name
+    probe.write_text("not actually a credential\n", encoding="utf-8")
+    forced = _run([_tool("git"), "-C", str(clone), "add", "-f", str(probe)])
+    assert forced.returncode == 0, forced.stderr
+    _commit(clone, "probe: " + name)
+
+    result = _build(clone)
+
+    assert result.returncode != 0, name + " shipped: " + result.stdout
+    assert "looks like a credential" in result.stdout, result.stdout
+
+
+def test_the_example_environment_file_is_the_only_swept_name_that_ships(clone: Path) -> None:
+    """The positive control. `.env.example` must ship, and the suite reads it from the root."""
+    assert (clone / ".env.example").is_file()
+
+    result = _build(clone)
+
+    assert result.returncode == 0, result.stdout
+    assert "looks like a credential" not in result.stdout
+
+
 def test_a_credential_named_file_is_refused_by_name(clone: Path) -> None:
     """The name sweep, which the body sweep does not subsume.
 
@@ -1084,6 +1141,10 @@ def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
         "secrets.yml",
         "credentials.json",
         "client_secret.json",
+        "deploy.ppk",
+        "service.keytab",
+        "vault.kdbx",
+        "signing.p8",
         # `ssh-keygen -t ed25519` is the current default and writes an extensionless file,
         # so neither `*.pem` nor `*.key` matches it. `id_rsa` alone read as covered.
         "id_ed25519",
