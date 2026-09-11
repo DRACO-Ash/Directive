@@ -48,26 +48,43 @@ EXPECTED_KEYS_IN_SRC = 1
 EXPECTED_PYTHON_KEYWORD_ARGUMENTS = 19
 EXPECTED_SONAR = 7
 EXPECTED_SONAR_IN_TEMPLATES = 6
+#: The remainder of the sonar split. Pinning 7 and 6 and leaving this free let a reviewer
+#: set it to 4, which made the sentence contradict itself (6 and 4 against a total of 7)
+#: with nothing red. A figure decomposed into parts needs every part held, not all but one.
+EXPECTED_SONAR_IN_PROJECT = 1
 
-#: The size of the tree every figure above is measured over. It is quoted in all three
-#: reporting files and it went stale in the commit that added the two modules that changed
-#: it, which is why it is pinned here beside the figures rather than left to prose.
-EXPECTED_TRACKED = 159
+#: The tree size is NOT pinned and is no longer written in any document. It was decoration:
+#: the argument a reader needs is "this many findings across the tracked tree", and the
+#: cardinality of the tree adds nothing to it. As a figure it went stale three times,
+#: including in the commit that added the module meant to stop that, so it is gone rather
+#: than corrected a fourth time. Removing a figure is a better fix than pinning one nobody
+#: needs.
 
 
 def _tracked() -> list[Path]:
-    """Every tracked file, or a skip where there is no repository to ask.
+    """Every file that WOULD be tracked after `git add -A`, or a skip with no repository.
+
+    `--others --exclude-standard` as well as `--cached`, and that is the whole point rather
+    than thoroughness. The verification loop runs before the commit, and every figure in
+    this module describes the committed tree. A new file is untracked while the loop reads
+    it and tracked a second later, so a loop that passed on 159 files failed on 160 at the
+    commit it had just blessed. That has now happened three times, most recently in the
+    commit written to stop it. Counting what `git add -A` would stage makes the measurement
+    the same on both sides of the commit, which removes the trap rather than resetting it.
 
     `shutil.which`, not a hardcoded path. This module SHIPS, so it runs at the platform's
     test stage, where a hardcoded `/usr/bin/git` raises `FileNotFoundError` on any image
-    that puts git elsewhere: five errors, a red stage 5, and the upload fails with every
-    later stage skipped. Every other module in this suite resolves a tool this way.
+    that puts git elsewhere: a red stage 5 and an upload that fails with every later stage
+    skipped. Every other module in this suite resolves a tool this way.
     """
     git = shutil.which("git")
     if git is None:
         pytest.skip("git is not available, so the tracked set cannot be read")
     listed = subprocess.run(  # noqa: S603
-        [git, "-C", str(ROOT), "ls-files"], capture_output=True, text=True, check=False
+        [git, "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if listed.returncode != 0:
         pytest.skip("not a repository; this is the unpacked package")
@@ -155,12 +172,12 @@ REPORTS = {
 SELF = Path(__file__).resolve()
 
 
-def _rendered(tracked: int) -> dict[str, str]:
+def _rendered() -> dict[str, str]:
     """Render each figure the way the shipped files write it, from the measurement."""
     spaces, spaces_lines = EXPECTED["unquoted rule with spaces around the equals"]
     prose, prose_lines = EXPECTED["prose rule folded to ignore case"]
     leading, _ = EXPECTED["unquoted rule with the leading part of the name optional"]
-    across = f"across all {tracked} tracked files"
+    across = "across every tracked file"
     return {
         "unquoted rule with spaces around the equals": (
             f"{spaces} findings on {spaces_lines} lines {across}"
@@ -178,17 +195,36 @@ def _breakdowns() -> dict[str, int]:
         "Python keyword arguments": EXPECTED_PYTHON_KEYWORD_ARGUMENTS,
         "`sonar.projectKey=` lines": EXPECTED_SONAR,
         "of them in the skill templates": EXPECTED_SONAR_IN_TEMPLATES,
+        "in this project's own": EXPECTED_SONAR_IN_PROJECT,
         "are `key_id=`": EXPECTED_KEY_ID_IN_SRC,
         "is `keys=`": EXPECTED_KEYS_IN_SRC,
     }
 
 
-#: Every shape a figure of this kind is written in. The sweep below reads each occurrence of
-#: each shape in every tracked file and asserts the number, so a figure is unread only if it
-#: is written in a shape nobody has thought of, and adding a shape to a document without
-#: adding it here is the one remaining way to drift. That is stated rather than claimed away.
+#: WHERE each breakdown clause must appear. The negative sweep catches a clause whose NUMBER
+#: is wrong; it cannot catch one that is deleted or reworded away, and a reviewer rewrote
+#: `8 are key_id= and 1 is keys=` into a form carrying 12 and 3 with the suite green. A
+#: figure needs both: nothing says it wrongly, and the thing that should say it does.
+BREAKDOWN_CARRIERS = (
+    ROOT / "scripts" / "build-package.sh",
+    ROOT / "docs" / "GATE-RECORDS.md",
+)
+
+
+#: Every shape a figure of this kind is written in. The sweep reads each occurrence in every
+#: tracked file and asserts the number; the carrier maps assert that each figure is still
+#: SAID where it should be. Both halves are needed and the reasons are not theoretical: a
+#: clause with a wrong number was caught and a clause reworded away was not, until the
+#: carrier map existed.
+#:
+#: The residual, named rather than waved at: a figure written in a shape not listed below is
+#: unread. That is a narrower gap than it was, since emphasis no longer hides a digit and
+#: every declared clause must be present, but adding a new phrasing to a document without
+#: adding it here still drifts silently. There is no way to close that with a regular
+#: expression, so it is written down instead.
 _RENDERINGS = re.compile(
-    r"(?:\d+) (?:findings|matches) on (?:\d+) lines across all (?:\d+) tracked files"
+    r"(?:\d+) (?:findings|matches) on (?:\d+) lines across every tracked file"
+    r"|(?:\d+) (?:findings|matches) on (?:\d+) lines"
     r"|(?:\d+) findings across the tracked tree, (?:\d+) of them in `src/`"
     r"|(?:\d+) tracked files"
     r"|(?:\d+) Python keyword arguments"
@@ -199,17 +235,22 @@ _RENDERINGS = re.compile(
 )
 
 
+#: Markdown emphasis around a digit. `` `97` `` and `**44**` render to a reader as ordinary
+#: numbers and were invisible to a scanner anchored on a bare digit, so a whole false
+#: section shipped in `README.md` with the suite green. Stripped before matching, which is
+#: the only way a scanner sees what a reader sees.
+_EMPHASIS = re.compile(r"[`*_]+(?=\d)|(?<=\d)[`*_]+")
+
+
 def _flowed(path: Path) -> str:
-    """Read a file with its line wrapping and comment markers flattened away."""
-    return " ".join(path.read_text(encoding="utf-8").replace("#", " ").split())
-
-
-def test_the_tracked_file_count_is_what_the_records_say() -> None:
-    """The count is a figure like any other, and it went stale twice.
-
-    Most recently in the commit that added the two modules that changed it.
-    """
-    assert len(_tracked()) == EXPECTED_TRACKED
+    """Read a file as a reader sees it: no wrapping, no comment markers, no emphasis."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # The same guard `_scan` carries. A tracked binary would otherwise turn two tests
+        # into a decode traceback rather than a finding about figures.
+        return ""
+    return " ".join(_EMPHASIS.sub("", text).replace("#", " ").split())
 
 
 @pytest.mark.parametrize("experiment", sorted(EXPECTED))
@@ -219,7 +260,7 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
     Rebuilt from the measurement, so changing the measurement without changing the prose is
     red and changing the prose without changing the measurement is red.
     """
-    sentence = _rendered(EXPECTED_TRACKED)[experiment]
+    sentence = _rendered()[experiment]
     for path in REPORTS[experiment]:
         assert sentence in _flowed(path), (
             f"{path.name} does not report {experiment} as measured.\n  expected to find: {sentence}"
@@ -234,9 +275,8 @@ def test_no_tracked_file_reports_a_figure_that_was_never_measured() -> None:
     where the reviewer pointed and left standing 154 lines away, then false figures placed in
     two shipped documents outside the declared three with the whole suite green.
     """
-    allowed = set(_rendered(EXPECTED_TRACKED).values())
+    allowed = set(_rendered().values())
     allowed |= {f"{count} {clause}" for clause, count in _breakdowns().items()}
-    allowed |= {f"{EXPECTED_TRACKED} tracked files"}
 
     for path in _tracked():
         if path.resolve() == SELF:
@@ -301,7 +341,7 @@ def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None
     two shipped documents outside the declared three were given false figures with the whole
     suite green.
     """
-    sentences = _rendered(EXPECTED_TRACKED)
+    sentences = _rendered()
     declared = {path.resolve() for files in REPORTS.values() for path in files}
     for path in _tracked():
         if path.resolve() in declared or path.resolve() == SELF:
@@ -313,3 +353,35 @@ def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None
             f"{path.relative_to(ROOT)} reports {carried} and is not in REPORTS; add it there "
             "so the figure is read back, or remove the sentence"
         )
+
+
+@pytest.mark.parametrize("clause", sorted(_breakdowns()))
+def test_every_breakdown_clause_is_still_said_where_it_belongs(clause: str) -> None:
+    """The positive half for the clauses inside a pinned sentence.
+
+    The sweep catches a clause carrying the wrong number. It cannot catch one deleted or
+    reworded into a different phrasing, and rewriting `8 are key_id= and 1 is keys=` into a
+    sentence carrying 12 and 3 passed everything. Both halves, for clauses as for sentences.
+    """
+    rendered = f"{_breakdowns()[clause]} {clause}"
+    for path in BREAKDOWN_CARRIERS:
+        assert rendered in _flowed(path), (
+            f"{path.name} no longer says {rendered!r}; if the wording changed, change it here "
+            "too, and if the measurement changed, re-measure and change both"
+        )
+
+
+def test_the_sonar_split_adds_up() -> None:
+    """The three parts of one figure, asserted against each other as well as the tree.
+
+    Pinning the total and one part left the remainder free, and a reviewer set it so the
+    sentence contradicted itself with nothing red.
+    """
+    assert EXPECTED_SONAR_IN_TEMPLATES + EXPECTED_SONAR_IN_PROJECT == EXPECTED_SONAR
+
+    pattern, flags = _widenings()["prose rule folded to ignore case"]
+    found = _scan(pattern, flags, _tracked())
+    sonar = [entry for entry in found if "projectkey" in entry[2].lower()]
+    templates = [entry for entry in sonar if "/templates/" in entry[0]]
+
+    assert len(sonar) - len(templates) == EXPECTED_SONAR_IN_PROJECT

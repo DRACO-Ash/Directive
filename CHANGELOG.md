@@ -11,19 +11,19 @@ deployed yet, so every row below records a release that was cut, gated and merge
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
-review PASS at `b3b798c`, then seventeen further runs against the packaging and verification
-machinery, every one of them FAIL and every finding in that machinery or in a shipped
-document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
+review PASS at `b3b798c`, then a run per fix against the packaging and verification
+machinery, recorded row by row in `docs/GATE-RECORDS.md`, every one of them FAIL and every
+finding in that machinery or in a shipped document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
-never been measured. Verification loop PASS at every commit of this release; the test
-count and coverage at each gated commit are in the `docs/GATE-RECORDS.md` rows rather than
-restated here, because an unanchored count in this paragraph goes stale on the next test
-added and has done so twice. It has gone wrong three ways in this paragraph alone: a count
-replaced with a LATER commit's figure while the commit name stayed, inside the sentence that
-criticised that very mistake; a 98.84 to 98.89 coverage range left un-re-measured when the
-count beside it changed; and a count that was correct when written and stale one commit
-later. The figures that remain here are the ones a test asserts.
+never been measured. The verification loop is red at some commits of this release and green
+at others; `docs/GATE-RECORDS.md` carries the verdict, the test count and the coverage for
+each commit a gate ran against, in the row for that commit. No count is restated here,
+because this paragraph has got one wrong three separate ways: a figure replaced with a LATER
+commit's while the commit name stayed, inside the sentence that criticised that very
+mistake; a coverage range left un-re-measured when the count beside it changed; and a count
+that was correct when written and stale one commit later, in the commit written to stop
+exactly that. A figure describing the current tree does not belong in a release note.
 
 **Changed.**
 
@@ -52,10 +52,12 @@ later. The figures that remain here are the ones a test asserts.
   row. Everything compiles with MULTILINE, and with IGNORECASE except the prose rule,
   which must not fold case. Without MULTILINE the anchored
   rules matched only at the first byte of a file and a UTF-16 credential below line one
-  shipped. Measured at zero false positives across all 159 tracked files. What is still
+  shipped. The live rules produce 1 finding across every tracked file, and it is the
+  declared test double the exemption ledger pins by path, digest and match count. What is
+  still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
   closed, and the largest item is `NAME = value` with spaces: closing it gives 22 findings
-  on 22 lines across all 159 tracked files, the experiment being to replace `=` with
+  on 22 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. Every figure in this bullet is asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

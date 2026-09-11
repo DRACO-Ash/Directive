@@ -43,6 +43,8 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `engineering-reviewer`, ninth pass | `e89e18d` | **FAIL** | Three MAJORs, two shared with the run above. The third was the new cost-figure module hardcoding `/usr/bin/git` with a guard that only reads the return code, so on any image that puts git elsewhere it raises rather than skips: five errors at the platform's test stage, a failed upload and every later stage skipped. Every other module in the suite resolves a tool with `shutil.which`. |
 | 2026-09-11 | `security-reviewer`, seventeenth run | `7a7a642` | **FAIL** | Two MAJORs, both the figure class narrowed rather than closed for the third pass running. The clauses INSIDE a pinned sentence were free, so the Python keyword-argument count and the sonar split could be set to anything with the suite green, and one of them is the very figure this table records as wrong at the thirteenth run. And the sweep read three declared files, so false figures placed in `README.md` and in the accreditation record, both of which ship, were never read. |
 | 2026-09-11 | `engineering-reviewer`, tenth pass | `7a7a642` | **FAIL** | Two MAJORs, one shared. The other: the previous pass's `NotebookEdit` fix added the field to the house-voice hook's payload list but not to its tool gate, so it was unreachable for exactly the tool it was added for and the hook still exited 0 on every notebook write, with a comment beside it claiming the fix. Nothing in the suite referenced that hook at all, which is why it shipped broken. |
+| 2026-09-11 | `security-reviewer`, eighteenth run | `f5ebd2f` | **FAIL** | One BLOCKER and two MAJORs. The loop was RED at the commit: the tracked-file count read 159 against a 160-file tree, because the loop measures before the commit and the figure describes after, and the new test file was untracked when it ran. That is the count going stale for the third time, in the commit written to stop it. Markdown emphasis also hid a digit from the scanner, so a false section in `README.md` shipped green, and a breakdown clause reworded away was caught by nothing. |
+| 2026-09-11 | `engineering-reviewer`, eleventh pass | `f5ebd2f` | **FAIL** | Two BLOCKERs and five MAJORs, the BLOCKERs shared with the run above. Also: the remainder of the sonar split was unpinned, so the sentence could contradict itself with nothing red; the house-voice hook's `Bash` branch was carved out of its own matcher check and held by nothing, and it is the only enforcement anywhere of the `+` rule; and this file's pointer for the test count resolved to rows that carried none. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -83,9 +85,12 @@ these names. The keyword may be followed by more of the name, so `CLIENT_SECRET_
 caught. Case is folded everywhere except the prose rule.
 
 Every figure below is pinned by `tests/test_sweep_cost_figures.py`, which re-runs each
-experiment against the live rules and the live tree, asserts the sentences that report it,
-and then sweeps EVERY tracked file for anything written in the same shapes and asserts that
-too. All three parts, because each of the first five attempts closed one and left the next
+experiment against the live rules and the live tree, asserts that each sentence and each
+clause inside it is still SAID where it belongs, and sweeps EVERY tracked file for anything
+written in the same shapes. Three parts, and each was added only after the previous two were
+defeated: a clause with a wrong number, a clause reworded away, and a digit wrapped in
+markdown emphasis, which renders to a reader as a number and was invisible to a scanner
+anchored on a bare digit. All three parts, because each of the first five attempts closed one and left the next
 open: pinning the measurement left the prose free, and a reviewer rewrote 22 to 47 and 26 to
 99 in three documents with the suite green; pinning three named files left every other
 shipped document free, and a reviewer put false figures in `README.md` and in the
@@ -104,14 +109,14 @@ that no sweep mistakes them for a live measurement.
 **What it does not, and why each is left open.**
 
 ● `NAME = value` with spaces around the equals. Measured rather than assumed: allowing them
-  gives 22 findings on 22 lines across all 159 tracked files, so the rule would fire on
+  gives 22 findings on 22 lines across every tracked file, so the rule would fire on
   every build and be switched off within a week. The experiment is to replace `=`
   with `[ \t]*=[ \t]*` in that rule alone and scan every tracked file. The cost of closing
   it is a rule nobody keeps.
 ● A `name: value` mapping in YAML or JavaScript Object Notation (JSON), unquoted.
 ● A LOWER case name mid-line, such as `set client_secret=<value> in the console`. The prose
   rule is the one rule that does not fold case. Folding it gives 26 matches on 18 lines
-  across all 159 tracked files: 19 Python keyword arguments (`outgoing_key=`, `sort_keys=`)
+  across every tracked file: 19 Python keyword arguments (`outgoing_key=`, `sort_keys=`)
   and 7 `sonar.projectKey=` lines, 6 of them in the skill templates and 1 in this project's
   own `sonar-project.properties`, all admitted by the preceding-character widening. The
   anchored rule and the table rule both fold, so a lower-case name is caught in those two
