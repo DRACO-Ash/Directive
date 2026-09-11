@@ -329,7 +329,7 @@ RULES = [
     # "Anywhere in a line" means it: the character before the name need only be a non-word
     # one. A narrower list of separators was written first and ten shapes walked past it,
     # the plausible ones being a query string (`?NAME=`, `&NAME=`) and a bullet written with
-    # no space after it. The widening costs zero false positives here, so the narrower list
+    # no space after it. The widening costs 0 false positives here, so the narrower list
     # bought nothing.
     ("Credential written into prose",
      r"(?:^|[^A-Za-z0-9_])['\"`]?[A-Z][A-Z0-9_]*"

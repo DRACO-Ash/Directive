@@ -17,13 +17,11 @@ finding in that machinery or in a shipped document rather than in the applicatio
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
 never been measured. The verification loop is red at some commits of this release and green
-at others; `docs/GATE-RECORDS.md` carries the verdict, the test count and the coverage for
-each commit a gate ran against, in the row for that commit. No count is restated here,
-because this paragraph has got one wrong three separate ways: a figure replaced with a LATER
-commit's while the commit name stayed, inside the sentence that criticised that very
-mistake; a coverage range left un-re-measured when the count beside it changed; and a count
-that was correct when written and stale one commit later, in the commit written to stop
-exactly that. A figure describing the current tree does not belong in a release note.
+at others, and `docs/GATE-RECORDS.md` carries the commit, the verdict and the findings for
+each gate run. It records no test count and no coverage figure, and neither does this
+paragraph, because a figure describing a tree does not belong in a release note: this one
+has carried a wrong count three separate ways, most recently in the commit written to stop
+exactly that. The figures that remain in this file are the ones a test reads back.
 
 **Changed.**
 

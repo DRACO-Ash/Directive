@@ -96,7 +96,7 @@ def test_the_hook_blocks_an_em_dash_from_every_registered_tool(tool: str) -> Non
     blocked = _verdict(tool, PROBE)
 
     assert blocked.returncode == 2, f"{tool} was not inspected: exit {blocked.returncode}"
-    assert "em-dash" in blocked.stderr, blocked.stderr
+    assert "an em-dash (U+2014) in the authored content" in blocked.stderr, blocked.stderr
 
 
 def test_the_hook_allows_ordinary_prose() -> None:
@@ -106,9 +106,16 @@ def test_the_hook_allows_ordinary_prose() -> None:
     assert allowed.returncode == 0, allowed.stderr
 
 
+#: The hook's own hit strings, in full. A substring like `"+"` or `em-dash` does not
+#: discriminate: the guidance the hook prints on a refusal contains both, so either probe
+#: would pass whichever rule actually fired. The exit code is what carries these tests, but
+#: an assertion that reads as though it identifies the rule should identify the rule.
 @pytest.mark.parametrize(
     ("probe", "expected"),
-    [(PLUS_PROBE, "+"), (EM_DASH_PROBE, "em-dash")],
+    [
+        (PLUS_PROBE, 'a "+" used to mean "and" in the commit message'),
+        (EM_DASH_PROBE, "an em-dash (U+2014) in the commit message"),
+    ],
 )
 def test_the_hook_inspects_a_commit_message(probe: str, expected: str) -> None:
     """The Bash branch, which was carved out of the matcher check and held by nothing.
