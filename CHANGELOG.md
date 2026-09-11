@@ -21,7 +21,12 @@ at others, and `docs/GATE-RECORDS.md` carries the commit, the verdict and the fi
 each gate run. It records no test count and no coverage figure, and neither does this
 paragraph, because a figure describing a tree does not belong in a release note: this one
 has carried a wrong count three separate ways, most recently in the commit written to stop
-exactly that. The figures that remain in this file are the ones a test reads back.
+exactly that. The sweep-cost figures in this
+file are read back by `tests/test_sweep_cost_figures.py`. The others are measurements
+recorded at the time they were taken, and they are not read back: the 82 pre-deployment
+checks, the image layer count, and the refusal-flood sizing. Saying more than that is how
+this paragraph has been wrong four times, twice in the sentence written to fix the last
+one.
 
 **Changed.**
 
