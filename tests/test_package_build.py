@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 #: build, which is the sweep working correctly and the test being careless. Marking the
 #: lines exempt would have been the wrong fix: the exemption count is pinned at one on
 #: purpose, and spending it here to test the sweep would blunt the control being tested.
-PROBE_CREDENTIAL = "CLIENT_" + "SECRET=" + chr(34) + "hunter2-a-real-looking-secret" + chr(34)
+_PROBE_NAME = "CLIENT_" + "SECRET"
+PROBE_CREDENTIAL = _PROBE_NAME + "=" + chr(34) + "hunter2-a-real-looking-secret" + chr(34)
 
 
 def _tool(name: str) -> str:
