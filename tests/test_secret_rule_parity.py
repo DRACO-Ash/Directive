@@ -31,15 +31,32 @@ ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts" / "build-package.sh"
 HOOK = ROOT / ".claude" / "hooks" / "secret-scan.mjs"
 
-#: The platform runs this suite against the UNPACKED PACKAGE, and `.claude/` is the
-#: assistant's baseline rather than shipped code, so the hook is not there. Skipping is
-#: honest; failing would turn a green local loop into a red upload for a reason that has
-#: nothing to do with the code. Found by `scripts/simulate-pipeline.sh` on the first run
-#: after this module was written, which is what that simulation is for.
+#: The platform runs this suite against the UNPACKED PACKAGE, where `.claude/` is not
+#: present at all: it is the assistant's baseline rather than shipped code. Skipping there
+#: is honest; failing would turn a green local loop into a red upload for a reason that has
+#: nothing to do with the code.
+#:
+#: The condition is the BASELINE DIRECTORY, never the hook itself, and that distinction is
+#: the whole of this guard. Keyed on `HOOK.is_file()`, the skip was co-extensive with the
+#: control: deleting `.claude/hooks/secret-scan.mjs` skipped all thirty-six tests in this
+#: module, including the two written to catch exactly that, and the suite exited 0. No other
+#: test mentions the hook, so nothing else noticed. One `rm` retired the control named in
+#: the first hard rule of `CLAUDE.md`. Keying on the directory means a missing hook inside a
+#: present baseline is a FAILURE, which is what it is.
+#:
+#: The sweep is not part of the condition either: `scripts/` does ship, so a conjunction
+#: including it never discriminated on anything.
 pytestmark = pytest.mark.skipif(
-    not (SWEEP.is_file() and HOOK.is_file()),
-    reason="the sweep and the hook are not both present; this is the unpacked package",
+    not (ROOT / ".claude").is_dir(),
+    reason="no assistant baseline here; this is the unpacked package",
 )
+
+
+def test_the_hook_and_the_sweep_are_both_present() -> None:
+    """NOT a skip, for the reason written above the guard. A missing control is a failure."""
+    assert SWEEP.is_file(), f"{SWEEP} is missing, so the packaging sweep cannot run"
+    assert HOOK.is_file(), f"{HOOK} is missing, so nothing blocks a credential before it lands"
+
 
 #: The one rule the hook carries and the sweep does not. It is a build-contract check rather
 #: than a credential check: `ENV PORT` in a Dockerfile silently overrides the platform's

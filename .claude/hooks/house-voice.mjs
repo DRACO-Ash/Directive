@@ -35,7 +35,9 @@ const hits = [];
 
 if (tool === 'Write' || tool === 'Edit' || tool === 'MultiEdit') {
   // Only the NEW content the model is writing, so an em-dash already on disk is not our concern.
-  const parts = [ti.content, ti.new_string, ti.file_text];
+  // `new_source` too: both hooks are registered for `NotebookEdit`, and a hook that is
+  // registered for a tool whose content field it cannot read exits 0 on every such write.
+  const parts = [ti.content, ti.new_string, ti.file_text, ti.new_source];
   if (Array.isArray(ti.edits)) for (const e of ti.edits) parts.push(e && e.new_string);
   const text = parts.filter(s => typeof s === 'string').join('\n');
   if (EM_DASH.test(text)) hits.push('an em-dash (U+2014) in the authored content');

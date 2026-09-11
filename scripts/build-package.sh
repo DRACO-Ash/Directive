@@ -289,19 +289,24 @@ RULES = [
     # because the prose rule below correctly matched this very comment twice.
     #
     # Matched on the dotenv SHAPE rather than by widening this rule's equals to allow spaces
-    # around it, which flags 22 findings on 22 lines across all 157 tracked files at
-    # `72ab2d0`. State the experiment with the figure, always: this number has been written
-    # three times and measured three different ways, because the experiment behind it was
-    # never recorded. The experiment is: leave every other part of this rule alone, replace
-    # `=` with `[ \t]*=[ \t]*`, scan every tracked file. Python writes `SUITE_KEY = bytes(...)` with spaces
-    # around the equals; dotenv never does. The trailing `[A-Z0-9_]*` is there because the
-    # keyword need not END the name: `CLIENT_SECRET_V2=` walked past without it. The name
-    # must still CONTAIN one of these words and not begin with one, and that restriction is
-    # deliberate and measured: making the leading `[A-Z][A-Z0-9_]*` optional gives 14
-    # findings across the tracked tree, 9 of them in `src/` (eight `key_id=` and one
-    # `keys=`), at `1bdbdb8`. So `SECRET_FOR_ENTRA=` is left open and recorded rather than
-    # bought at that price. `[REDACTED:...]` is the placeholder the hard
-    # rule mandates and is allowed through. The optional opening delimiter is not decoration:
+    # around it, which flags 22 findings on 22 lines across all 159 tracked files. Python
+    # writes `SUITE_KEY = bytes(...)` with spaces around the equals; dotenv never does.
+    #
+    # Every figure in this file is re-measured by `tests/test_sweep_cost_figures.py`, which
+    # runs the experiment against the live rules and the live tree AND asserts the sentence
+    # you are reading. No commit hash is cited because none is needed: a figure that drifts
+    # from the tree is a red test, not a stale sentence. That is the fifth attempt at this
+    # class, after a number written three ways, a file contradicting itself 154 lines apart,
+    # and a count written stale in the commit that changed what it counted.
+    #
+    # The trailing `[A-Z0-9_]*` is there because the keyword need not END the name:
+    # `CLIENT_SECRET_V2=` walked past without it. The name must still CONTAIN one of these
+    # words and not begin with one, and that restriction is deliberate and measured: making
+    # the leading `[A-Z][A-Z0-9_]*` optional gives 14 findings across the tracked tree, 9 of
+    # them in `src/` (eight `key_id=` and one `keys=`). So `SECRET_FOR_ENTRA=` is left open
+    # and recorded rather than bought at that price. `[REDACTED:...]` is the placeholder the
+    # hard rule mandates and is allowed through. The optional opening delimiter is not
+    # decoration:
     # a backtick between the bullet and the name defeated the whole prefix set, and this
     # project's own house style puts every identifier in backticks behind a bullet, so the
     # likeliest real shape was the one walking past.
@@ -312,14 +317,11 @@ RULES = [
     # "Set NAME=value in the console", or a `docker run -e NAME=value` that does not begin
     # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
     # than a relaxed anchor on the one above. Folding case here gives 26 matches on 18 lines
-    # across all 157 tracked files at `1bdbdb8`: 19 Python keyword arguments
-    # (`outgoing_key=`, `sort_keys=`) and 7 `sonar.projectKey=` lines in the skill
-    # templates, the latter admitted by the preceding-character widening in this same
-    # commit. Requiring the upper case name that every environment variable actually has
-    # leaves zero. Re-measure whenever you change this rule OR the tree, and say which
-    # experiment the number came from: this figure read 23 and then 19 at earlier commits,
-    # each time correct for an experiment nobody wrote down, and a stale figure in a file
-    # that ships is a finding here. The one carve-out
+    # across all 159 tracked files: 19 Python keyword arguments (`outgoing_key=`,
+    # `sort_keys=`) and 7 `sonar.projectKey=` lines, six of them in the skill templates and
+    # one in this project's own `sonar-project.properties`, all admitted by the
+    # preceding-character widening. Requiring the upper case name that every environment
+    # variable actually has leaves zero. The one carve-out
     # is the diagnostics read-out shape `NAME=MISSING(n)`, which is a value-ABSENT marker
     # this application prints on purpose and which appears in a document and a test.
     #
@@ -443,12 +445,10 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # `--env` or list-marker prefix and at any indent, and `| NAME | value |` is caught as
     # a document table row, but `NAME = value` with spaces around the equals is NOT, and a
     # `name: value` mapping in YAML or JSON is NOT. The spaces form was measured: widening
-    # the equals to allow them gives 22 findings on 22 lines across all 157 tracked files at
-    # `1bdbdb8`, so the rule would fire on every build and be turned off within a week. The
-    # experiment is to replace `=` with `[ \t]*=[ \t]*` in the unquoted rule alone and scan
-    # every tracked file; that sentence is the point, because this figure read "sixteen"
-    # here and "22" 154 lines above for one commit, one file contradicting itself about one
-    # experiment. It is a real gap and it is recorded here rather than closed.
+    # the equals to allow them gives 22 findings on 22 lines across all 159 tracked files,
+    # so the rule would fire on every build and be turned off within a week. The experiment
+    # is to replace `=` with `[ \t]*=[ \t]*` in the unquoted rule alone and scan every
+    # tracked file. It is a real gap and it is recorded here rather than closed.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
