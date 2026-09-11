@@ -60,12 +60,24 @@ OUT="dist/comply-ops-${VERSION}-${STAMP}-${COMMIT}.zip"
 # inside it is unreachable. What leaves it does so by `mv`, which uses `rename(2)` and
 # REPLACES a symlink at the destination rather than following it. So the class ends here
 # rather than being narrowed again.
+# The trap is installed BEFORE the directory exists, not after. Set afterwards, a signal
+# arriving in the gap between `mktemp -d` returning and the trap being armed killed the
+# shell with the default action and left a full copy of HEAD behind: caught by the trap's
+# own test, which signals as soon as the directory appears, where the security gate's
+# timing had landed later and seen it work.
+#
+# The signals matter as much as the ordering: dash runs an EXIT trap for none of INT, TERM,
+# HUP or PIPE, so `sh scripts/build-package.sh | head -2` used to leave the same copy
+# behind, unbounded in number, at mode 0700.
+#
+# `${WORK:-}` because the trap can now fire before the assignment; `rm -rf ""` is a silent
+# no-op under `-f`. A sub-millisecond window remains between the directory appearing on
+# disk and the shell assigning WORK. It leaks a mode-0700 copy of HEAD and nothing else,
+# and it is not reachable by choice, so it is recorded rather than closed with a glob that
+# would delete a concurrent build's directory.
+WORK=""
+trap 'rm -rf "${WORK:-}"' EXIT HUP INT TERM PIPE
 WORK="$(mktemp -d dist/.build.XXXXXX)"
-# Removed on a normal exit AND on the signals a build actually meets: dash does not run an
-# EXIT trap for INT, TERM, HUP or PIPE, so `sh scripts/build-package.sh | head -2` left a
-# full copy of HEAD behind at mode 0700. Harmless in content, unbounded in number, and the
-# comment here said "however the build ends", which was not true.
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM PIPE
 STAGE="$WORK/stage"
 MANIFEST="$WORK/manifest"
 BUILT="$WORK/package.zip"
@@ -393,6 +405,7 @@ try:
         print(f"FAIL: {hit}")
     if hits:
         sys.exit(1)
+    print(f"credential sweep: {examined} files examined, exemptions {allowed_counts} honoured")
 except BrokenPipeError:
     # `sh scripts/build-package.sh | head -1` closes stdout under the sweep. The build
     # already fails closed, but in POSIX sh the pipeline's status is `head`'s, which is 0,
@@ -400,7 +413,6 @@ except BrokenPipeError:
     # refusal is written to stderr, which the pipe has not closed.
     print("FAIL: the credential sweep could not finish; stdout closed", file=sys.stderr)
     sys.exit(1)
-print(f"credential sweep: {examined} files examined, exemptions {allowed_counts} honoured")
 SWEEP
 
 # The assertion that would have caught the gate's finding. The suite reads these from the
