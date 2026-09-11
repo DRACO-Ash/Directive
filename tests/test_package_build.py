@@ -829,10 +829,18 @@ def test_the_simulations_cleanup_trap_survives_a_signal(clone: Path) -> None:
             if list(scratch.iterdir()):
                 break
             if simulation.poll() is not None:
-                pytest.skip("the simulation finished before its work directory was observed")
+                # NOT a skip. The package built, so the simulation had a package to unpack
+                # and a work directory to make; finishing without one is the script failing
+                # before the point this test exercises, and a skip would report that as an
+                # environment limitation. The 60 second window is ten times the observed
+                # time to unpack, so a loaded runner does not reach here.
+                raise AssertionError(
+                    "the simulation exited before creating a work directory: "
+                    f"code {simulation.returncode}"
+                )
             time.sleep(0.01)
         else:
-            pytest.skip("the work directory was never observed")
+            raise AssertionError("no work directory appeared within 60 seconds")
         simulation.send_signal(signal.SIGTERM)
         simulation.wait(timeout=60)
     finally:

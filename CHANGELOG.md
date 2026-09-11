@@ -16,7 +16,7 @@ machinery, every one of them FAIL and every finding in that machinery or in a sh
 document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
-never been measured. Verification loop PASS, 924 passed, 2 skipped, coverage 98.98%, measured at the
+never been measured. Verification loop PASS, 925 passed, 2 skipped, coverage 98.98%, measured at the
 last commit of this release rather than at the commit this row is headed by. The test count here was once replaced with a LATER commit's figure while the commit
 name stayed, inside the sentence below that criticises that very mistake; both halves are now
 measured at the commit named. An earlier row here recorded a 98.84 to 98.89 range and was not
@@ -47,7 +47,8 @@ records against others.
   start of a line behind any `ENV`, `ARG`, `export`, `-e`, `--env` or list-marker prefix at
   any indent and behind an optional quote or backtick; the same assignment anywhere in a
   line of prose; and a credential-shaped token in any cell of a document parameter table
-  row. Everything compiles with MULTILINE as well as IGNORECASE, without which the anchored
+  row. Everything compiles with MULTILINE, and with IGNORECASE except the prose rule,
+  which must not fold case. Without MULTILINE the anchored
   rules matched only at the first byte of a file and a UTF-16 credential below line one
   shipped. Measured at zero false positives across all 157 tracked files. What is still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be

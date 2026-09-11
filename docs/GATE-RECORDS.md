@@ -33,7 +33,7 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, tenth run | `2819cf5` | **FAIL** | First run scored against the stated threat model. Three binding MAJORs: the credential sweep only matched a QUOTED assignment, so an unquoted `CLIENT_SECRET=...` in `.env.example` shipped at the package root, demonstrated end to end; the accreditation record pointed at a limits list that did not name it; and four constant-time comparisons were held by no test, replacing each with `==` leaving all 845 green. The reviewer endorsed the boundary and named two under-specifications, both since written in. |
 | 2026-09-11 | `security-reviewer`, eleventh run | `ff2c5d7` | **FAIL** | One BLOCKER and five MAJORs. The Accepted residual row written in that very commit spelled two probe names out in full, so the sweep matched its own record and the build refused: no package, twenty red tests, the loop exit 1. The new unquoted rule was anchored to the start of a line, so the same credential behind `ENV`, `ARG`, `-e` or a bullet, or between the pipes of a parameter table, shipped. The sweep compiled without MULTILINE, which made both anchored rules dead in exactly the NUL-stripped pass that exists to see a UTF-16 credential. `.gitignore` missed `.env.production`, `.env.prod` and `.env.staging`. And two controls were held by no test: the `.env.example` filename exemption and `set -e` in the simulation. |
 | 2026-09-11 | `security-reviewer`, twelfth run | `5e28df4` | **FAIL** | Four MAJORs, three of them demonstrated by a package that built green while shipping a live-shaped client secret in a document. The table rule read the cell after the name and the table it was written for has three columns, so it scanned Source and never the column headed Value. A backtick between the bullet and the name defeated the whole prefix set, which is this project's own house style. The ignore rules left the whole key and certificate family trackable, and those names are outside the package allowlist, so the sweep that refuses them inside a package would never have seen one at the repository root. And the Open in scope section recorded none of it. |
-| 2026-09-11 | `engineering-reviewer`, fifth run | `5e28df4` | **FAIL** | Three MAJORs, one shared with the run above. The `$PWD` clause of the simulation's location assertion was held by no test: the guards above it fire first with a different message, and deleting it left all eleven simulation tests green. And two rule sets were duplicated across two runtimes with no parity test, in a delta whose own comment records that they had diverged. |
+| 2026-09-11 | `engineering-reviewer`, sixth pass | `5e28df4` | **FAIL** | Three MAJORs, one shared with the run above. The `$PWD` clause of the simulation's location assertion was held by no test: the guards above it fire first with a different message, and deleting it left all eleven simulation tests green. And two rule sets were duplicated across two runtimes with no parity test, in a delta whose own comment records that they had diverged. |
 | 2026-09-11 | `security-reviewer`, thirteenth run | `6d9394f` | **FAIL** | Four MAJORs. The hook's BEHAVIOUR was held by no test: leaving its rule array untouched and iterating only its first element stopped eleven of twelve rules blocking with every parity test green, because the parity test compares rule text and nothing executed the hook. `ssh-keygen -t ed25519` writes an extensionless file that neither `*.pem` nor `*.key` matches, so an OpenSSH private key was still trackable. And two figures in shipped documents were not supported: 23 keyword arguments against 19 measured, and 156 tracked files against 157. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
@@ -91,14 +91,14 @@ caught. Case is folded everywhere except the prose rule.
   must contain one of these words and have at least one character before it. Removing that
   requirement flags twelve indented `key_id=` keyword arguments in `src/`, so it is left
   open at a measured price rather than bought.
-● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it is skipped whole. That is a
+● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it, in EITHER case, is skipped
+  whole, because the rule folds case. That is a
   bypass for someone who adds `TBC` to a row on purpose, and it is the right trade: a
   cell-level exemption let the engine match a different cell instead, and the adversary
   this rule is for is an honest committer pasting a value into a table.
 ● The sweep is a pattern sweep over text. Base64 or any other re-encoding, and anything
   inside a compressed container, pass it. That limit is structural and is recorded beside
   the sweep as well as here.
-
 
 ## Deletion matrix
 
