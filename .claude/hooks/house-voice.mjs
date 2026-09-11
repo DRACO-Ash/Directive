@@ -33,10 +33,12 @@ const PLUS_FOR_AND = /[A-Za-z]{2,} \+ [A-Za-z]{2,}/;  // "auth + config" style, 
 
 const hits = [];
 
-if (tool === 'Write' || tool === 'Edit' || tool === 'MultiEdit') {
+if (tool === 'Write' || tool === 'Edit' || tool === 'MultiEdit' || tool === 'NotebookEdit') {
   // Only the NEW content the model is writing, so an em-dash already on disk is not our concern.
-  // `new_source` too: both hooks are registered for `NotebookEdit`, and a hook that is
-  // registered for a tool whose content field it cannot read exits 0 on every such write.
+  // `NotebookEdit` and its `new_source` field, because both hooks are registered for it and a
+  // hook registered for a tool it does not admit here exits 0 on every such write. Adding the
+  // FIELD without adding the TOOL is how that was got wrong once: the field was unreachable
+  // for exactly the tool it was added for, and the comment beside it claimed the fix.
   const parts = [ti.content, ti.new_string, ti.file_text, ti.new_source];
   if (Array.isArray(ti.edits)) for (const e of ti.edits) parts.push(e && e.new_string);
   const text = parts.filter(s => typeof s === 'string').join('\n');

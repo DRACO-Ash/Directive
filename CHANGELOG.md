@@ -11,18 +11,19 @@ deployed yet, so every row below records a release that was cut, gated and merge
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
-review PASS at `b3b798c`, then sixteen further runs against the packaging and verification
+review PASS at `b3b798c`, then seventeen further runs against the packaging and verification
 machinery, every one of them FAIL and every finding in that machinery or in a shipped
 document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
-never been measured. Verification loop PASS, 973 passed, 2 skipped, coverage 98.98%,
-measured at the last commit of this release rather than at the commit this row is headed
-by. The test count here was once replaced with a LATER commit's figure while the commit
-name stayed, inside the sentence below that criticises that very mistake; both halves are now
-measured at the commit named. An earlier row here recorded a 98.84 to 98.89 range and was not
-re-measured when the test count beside it was updated, which is the same defect this file
-records against others.
+never been measured. Verification loop PASS at every commit of this release; the test
+count and coverage at each gated commit are in the `docs/GATE-RECORDS.md` rows rather than
+restated here, because an unanchored count in this paragraph goes stale on the next test
+added and has done so twice. It has gone wrong three ways in this paragraph alone: a count
+replaced with a LATER commit's figure while the commit name stayed, inside the sentence that
+criticised that very mistake; a 98.84 to 98.89 coverage range left un-re-measured when the
+count beside it changed; and a count that was correct when written and stale one commit
+later. The figures that remain here are the ones a test asserts.
 
 **Changed.**
 
@@ -73,7 +74,14 @@ records against others.
   the hook runs at all are four separate controls, and each was found by a reviewer
   defeating the tests written for the one before it.
 ● `tests/test_sweep_cost_figures.py` re-measures the three costs that justify the three
-  open gaps, against the live rules and the live tree. Four figures in shipped files
+  open gaps, asserts the sentences that report them, and sweeps every tracked file for
+  anything written in the same shapes. All three parts, because six attempts at this class
+  each closed one and left the next open: the measurement, then the prose reporting it, then
+  the files outside the declared three, then the clauses inside a pinned sentence. Every
+  figure is a digit now, because a figure written as a word is invisible to any scanner.
+● `tests/test_house_voice_hook.py` executes the house-voice hook once per registered tool.
+  Nothing referenced that hook at all, and it had shipped unable to read a notebook write
+  while registered for one. Four figures in shipped files
   went stale before it existed, one of them written stale in the commit that measured
   it. A number in prose is an argument nobody can check.
 ● `.gitignore` refuses `.env.*` with `.env.example` excepted, and the same key and

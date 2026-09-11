@@ -37,6 +37,17 @@ EXPECTED = {
 #: written as "twelve indented `key_id=` arguments" and neither half was right.
 EXPECTED_IN_SRC = 9
 EXPECTED_KEY_ID_IN_SRC = 8
+EXPECTED_KEYS_IN_SRC = 1
+
+#: The clauses INSIDE a pinned sentence, which were free while the sentence was held. A
+#: reviewer set 19 to 31, 7 to 98 and the word "eight" to "twelve" with the suite green, and
+#: the first of those is the exact figure this project recorded as wrong at its thirteenth
+#: security gate. Every one of them is a digit in the documents now, so the sweep can read
+#: it back; a figure written as a word is invisible to any scanner and is a defect on its
+#: own.
+EXPECTED_PYTHON_KEYWORD_ARGUMENTS = 19
+EXPECTED_SONAR = 7
+EXPECTED_SONAR_IN_TEMPLATES = 6
 
 #: The size of the tree every figure above is measured over. It is quoted in all three
 #: reporting files and it went stale in the commit that added the two modules that changed
@@ -118,44 +129,32 @@ def test_the_cost_of_each_widening_is_what_the_records_say(experiment: str) -> N
     )
 
 
-def test_the_leading_part_figure_is_broken_down_as_the_records_say() -> None:
-    """The `src/` share and the `key_id=` share, both of which were once written wrong."""
-    pattern, flags = _widenings()["unquoted rule with the leading part of the name optional"]
-    found = _scan(pattern, flags, _tracked())
-    in_src = [entry for entry in found if entry[0].startswith("src/")]
-    key_id = [entry for entry in in_src if entry[2].startswith("key_id=")]
-
-    assert len(in_src) == EXPECTED_IN_SRC, [entry[:2] for entry in in_src]
-    assert len(key_id) == EXPECTED_KEY_ID_IN_SRC, [entry[:2] for entry in key_id]
-
-
-def test_the_shipped_rules_themselves_cost_nothing() -> None:
-    """The claim every record makes about the rules as they actually ship: zero."""
-    files = _tracked()
-    findings = []
-    for label, pattern in load_rules().items():
-        flags = re.MULTILINE | (0 if label in load_case_sensitive() else re.IGNORECASE)
-        findings += [(label, *entry) for entry in _scan(pattern, flags, files)]
-
-    # One, and it is the pinned and declared test double the exemption ledger allows.
-    assert len(findings) == 1, findings
-    assert findings[0][1] == "tests/test_entra_sign_in.py", findings
-
-
-#: The three shipped files that report these figures. All three are inside the package, and
-#: `docs/ACCREDITATION-REVIEW.md` sends an assessor to the first of them to read the limits
-#: at source, so a wrong number here is evidence that misleads rather than a typo.
+#: The files that report these figures in their canonical sentences. Declared, so deleting a
+#: sentence from one of them is red. It is NOT the boundary of the sweep below: a reviewer
+#: put false figures into `README.md` and `docs/ACCREDITATION-REVIEW.md`, both of which ship,
+#: and a three-file list read neither. `docs/ACCREDITATION-REVIEW.md` is named in the comment
+#: that sends an assessor to the sweep to read its limits at source, which is precisely why a
+#: restatement there has to be read back.
 REPORTING_FILES = (
     ROOT / "scripts" / "build-package.sh",
     ROOT / "docs" / "GATE-RECORDS.md",
     ROOT / "CHANGELOG.md",
 )
 
+#: WHICH file reports WHICH sentence. Not every file reports every experiment, and demanding
+#: that would be false: the CHANGELOG carries the one that justifies the largest open gap and
+#: points at the rest. Declared, so deleting a sentence is red, and the union is asserted
+#: against the tree below, so adding a carrier is red too.
+REPORTS = {
+    "unquoted rule with spaces around the equals": REPORTING_FILES,
+    "prose rule folded to ignore case": REPORTING_FILES[:2],
+    "unquoted rule with the leading part of the name optional": REPORTING_FILES[:2],
+}
 
-#: The sentences those files must contain, rendered from the measurement rather than typed.
-#: Pinning the measurement alone was the first four attempts at this, and it left the prose
-#: free: a reviewer rewrote 22 to 47 and 26 to 99 in all three documents with the whole
-#: suite green. The measurement could not drift; the report of it could.
+#: This module writes the figures it asserts, so it would match its own renderings.
+SELF = Path(__file__).resolve()
+
+
 def _rendered(tracked: int) -> dict[str, str]:
     """Render each figure the way the shipped files write it, from the measurement."""
     spaces, spaces_lines = EXPECTED["unquoted rule with spaces around the equals"]
@@ -173,29 +172,30 @@ def _rendered(tracked: int) -> dict[str, str]:
     }
 
 
-def test_the_tracked_file_count_is_what_the_records_say() -> None:
-    """The count is a figure like any other, and it went stale twice.
+def _breakdowns() -> dict[str, int]:
+    """Return the clauses inside those sentences, each pinned to its own measurement."""
+    return {
+        "Python keyword arguments": EXPECTED_PYTHON_KEYWORD_ARGUMENTS,
+        "`sonar.projectKey=` lines": EXPECTED_SONAR,
+        "of them in the skill templates": EXPECTED_SONAR_IN_TEMPLATES,
+        "are `key_id=`": EXPECTED_KEY_ID_IN_SRC,
+        "is `keys=`": EXPECTED_KEYS_IN_SRC,
+    }
 
-    Most recently in the commit that added the two modules that changed it.
-    """
-    assert len(_tracked()) == EXPECTED_TRACKED
 
-
-#: WHICH file reports WHICH figure. Not every file reports every experiment, and demanding
-#: that would be false: the CHANGELOG carries the one that justifies the largest open gap
-#: and points at the rest. Declared rather than inferred, so deleting a sentence is red.
-REPORTS = {
-    "unquoted rule with spaces around the equals": REPORTING_FILES,
-    "prose rule folded to ignore case": REPORTING_FILES[:2],
-    "unquoted rule with the leading part of the name optional": REPORTING_FILES[:2],
-}
-
-#: The shapes a figure is written in, used to find EVERY rendering in those files rather
-#: than only the declared ones. Without this a stale number could be added to a fourth
-#: place, or a second time in one file, and nothing would read it back.
+#: Every shape a figure of this kind is written in. The sweep below reads each occurrence of
+#: each shape in every tracked file and asserts the number, so a figure is unread only if it
+#: is written in a shape nobody has thought of, and adding a shape to a document without
+#: adding it here is the one remaining way to drift. That is stated rather than claimed away.
 _RENDERINGS = re.compile(
-    r"(\d+) (findings|matches) on (\d+) lines across all (\d+) tracked files"
-    r"|(\d+) findings across the tracked tree, (\d+) of them in `src/`"
+    r"(?:\d+) (?:findings|matches) on (?:\d+) lines across all (?:\d+) tracked files"
+    r"|(?:\d+) findings across the tracked tree, (?:\d+) of them in `src/`"
+    r"|(?:\d+) tracked files"
+    r"|(?:\d+) Python keyword arguments"
+    r"|(?:\d+) `sonar\.projectKey=` lines"
+    r"|(?:\d+) of them in the skill templates"
+    r"|(?:\d+) are `key_id=`"
+    r"|(?:\d+) is `keys=`"
 )
 
 
@@ -204,15 +204,20 @@ def _flowed(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").replace("#", " ").split())
 
 
+def test_the_tracked_file_count_is_what_the_records_say() -> None:
+    """The count is a figure like any other, and it went stale twice.
+
+    Most recently in the commit that added the two modules that changed it.
+    """
+    assert len(_tracked()) == EXPECTED_TRACKED
+
+
 @pytest.mark.parametrize("experiment", sorted(EXPECTED))
 def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> None:
-    """The other half. A figure nobody reads back is a figure that drifts.
+    """Each canonical sentence, asserted verbatim where it is declared to appear.
 
-    Each sentence is rebuilt from the measurement and asserted to appear verbatim in every
-    file declared to report it, so changing the measurement without changing the prose is
-    red and changing the prose without changing the measurement is red. Pinning only the
-    measurement was the first four attempts at this class, and it left the prose free: a
-    reviewer rewrote 22 to 47 and 26 to 99 in all three documents with the suite green.
+    Rebuilt from the measurement, so changing the measurement without changing the prose is
+    red and changing the prose without changing the measurement is red.
     """
     sentence = _rendered(EXPECTED_TRACKED)[experiment]
     for path in REPORTS[experiment]:
@@ -221,18 +226,90 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
         )
 
 
-def test_no_shipped_file_reports_a_figure_that_was_never_measured() -> None:
-    """Every rendering in those files, not only the ones this module went looking for.
+def test_no_tracked_file_reports_a_figure_that_was_never_measured() -> None:
+    """EVERY tracked file, not the three that were declared.
 
-    A declared list catches a sentence that goes stale where it stands. It does not catch a
-    second copy appearing somewhere else, which is exactly how this class survived four
-    fixes: the figure was corrected where the reviewer pointed and left standing 154 lines
-    away in the same file.
+    A declared list catches a sentence going stale where it stands. It does not catch a copy
+    appearing elsewhere, and that is how this class survived five fixes: a figure corrected
+    where the reviewer pointed and left standing 154 lines away, then false figures placed in
+    two shipped documents outside the declared three with the whole suite green.
     """
     allowed = set(_rendered(EXPECTED_TRACKED).values())
-    for path in REPORTING_FILES:
-        flowed = _flowed(path)
-        for match in _RENDERINGS.finditer(flowed):
+    allowed |= {f"{count} {clause}" for clause, count in _breakdowns().items()}
+    allowed |= {f"{EXPECTED_TRACKED} tracked files"}
+
+    for path in _tracked():
+        if path.resolve() == SELF:
+            continue
+        for match in _RENDERINGS.finditer(_flowed(path)):
+            relative = path.relative_to(ROOT)
             assert match.group(0) in allowed, (
-                f"{path.name} reports a figure this module did not measure: {match.group(0)!r}"
+                f"{relative} reports a figure this module did not measure: {match.group(0)!r}"
             )
+
+
+def test_the_breakdown_clauses_are_what_the_records_say() -> None:
+    """The clauses inside a pinned sentence, measured rather than trusted.
+
+    `26 matches on 18 lines` was held while the `19 Python keyword arguments` and
+    `7 sonar.projectKey= lines` that decompose it were free to be anything.
+    """
+    pattern, flags = _widenings()["prose rule folded to ignore case"]
+    found = _scan(pattern, flags, _tracked())
+    sonar = [entry for entry in found if "projectkey" in entry[2].lower()]
+    templates = [entry for entry in sonar if "/templates/" in entry[0]]
+
+    assert len(found) - len(sonar) == EXPECTED_PYTHON_KEYWORD_ARGUMENTS
+    assert len(sonar) == EXPECTED_SONAR
+    assert len(templates) == EXPECTED_SONAR_IN_TEMPLATES
+
+
+def test_the_leading_part_breakdown_is_what_the_records_say() -> None:
+    """The same, for the other decomposed figure."""
+    pattern, flags = _widenings()["unquoted rule with the leading part of the name optional"]
+    found = _scan(pattern, flags, _tracked())
+    in_src = [entry for entry in found if entry[0].startswith("src/")]
+    key_id = [entry for entry in in_src if entry[2].startswith("key_id=")]
+
+    assert len(in_src) == EXPECTED_IN_SRC
+    assert len(key_id) == EXPECTED_KEY_ID_IN_SRC
+    assert len(in_src) - len(key_id) == EXPECTED_KEYS_IN_SRC
+
+
+def test_the_shipped_rules_themselves_cost_nothing() -> None:
+    """The claim every record makes about the rules as they actually ship: zero.
+
+    Restored after being dropped in an edit, which is its own small lesson: it is the only
+    test asserting that the live rule set does not fire on this tree, and the "zero false
+    positives" sentence in three documents rests on it.
+    """
+    files = _tracked()
+    findings = []
+    for label, pattern in load_rules().items():
+        flags = re.MULTILINE | (0 if label in load_case_sensitive() else re.IGNORECASE)
+        findings += [(label, *entry) for entry in _scan(pattern, flags, files)]
+
+    # One, and it is the pinned and declared test double the exemption ledger allows.
+    assert len(findings) == 1, findings
+    assert findings[0][1] == "tests/test_entra_sign_in.py", findings
+
+
+def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None:
+    """The declared map says where a figure lives; this says nowhere else does.
+
+    Deleting a sentence is caught by the map. Adding one somewhere undeclared was not, and
+    two shipped documents outside the declared three were given false figures with the whole
+    suite green.
+    """
+    sentences = _rendered(EXPECTED_TRACKED)
+    declared = {path.resolve() for files in REPORTS.values() for path in files}
+    for path in _tracked():
+        if path.resolve() in declared or path.resolve() == SELF:
+            continue
+        flowed = _flowed(path)
+        carried = [name for name, sentence in sentences.items() if sentence in flowed]
+
+        assert not carried, (
+            f"{path.relative_to(ROOT)} reports {carried} and is not in REPORTS; add it there "
+            "so the figure is read back, or remove the sentence"
+        )
