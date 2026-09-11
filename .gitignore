@@ -11,6 +11,27 @@
 secrets.env
 secrets/
 
+# The same family of names the packaging sweep already refuses inside the staged package,
+# so the two controls agree about what a credential looks like. They did not: the sweep
+# treats `*.key`, `*.pem`, `id_rsa*`, `*.p12` and `*.pfx` as credential-shaped, while an
+# `audit.key` at the repository root was trackable and outside the package allowlist, so
+# nothing downstream would ever have seen it. `docs/DEPLOYMENT.md` tells the operator to
+# generate the audit key with `openssl rand -hex 32`, which makes redirecting that into a
+# file and running `git add -A` the ordinary accident rather than an exotic one. History
+# is one-way, so this file is the only control on that path.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa*
+.netrc
+.pypirc
+secrets.yaml
+secrets.yml
+credentials.json
+client_secret*.json
+
 # Local runtime and build output
 .venv/
 __pycache__/

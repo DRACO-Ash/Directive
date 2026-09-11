@@ -120,14 +120,17 @@ fi
 # install and pytest legs are different: both are caught downstream by the STATUS guard
 # whether `set -e` is present or not. So this is the only region where the option was ever
 # load-bearing, and the guards below are what a test can delete to prove it.
+# Armed BEFORE the directory exists, and on every signal a caller can send rather than on
+# EXIT alone. In dash an EXIT trap runs for none of INT, TERM, HUP or PIPE, so piping this
+# script into `head` left an unpacked copy of the package behind, unbounded in number. The
+# identical defect was found in `scripts/build-package.sh` and fixed there; the sibling was
+# not, which is what a duplicated control does when only one copy is held by a test.
+WORK=""
+trap 'rm -rf "${WORK:-}"' EXIT HUP INT TERM PIPE
 WORK="$(mktemp -d)" || { echo "FAIL: no work directory could be created"; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
 echo "package:     $PKG"
 echo "unpacked to: $WORK"
 unzip -q "$PKG" -d "$WORK" || { echo "FAIL: $PKG did not unpack"; exit 1; }
-
-PY312="${PYTHON312:-/usr/bin/python3.12}"
-[ -x "$PY312" ] || { echo "SKIP: no interpreter at $PY312; this leg cannot run locally."; exit 1; }
 
 cd "$WORK"
 # The assertion every fall-through above defeats, stated POSITIVELY because that is what
@@ -140,6 +143,14 @@ if [ "$PWD" = "$ROOT" ] || [ ! -f requirements.txt ]; then
   echo "FAIL: this is not an unpacked package; refusing to report on it as if it were one"
   exit 1
 fi
+
+# BELOW the assertion above, deliberately. A host with no Python 3.12 must skip this leg,
+# but a skip is a statement about the host and the refusal above is a statement about what
+# would have been tested. Checking the interpreter first turned the second into the first
+# on any such host, which is a control reported as an environment limitation.
+PY312="${PYTHON312:-/usr/bin/python3.12}"
+[ -x "$PY312" ] || { echo "SKIP: no interpreter at $PY312; this leg cannot run locally."; exit 1; }
+
 "$PY312" -m venv .venv
 echo "== stage 5, install: pip install -r requirements.txt =="
 .venv/bin/python -m pip install -q -r requirements.txt

@@ -22,31 +22,33 @@ if (Array.isArray(ti.edits)) for (const e of ti.edits) parts.push(e && e.new_str
 const text = parts.filter(s => typeof s === 'string').join('\n');
 if (!text) process.exit(0);
 
-// Each rule is a labelled pattern. Extend per project; keep each labelled.
+// Each rule is a labelled pattern, and the set below is the SAME set the packaging sweep
+// in `scripts/build-package.sh` carries, in the same order and under the same flags, with
+// one documented exception: `Dockerfile ENV PORT` is a build-contract check rather than a
+// credential check and has no counterpart there. The two guard the same repository by
+// different routes, so a difference between them is a hole in whichever is narrower, and
+// that claim was false twice: the flags diverged, and then eight rules here folded case
+// while their counterparts did not. `tests/test_secret_rule_parity.py` now asserts the set
+// equality rather than trusting this comment, and it is the thing to keep green if you
+// edit either file. Every rule carries `m`, and every rule but the prose one carries `i`;
+// the prose rule must not fold case, because it matches anywhere in a line and folding
+// turns every keyword argument ending in `_key` into a finding.
 const RULES = [
-  ['AWS access key id',          /\bAKIA[0-9A-Z]{16}\b/],
-  ['Generic API key assignment', /(?:api[_-]?key|secret|token|password|passwd|pwd)\s*[:=]\s*['"][^'"]{8,}['"]/i],
-  ['Bearer token',               /\bBearer\s+[A-Za-z0-9._\-]{20,}\b/],
-  ['Private key block',          /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/],
-  ['LLM provider key',           /\b(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,})\b/],
-  ['Google API key',             /\bAIza[0-9A-Za-z_\-]{35}\b/],
-  ['Slack token',                /\bxox[baprs]-[0-9A-Za-z\-]{10,}\b/],
-  ['GitLab personal token',      /\bglpat-[0-9A-Za-z_\-]{20,}\b/],
-  // Banned anti-pattern: a hardcoded client-side access gate (public artifact PIN).
-  ['Client-side access gate',    /\b(?:ADMIN_)?PIN\s*=\s*['"][0-9A-Za-z]{4,}['"]/],
-  // Banned anti-pattern: ENV PORT in a Dockerfile silently overrides the platform port 8080.
-  ['Dockerfile ENV PORT',        /^\s*ENV\s+PORT\s*=/im],
-  // The generic rule above requires QUOTES and every secret this application consumes is
-  // written without them. Kept identical in shape to the packaging sweep's rule, because
-  // the two guard the same repository by different routes and a difference between them is
-  // a hole in whichever is narrower. That claim was false once: the hook carried `m` and no
-  // `i` while the sweep carried the reverse, so `client_secret=` walked past here and a
-  // credential below line one walked past there. Both now carry both flags, and the shape
-  // difference to check on any future edit is the flags as much as the pattern.
-  ['Unquoted environment-file credential',
-                                 /^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}/im],
-  ['Credential in a document table row',
-                                 /^[ \t]*\|[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)/im]
+  ['AWS access key id', /\bAKIA[0-9A-Z]{16}\b/im],
+  ['Generic API key assignment', /(?:api[_-]?key|secret|token|password|passwd|pwd)\s*[:=]\s*['"][^'"]{8,}['"]/im],
+  ['Bearer token', /\bBearer\s+[A-Za-z0-9._\-]{20,}\b/im],
+  ['Private key block', /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/im],
+  ['LLM provider key', /\b(?:sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,})\b/im],
+  ['Google API key', /\bAIza[0-9A-Za-z_\-]{35}\b/im],
+  ['Slack token', /\bxox[baprs]-[0-9A-Za-z\-]{10,}\b/im],
+  ['GitLab personal token', /\bglpat-[0-9A-Za-z_\-]{20,}\b/im],
+  ['Client-side access gate', /\b(?:ADMIN_)?PIN\s*=\s*['"][0-9A-Za-z]{4,}['"]/im],
+  ['Unquoted environment-file credential', /^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*['"`]?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}/im],
+  ['Credential written into prose', /(?:^|[ \t(\[{,;'"`])['"`]?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)(?!MISSING\()[^\s'"`]{8,}/m],
+  ['Credential in a document table row', /^[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)/im],
+  // The one rule with no counterpart in the packaging sweep: a build-contract check, not a
+  // credential check. `ENV PORT` in a Dockerfile silently overrides the platform port 8080.
+  ['Dockerfile ENV PORT', /^\s*ENV\s+PORT\s*=/im],
 ];
 
 const hits = [];

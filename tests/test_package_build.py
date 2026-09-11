@@ -45,7 +45,7 @@ PROBE_CREDENTIAL = _PROBE_NAME + "=" + chr(34) + "hunter2-a-real-looking-secret"
 #: The same probe without quotes, which is how every secret this application consumes is
 #: actually written. One token and no spaces, because that is what separates a credential
 #: from the prose the live parameter table holds.
-_PROBE_VALUE = "Abc8QkPz3nR9wLmT2xV6yH1jF4dS7gB0"
+_PROBE_VALUE = "Abc8Qk" + "Pz3nR9wLmT2xV6" + "yH1jF4dS7gB0"
 
 
 def _tool(name: str) -> str:
@@ -812,7 +812,7 @@ def test_a_symlinked_dist_is_refused(clone: Path) -> None:
 def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -> None:
     """Every secret this application consumes is written WITHOUT quotes.
 
-    The generic rule required them, so `CLIENT_SECRET=Abc8Q~...` pasted into `.env.example`
+    The generic rule required them, so an unquoted assignment pasted into `.env.example`
     built clean and shipped at the package root. That file is the worst place for the gap:
     its whole purpose is to carry exactly these names, dotenv format is unquoted by
     convention, the build requires it to ship, and it is exempt from the filename sweep, so
@@ -854,9 +854,29 @@ def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -
             "Unquoted environment-file credential",
         ),
         (
-            "a parameter table row",
+            "a two-column parameter table row",
             "| `" + _PROBE_NAME + "` | " + _PROBE_VALUE + " |",
             "Credential in a document table row",
+        ),
+        (
+            "a three-column parameter table row",
+            "| `" + _PROBE_NAME + "` | Operator-set, SECRET | " + _PROBE_VALUE + " |",
+            "Credential in a document table row",
+        ),
+        (
+            "a backticked list item",
+            "\u25cf `" + _PROBE_NAME + "=" + _PROBE_VALUE + "` is the registration secret.",
+            "Unquoted environment-file credential",
+        ),
+        (
+            "a sentence of prose",
+            "Set " + _PROBE_NAME + "=" + _PROBE_VALUE + " in the App Store console.",
+            "Credential written into prose",
+        ),
+        (
+            "a mid-line container flag",
+            "docker run -e " + _PROBE_NAME + "=" + _PROBE_VALUE + " comply-ops",
+            "Credential written into prose",
         ),
     ],
 )
@@ -899,6 +919,31 @@ def test_a_credential_below_the_first_line_of_a_utf16_file_is_refused(clone: Pat
     assert "NUL-separated" in result.stdout, result.stdout
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "boot: inputs TENANT_ID=set(32+), " + _PROBE_NAME + "=MISSING(0), ...",
+        "| `" + _PROBE_NAME + "` | Operator-set | [REDACTED:secret] |",
+        "| `AUDIT_HMAC_" + "KEY` | Operator-set | `TBC, re-verify` |",
+        "| `" + _PROBE_NAME + "` | Operator-set, SECRET | Set in the App Store console |",
+    ],
+)
+def test_the_shapes_that_are_not_credentials_still_ship(clone: Path, line: str) -> None:
+    """The positive controls for the three widened rules, and they earn their place.
+
+    A sweep that refuses these refuses the tree itself: the diagnostics read-out prints
+    `NAME=MISSING(n)` on purpose and a document quotes it, `[REDACTED:type]` is the
+    placeholder the hard rules mandate, `TBC, re-verify` is the unknown marker, and the
+    live parameter table's value column holds prose with spaces in it. Each of these was a
+    real false positive in a measured widening, so each is here rather than trusted.
+    """
+    probe = clone / "docs" / "probe-benign.md"
+    probe.write_text("# notes\n\n" + line + "\n", encoding="utf-8")
+    _commit(clone, "probe: a shape that is not a credential")
+
+    assert _build(clone).returncode == 0, _build(clone).stdout
+
+
 def test_the_redacted_placeholder_still_ships(clone: Path) -> None:
     """The positive control. `[REDACTED:type]` is the form the hard rule mandates.
 
@@ -938,16 +983,42 @@ def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    [".env", ".env.local", ".env.production", ".env.prod", ".env.staging", "secrets.env"],
+    [
+        ".env",
+        ".env.local",
+        ".env.production",
+        ".env.prod",
+        ".env.staging",
+        "secrets.env",
+        # The same family the packaging sweep refuses inside the staged package. The two
+        # controls disagreed: an `audit.key` at the repository root was trackable, and it
+        # is not in the package allowlist, so nothing downstream would ever have seen it.
+        "audit.key",
+        "tls.key",
+        "server.pem",
+        "id_rsa",
+        "cert.p12",
+        "cert.pfx",
+        "keystore.jks",
+        ".netrc",
+        ".pypirc",
+        "secrets.yaml",
+        "secrets.yml",
+        "credentials.json",
+        "client_secret.json",
+    ],
 )
-def test_an_environment_file_cannot_be_tracked(clone: Path, name: str) -> None:
+def test_a_credential_shaped_file_cannot_be_tracked(clone: Path, name: str) -> None:
     """The hard rule covers source and HISTORY, and no hook sees a human `git add`.
 
     The ignore list held a set of suffixes and missed the production spellings, so
     `cp .env.example .env.production`, fill in the client secret, `git add -A` put a live
-    credential in the object database where no later fix can remove it. The packaging
-    sweep does not cover this: the path is not in the package allowlist, so nothing
-    downstream would ever see it.
+    credential in the object database where no later fix can remove it. It then missed the
+    whole key and certificate family, which is worse in one specific way: those names are
+    not in the package allowlist either, so the packaging sweep that refuses them INSIDE a
+    package would never have seen one at the repository root. `docs/DEPLOYMENT.md` tells
+    the operator to generate the audit key with `openssl rand -hex 32`, so redirecting that
+    into a file is the ordinary accident rather than an exotic one, and history is one-way.
     """
     probe = clone / name
     probe.write_text(_PROBE_NAME + "=" + _PROBE_VALUE + "\n", encoding="utf-8")
@@ -1053,6 +1124,50 @@ def test_the_simulation_refuses_rather_than_testing_the_repository(clone: Path) 
             assert message in result.stdout, where + result.stdout
             assert "SIMULATION: PASS" not in result.stdout, where + result.stdout
             assert not (clone / ".venv").exists(), where + "it built an environment in the tree"
+
+
+def test_the_simulation_refuses_when_every_guard_above_it_has_fallen_through(
+    clone: Path,
+) -> None:
+    """The last clause of the location assertion, which the guards above it shadow.
+
+    `[ "$PWD" = "$ROOT" ]` cannot fire while the work-directory and unzip refusals stand:
+    they catch the same fall-through earlier and with a different message. It is not
+    redundant cover, though. It is the ONLY clause that catches a fall-through into the
+    repository, because the repository always has a `requirements.txt` and the second clause
+    therefore cannot fire there, and a reviewer deleting it left all eleven simulation tests
+    green.
+
+    So the probe removes the two guards above it, which is the state the comment beside the
+    assertion describes: `cd ""` returns zero in this shell, the process is still in the
+    repository, the lockfile installs, the whole suite passes, and the script prints
+    `SIMULATION: PASS` for a package that was never unpacked. Rewriting the script under
+    test is what this suite already does for the `set -e` variant; here it is the only way
+    to reach the clause at all.
+    """
+    assert _build(clone).returncode == 0
+    script = clone / "scripts" / "simulate-pipeline.sh"
+    body = script.read_text(encoding="utf-8")
+    fallen_through = body.replace(
+        'WORK="$(mktemp -d)" || { echo "FAIL: no work directory could be created"; exit 1; }',
+        ":",
+        1,
+    ).replace(
+        'unzip -q "$PKG" -d "$WORK" || { echo "FAIL: $PKG did not unpack"; exit 1; }',
+        'unzip -q "$PKG" -d "$WORK" || true',
+        1,
+    )
+    assert fallen_through != body, "the probe no longer matches the script it rewrites"
+    script.write_text(fallen_through.replace("set -eu", "set +e\nset -u", 1), encoding="utf-8")
+    _commit(clone, "probe: every guard above the location assertion removed")
+    assert _build(clone).returncode == 0
+
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "not an unpacked package" in result.stdout, result.stdout
+    assert "SIMULATION: PASS" not in result.stdout, result.stdout
+    assert not (clone / ".venv").exists(), "it built an environment in the repository"
 
 
 def test_the_simulation_fails_when_the_install_fails(clone: Path) -> None:
