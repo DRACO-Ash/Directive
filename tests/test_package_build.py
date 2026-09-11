@@ -236,7 +236,7 @@ def test_a_credential_in_a_filename_is_caught(clone: Path) -> None:
     result = _build(clone)
 
     assert result.returncode != 0, result.stdout
-    assert "in the filename" in result.stdout
+    assert "in a path component" in result.stdout
 
 
 def test_a_second_exemption_is_refused(clone: Path) -> None:
@@ -250,7 +250,7 @@ def test_a_second_exemption_is_refused(clone: Path) -> None:
     result = _build(clone)
 
     assert result.returncode != 0, result.stdout
-    assert "claimed the exemption against" in result.stdout
+    assert "exemptions claimed" in result.stdout
 
 
 def test_a_credential_named_file_is_refused_by_name(clone: Path) -> None:
@@ -288,13 +288,19 @@ def test_an_implausible_version_is_refused(clone: Path) -> None:
 
 
 def test_a_missing_required_file_is_refused(clone: Path) -> None:
-    """The suite reads these from the package root, so a package without one fails stage 5."""
-    _run([_tool("git"), "-C", str(clone), "rm", "--quiet", ".env.example"])
+    """The suite reads these from the package root, so a package without one fails stage 5.
+
+    Removing `.env.example` tripped the earlier allowlist-existence check instead, so this
+    test passed without ever reaching the control it names. `docs/DEPLOYMENT.md` sits inside
+    an allowlisted DIRECTORY, so the directory still exists and the required-file loop is
+    what refuses it.
+    """
+    _run([_tool("git"), "-C", str(clone), "rm", "--quiet", "docs/DEPLOYMENT.md"])
     _commit(clone, "probe: remove a required file")
     result = _build(clone)
 
     assert result.returncode != 0, result.stdout
-    assert ".env.example" in result.stdout
+    assert "the suite reads docs/DEPLOYMENT.md from the package root" in result.stdout
 
 
 def test_the_builder_records_a_digest_beside_the_pointer(clone: Path) -> None:
@@ -347,3 +353,107 @@ def test_the_simulation_refuses_a_tree_with_a_skip_bit_set(clone: Path) -> None:
 
     assert result.returncode != 0, result.stdout
     assert "skip-worktree" in result.stdout
+
+
+def test_one_exempt_line_cannot_suppress_several_credentials(clone: Path) -> None:
+    """The budget counted LINES, so one exempt line bought an unbounded number of secrets.
+
+    A tuple of three credentials on the one permitted line shipped an AWS key, an LLM
+    provider key and a GitLab token while the banner still read one exemption honoured.
+    """
+    suite = clone / "tests" / "test_entra_sign_in.py"
+    second = "sk-" + "a" * 24
+    suite.write_text(
+        suite.read_text(encoding="utf-8")
+        + f'\nLEAK = ({PROBE_CREDENTIAL!r}, "{second}")  # noqa: S105\n',
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: several credentials on one exempt line")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "exemptions claimed" in result.stdout
+
+
+def test_the_exemption_cannot_be_relocated_to_another_test_module(clone: Path) -> None:
+    """The budget was a total, so it could be spent anywhere under `tests/`.
+
+    Shortening the legitimate double until it no longer matched and adding a marked
+    credential elsewhere kept the total at one, and the build output was byte-identical to
+    a clean build. The allowance names the path now.
+    """
+    nested = clone / "tests" / "nested"
+    nested.mkdir()
+    (nested / "probe.py").write_text(f"{PROBE_CREDENTIAL}  # nosec\n", encoding="utf-8")
+    _commit(clone, "probe: exemption relocated")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "outside the allowed paths" in result.stdout
+
+
+def test_a_credential_in_a_directory_name_is_caught(clone: Path) -> None:
+    """The scan saw the leaf only, so a token in a directory component shipped."""
+    token = "glpat-" + "a" * 21
+    nested = clone / "docs" / token
+    nested.mkdir()
+    (nested / "notes.md").write_text("notes\n", encoding="utf-8")
+    _commit(clone, "probe: credential in a directory name")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "in a path component" in result.stdout
+
+
+def test_a_dirty_tree_stamps_the_package(clone: Path) -> None:
+    """The stamp is the artefact's own declaration that it does not match the tree."""
+    (clone / "src" / "complyops" / "records.py").write_text("# edited\n", encoding="utf-8")
+    result = _build(clone)
+
+    assert result.returncode == 0, result.stdout
+    assert "-dirty.zip" in result.stdout
+
+
+def test_a_failed_build_leaves_no_pointer(clone: Path) -> None:
+    """The pointer is invalidated BEFORE the build, not only written after a good one.
+
+    Written only on success and never cleared, it survived a failure and pointed at the
+    previous commit's package, which the simulation would then have tested and passed.
+    """
+    assert _build(clone).returncode == 0
+    (clone / "src" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    _commit(clone, "probe: make the build fail")
+    assert _build(clone).returncode != 0
+
+    assert not (clone / "dist" / "latest").exists()
+
+
+def test_the_simulation_refuses_a_dirty_stamped_package(clone: Path) -> None:
+    """A package built from a dirty tree is stale the moment anything changes again."""
+    (clone / "src" / "complyops" / "records.py").write_text("# edited\n", encoding="utf-8")
+    assert _build(clone).returncode == 0
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "built from a dirty tree" in result.stdout
+
+
+def test_the_simulation_refuses_a_package_from_another_commit(clone: Path) -> None:
+    """The filename carries the commit, and the tree under test must be that commit."""
+    assert _build(clone).returncode == 0
+    (clone / "docs" / "later.md").write_text("later\n", encoding="utf-8")
+    _commit(clone, "probe: move the tree on")
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "not built from the current commit" in result.stdout
+
+
+def test_the_simulation_refuses_a_tree_edited_after_the_build(clone: Path) -> None:
+    """Commit granularity alone admitted a package built before an uncommitted edit."""
+    assert _build(clone).returncode == 0
+    (clone / "src" / "complyops" / "records.py").write_text("# gutted\n", encoding="utf-8")
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "working tree has changed" in result.stdout
