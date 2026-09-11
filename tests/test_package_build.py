@@ -21,6 +21,7 @@ import signal
 import subprocess
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,11 @@ ROOT = Path(__file__).resolve().parents[1]
 #: purpose, and spending it here to test the sweep would blunt the control being tested.
 _PROBE_NAME = "CLIENT_" + "SECRET"
 PROBE_CREDENTIAL = _PROBE_NAME + "=" + chr(34) + "hunter2-a-real-looking-secret" + chr(34)
+
+#: The same probe without quotes, which is how every secret this application consumes is
+#: actually written. One token and no spaces, because that is what separates a credential
+#: from the prose the live parameter table holds.
+_PROBE_VALUE = "Abc8QkPz3nR9wLmT2xV6yH1jF4dS7gB0"
 
 
 def _tool(name: str) -> str:
@@ -80,6 +86,12 @@ def _clone(tmp_path: Path) -> Path:
     # shape of the gap they were written to close.
     for script in sorted((ROOT / "scripts").glob("*.sh")):
         shutil.copy2(script, work / "scripts" / script.name)
+    # `.gitignore` for the same reason. It is a control in its own right here: it is the
+    # only thing standing between `cp .env.example .env.production` and a live credential
+    # in the object database, and `git check-ignore` reads the working tree's copy, so
+    # without this sync the ignore tests below would score the committed version and an
+    # edit that reopened the hole would pass.
+    shutil.copy2(ROOT / ".gitignore", work / ".gitignore")
     # Only when the copy actually changed something. With the scripts already committed the
     # sync is a no-op, and `git commit` exits non-zero on an empty one.
     if _run([git, "-C", str(work), "status", "--porcelain"]).stdout.strip():
@@ -818,6 +830,75 @@ def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -
     assert "Unquoted environment-file credential" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("shape", "line", "expected"),
+    [
+        (
+            "a container image directive",
+            "ENV " + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Unquoted environment-file credential",
+        ),
+        (
+            "a build argument",
+            "ARG " + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Unquoted environment-file credential",
+        ),
+        (
+            "an indented compose flag",
+            "    -e " + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Unquoted environment-file credential",
+        ),
+        (
+            "a list item in prose",
+            "\u25cf " + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Unquoted environment-file credential",
+        ),
+        (
+            "a parameter table row",
+            "| `" + _PROBE_NAME + "` | " + _PROBE_VALUE + " |",
+            "Credential in a document table row",
+        ),
+    ],
+)
+def test_a_credential_is_refused_wherever_the_line_starts(
+    clone: Path, shape: str, line: str, expected: str
+) -> None:
+    """The rule was anchored to the start of the line, and nothing real starts there.
+
+    A runbook writes the credential behind `ENV`, `ARG`, `-e` or a bullet, and a parameter
+    table writes it between pipes. Every shape below is one a careless human produces in a
+    document that ships, which is the honest-committer case the sweep exists for. The
+    prefix set was measured at zero false positives across every tracked file, and so was
+    the table rule against the four live rows of the deployment parameter table.
+    """
+    probe = clone / "docs" / "probe-shape.md"
+    probe.write_text("# notes\n\n" + line + "\n", encoding="utf-8")
+    _commit(clone, "probe: " + shape)
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert expected in result.stdout, result.stdout
+
+
+def test_a_credential_below_the_first_line_of_a_utf16_file_is_refused(clone: Path) -> None:
+    """The NUL-stripped pass is a WHOLE-FILE match, so the anchored rules need MULTILINE.
+
+    Without it `^` matches at offset zero only, which made both anchored rules dead in
+    exactly the pass that exists to see a UTF-16 credential: the probe below shipped. The
+    credential sits on the third line on purpose, because a first-line probe passes with
+    the flag missing and reports the control as held when it is not.
+    """
+    probe = clone / "docs" / "probe-utf16-line-three.md"
+    body = "notes\n\n" + _PROBE_NAME + "=" + _PROBE_VALUE + "\n"
+    probe.write_bytes(body.encode("utf-16-le"))
+    _commit(clone, "probe: utf-16 credential below line one")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "Unquoted environment-file credential" in result.stdout, result.stdout
+    assert "NUL-separated" in result.stdout, result.stdout
+
+
 def test_the_redacted_placeholder_still_ships(clone: Path) -> None:
     """The positive control. `[REDACTED:type]` is the form the hard rule mandates.
 
@@ -855,6 +936,44 @@ def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
     assert not (clone / "dist" / "latest").exists(), "a pointer was left over a finding"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [".env", ".env.local", ".env.production", ".env.prod", ".env.staging", "secrets.env"],
+)
+def test_an_environment_file_cannot_be_tracked(clone: Path, name: str) -> None:
+    """The hard rule covers source and HISTORY, and no hook sees a human `git add`.
+
+    The ignore list held a set of suffixes and missed the production spellings, so
+    `cp .env.example .env.production`, fill in the client secret, `git add -A` put a live
+    credential in the object database where no later fix can remove it. The packaging
+    sweep does not cover this: the path is not in the package allowlist, so nothing
+    downstream would ever see it.
+    """
+    probe = clone / name
+    probe.write_text(_PROBE_NAME + "=" + _PROBE_VALUE + "\n", encoding="utf-8")
+    ignored = _run([_tool("git"), "-C", str(clone), "check-ignore", "-q", name])
+
+    assert ignored.returncode == 0, name + " can be committed by an ordinary git add"
+
+
+def test_the_example_environment_file_is_still_trackable(clone: Path) -> None:
+    """The positive control, because `.env.*` would otherwise untrack the one file needed.
+
+    `.env.example` holds placeholders, ships at the package root and the suite reads it
+    there. An ignore rule that swallowed it would be found only at the next build.
+    """
+    git = _tool("git")
+    listed = _run([git, "-C", str(clone), "ls-files", "--error-unmatch", ".env.example"])
+    # `--no-index` because `git check-ignore` reports a TRACKED path as not ignored whatever
+    # the rules say, so without it this assertion passes on the strength of the file already
+    # being committed and says nothing about the rule. That is the shape of an assertion
+    # satisfied by a different control, and it survived its first mutation here.
+    matched = _run([git, "-C", str(clone), "check-ignore", "-q", "--no-index", ".env.example"])
+
+    assert listed.returncode == 0, listed.stderr
+    assert matched.returncode != 0, "the ignore rules swallow .env.example, which must ship"
+
+
 def test_the_exempt_env_example_name_is_the_only_one_exempt(clone: Path) -> None:
     """The filename sweep exempts one name; widening it lets a whole family ship.
 
@@ -862,44 +981,78 @@ def test_the_exempt_env_example_name_is_the_only_one_exempt(clone: Path) -> None
     that to `.env*` kept all of the packaging tests green and let `docs/.env.production`
     into the package, which is the control-held-by-no-test pattern this suite exists to
     close. The probe file holds placeholders only: what is refused is the NAME.
+
+    The probe is force-added because `.gitignore` now refuses the name first. That is two
+    controls on one path rather than a redundancy: the ignore rule stops the ordinary
+    accident and cannot stop a `git add -f` or an edited ignore file, and the packaging
+    sweep is the backstop that decides what actually ships.
     """
     assert _build(clone).returncode == 0
+    before = sorted((clone / "dist").glob("*.zip"))
     probe = clone / "docs" / ".env.production"
     probe.write_text(_PROBE_NAME + "=" + "[REDACTED:secret]\n", encoding="utf-8")
+    forced = _run([_tool("git"), "-C", str(clone), "add", "-f", str(probe)])
+    assert forced.returncode == 0, forced.stderr
     _commit(clone, "probe: a production environment file under docs")
 
     refused = _build(clone)
     assert refused.returncode != 0, refused.stdout
     assert "docs/.env.production" in refused.stdout, refused.stdout
-    assert not list((clone / "dist").glob("*.zip")), "a package shipped with the probe in it"
+    # The baseline build above legitimately wrote a package, so the assertion is that NO
+    # NEW one appeared rather than that the directory is empty.
+    assert sorted((clone / "dist").glob("*.zip")) == before, "a package shipped with the probe"
 
 
-@pytest.mark.timeout(SIMULATION_TIMEOUT_SECONDS)
 def test_the_simulation_refuses_rather_than_testing_the_repository(clone: Path) -> None:
-    """The one fall-through that returns a FALSE pass rather than a failure.
+    """The one class of fall-through that returns a FALSE pass rather than a failure.
 
     If the work directory is never created, every later line runs in the repository, where
     the lockfile installs and the whole suite passes: `SIMULATION: PASS` for a package that
-    was never unpacked. The probe makes `mktemp -d` fail by pointing `TMPDIR` at a path
-    that does not exist. It is asserted twice: once as the script ships, and once with
-    `set -e` removed, because `set -e` alone hid the absence of a guard here and a later
-    edit dropping the option must not quietly reopen it.
+    was never unpacked. `cd ""` returns zero in this shell and stays put, so the `cd` alone
+    catches nothing. Each of the three guards is asserted BY ITS OWN MESSAGE, because a
+    bare non-zero exit is satisfied by whichever guard happens to fire first and that is
+    how three of this project's controls came to be held by a test of a different control.
+
+    Each probe is also run with `set -e` removed. The option is what hid the absence of
+    these guards, and a later edit dropping it must not quietly reopen the hole.
     """
     assert _build(clone).returncode == 0
-    environment = dict(os.environ, TMPDIR=str(clone / "no-such-directory"))
-    simulation = [_tool("sh"), "scripts/simulate-pipeline.sh"]
+    broken_tmpdir = dict(os.environ, TMPDIR=str(clone / "no-such-directory"))
 
-    for label in ("as shipped", "with set -e removed"):
-        if label != "as shipped":
-            script = clone / "scripts" / "simulate-pipeline.sh"
-            body = script.read_text(encoding="utf-8")
-            assert "set -eu" in body
-            script.write_text(body.replace("set -eu", "set +e\nset -u", 1), encoding="utf-8")
+    not_a_zip = clone.parent / "not-a-package.zip"
+    not_a_zip.write_text("this is not an archive\n", encoding="utf-8")
 
-        result = _run(simulation, cwd=clone, env=environment)
-        assert result.returncode != 0, label + ": " + result.stdout
-        assert "SIMULATION: PASS" not in result.stdout, label
-        assert not (clone / ".venv").exists(), label + ": it built an environment in the tree"
+    wrong_contents = clone.parent / "wrong-contents.zip"
+    with zipfile.ZipFile(wrong_contents, "w") as archive:
+        archive.writestr("readme.txt", "no lockfile at the root of this one\n")
+
+    probes = [
+        ("no work directory", None, broken_tmpdir, "no work directory could be created"),
+        ("an unreadable archive", not_a_zip, None, "did not unpack"),
+        ("an archive that is not a package", wrong_contents, None, "not an unpacked package"),
+    ]
+    script = clone / "scripts" / "simulate-pipeline.sh"
+    shipped = script.read_text(encoding="utf-8")
+    assert "set -eu" in shipped
+
+    for option in ("as shipped", "with set -e removed"):
+        if option != "as shipped":
+            # Committed and rebuilt, not just written: the pointer path refuses a dirty
+            # tree, which is itself one of the controls this suite holds elsewhere.
+            script.write_text(shipped.replace("set -eu", "set +e\nset -u", 1), encoding="utf-8")
+            _commit(clone, "probe: the simulation without set -e")
+            assert _build(clone).returncode == 0
+        for label, package, environment, message in probes:
+            argv = [_tool("sh"), "scripts/simulate-pipeline.sh"]
+            if package is not None:
+                argv.append(str(package))
+            result = _run(argv, cwd=clone, env=environment)
+            where = option + ", " + label + ": "
+
+            assert result.returncode != 0, where + result.stdout
+            assert message in result.stdout, where + result.stdout
+            assert "SIMULATION: PASS" not in result.stdout, where + result.stdout
+            assert not (clone / ".venv").exists(), where + "it built an environment in the tree"
 
 
 def test_the_simulation_fails_when_the_install_fails(clone: Path) -> None:
