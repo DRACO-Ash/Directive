@@ -13,9 +13,11 @@ reimplementation of it in Python would pin the reimplementation.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -544,3 +546,66 @@ def test_the_pointer_is_never_a_symlink_after_a_build(clone: Path) -> None:
     for name in ("latest", "latest.sha256"):
         assert not (clone / "dist" / name).is_symlink(), name
     assert not list((clone / "dist").glob(".latest.??????")), "the private directory leaked"
+
+
+def test_a_planted_symlink_cannot_redirect_a_build_write(clone: Path) -> None:
+    """The race controls were shipped unheld three releases running, and each was undone.
+
+    A build with no adversary present asserts a property the BROKEN version also satisfies,
+    which is why reverting the pointer fix left every test green. This plants the symlink
+    from a racer thread against every predictable name in `dist/`, and asserts the file
+    outside the repository is byte-intact afterwards.
+    """
+    victim = clone.parent / "outside-the-repository"
+    victim.write_text("untouched\n", encoding="utf-8")
+    targets = ["latest", "latest.sha256", ".stage.manifest", ".stage"]
+    stop = threading.Event()
+
+    def plant() -> None:
+        while not stop.is_set():
+            for name in targets:
+                path = clone / "dist" / name
+                with contextlib.suppress(OSError):
+                    if not path.is_symlink():
+                        path.symlink_to(victim)
+
+    (clone / "dist").mkdir(exist_ok=True)
+    racer = threading.Thread(target=plant, daemon=True)
+    racer.start()
+    try:
+        _build(clone)
+    finally:
+        stop.set()
+        racer.join(timeout=5)
+
+    assert victim.read_text(encoding="utf-8") == "untouched\n", "a build write followed a symlink"
+
+
+def test_one_credential_shape_repeated_spends_the_whole_budget(clone: Path) -> None:
+    """The count must come from the MATCHES, not from the rule labels or the digest.
+
+    Reverting `sum(len(rule.findall(line)) ...)` to `+= 1` left the suite green, because the
+    test that named this control was satisfied by the digest pin instead. This one asserts
+    the count message specifically.
+    """
+    suite = clone / "tests" / "test_entra_sign_in.py"
+    text = suite.read_text(encoding="utf-8")
+    extra = f"; A = {PROBE_CREDENTIAL!r}; B = {PROBE_CREDENTIAL!r}"
+    suite.write_text(text.replace("  # noqa: S105", f"{extra}  # noqa: S105", 1), encoding="utf-8")
+    _commit(clone, "probe: repeated credential shape")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "exemptions claimed" in result.stdout, "the count, not the digest, must catch this"
+
+
+def test_the_simulation_asserts_the_coverage_artefact(clone: Path) -> None:
+    """The quality gate reads `coverage.xml` at exactly that path.
+
+    A suite that passes without writing it still fails stage 6.
+    """
+    assert _build(clone).returncode == 0
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode == 0, result.stdout
+    assert "coverage.xml:" in result.stdout

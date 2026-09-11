@@ -26,8 +26,24 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, third run | `e0095df` | **FAIL** | Four MAJORs. `git archive` honours `.gitattributes` and host conversion config, so `export-ignore` deleted a security control's test from the package with the build green; the credential sweep skipped anything it could not decode; `skip-worktree` reports uppercase and the guard matched lower case only; and no test held any of it. |
 | 2026-09-11 | `security-reviewer`, fourth run | `533fa5c` | **FAIL** | Three MAJORs. The exemption matched `tests` anywhere in the absolute path; UTF-16 carried a plain credential through the sweep; twenty-one controls survived deletion with the suite green. |
 | 2026-09-11 | `security-reviewer`, fifth run | `496f312` | **FAIL** | Three MAJORs. The pointer temporary race was still open at the `mv`; the exemption budget counted lines rather than matches or paths; and the coverage claim written for the previous MAJOR was itself false. |
-| 2026-09-11 | `security-reviewer`, sixth run | `102df44` | **FAIL** | Five MAJORs. The pointer race survived `mktemp` because the shell re-opens the name; the exemption budget counted rule labels rather than credentials, so three secrets of one shape spent a budget of one; the simulation's central red-suite guard was held by no test; and the coverage claim written for the previous MAJOR over-claimed again, the sixth document in that class. |
+| 2026-09-11 | `security-reviewer`, sixth run | `102df44` | **FAIL** | Four MAJORs and a MINOR set. The pointer race survived `mktemp` because the shell re-opens the name; the exemption budget counted rule labels rather than credentials, so three secrets of one shape spent a budget of one; the simulation's central red-suite guard was held by no test; and the coverage claim written for the previous MAJOR over-claimed again, the sixth document in that class. |
+| 2026-09-11 | `security-reviewer`, seventh run | `ab16c1b` | **FAIL** | Four MAJORs. The manifest write was a fourth predictable name in `dist/` and fell to the same symlink race on the first attempt; the pointer fix and the exemption match count were both held by no test, so reverting either left the suite green; and two shipped documents over-claimed, one asserting a deletion matrix that did not exist. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
+
+## Deletion matrix
+
+What the security gate measured when it deleted each control in `scripts/build-package.sh`
+and `scripts/simulate-pipeline.sh` in turn and re-ran the packaging suite. A control that
+survives deletion is one the next edit can silently undo, which is how the pointer race was
+defeated three releases running. This table is the authoritative record; `docs/DEPLOYMENT.md`
+points here rather than restating a figure, because restating it has been wrong three times.
+
+| Run | Commit | Probed | Caught | Survivors that mattered |
+| --- | --- | --- | --- | --- |
+| Fourth | `533fa5c` | ~19 | 8 | Eleven build controls and both simulation guards, including three the same release had just added. |
+| Sixth | `102df44` | 44 | 26 | The pointer `mktemp` fix, the simulation's red-suite guard, the coverage artefact assertion, the extra-file check. |
+| Seventh | `ab16c1b` | 40 | 26 | The pointer private directory, the exemption match count, the coverage artefact guard, the `find -type l` refusal. |
+| Eighth | `TBC, re-verify` | | | Tests were added for the pointer race, the match count and the coverage artefact after the seventh run; the matrix has not been re-run since. |
 
 ## V2.1
 
