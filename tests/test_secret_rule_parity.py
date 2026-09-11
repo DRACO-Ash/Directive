@@ -17,7 +17,6 @@ character, including the flags.
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 import shutil
@@ -25,6 +24,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from sweep_rules import load_case_sensitive, load_rules
 
 ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts" / "build-package.sh"
@@ -59,21 +60,17 @@ def _unescape_quotes(pattern: str) -> str:
 
 
 def _sweep_rules() -> tuple[list[tuple[str, str, str]], set[str]]:
-    """Read the sweep's RULES literal and its case-sensitive set out of the shell script."""
-    source = SWEEP.read_text(encoding="utf-8")
-    marker = "]\n#: The rules that must NOT fold case"
-    literal = source[source.index("RULES = [") + len("RULES = ") : source.index(marker) + 1]
-    rules: list[tuple[str, str]] = ast.literal_eval(literal)
+    """Return the sweep's rules as triples, through the one shared reader.
 
-    case_sensitive_block = source[source.index("CASE_SENSITIVE = {") :]
-    case_sensitive = ast.literal_eval(
-        case_sensitive_block[len("CASE_SENSITIVE = ") : case_sensitive_block.index("}") + 1]
-    )
+    The parsing lives in `tests/sweep_rules.py` because three modules need it and a second
+    copy of a parser is the same defect as a second copy of a rule list.
+    """
+    case_sensitive = load_case_sensitive()
     triples = [
         (label, _unescape_quotes(pattern), "m" if label in case_sensitive else "im")
-        for label, pattern in rules
+        for label, pattern in load_rules().items()
     ]
-    return triples, set(case_sensitive)
+    return triples, case_sensitive
 
 
 def _hook_rules() -> list[tuple[str, str, str]]:
@@ -185,31 +182,57 @@ PROBES = {
 }
 
 
-#: Every field a write can carry its new content in, and the tool that carries it. A hook
-#: that reads only the first of these is blind to every `Edit` and `MultiEdit`, which is the
-#: majority of writes to the very files these rules exist for, and every probe below went
-#: through `content` alone until a reviewer cut the other three and left the suite green.
+#: Every field a write can carry new content in, for each of the four tools the hook is
+#: registered for. A hook that reads only the first of these is blind to every `Edit` and
+#: `MultiEdit`, which is the majority of writes to the very files these rules exist for, and
+#: every probe below went through `content` alone until a reviewer cut the other three and
+#: left the suite green. Scoped to the registered tools deliberately: the claim is not that
+#: no other tool can write, it is that these four are registered and all four are read.
 PAYLOAD_SHAPES = {
     "Write, content": ("Write", lambda probe: {"content": probe}),
     "Edit, new_string": ("Edit", lambda probe: {"new_string": probe}),
     "Write, file_text": ("Write", lambda probe: {"file_text": probe}),
     "MultiEdit, edits": ("MultiEdit", lambda probe: {"edits": [{"new_string": probe}]}),
+    "NotebookEdit, new_source": ("NotebookEdit", lambda probe: {"new_source": probe}),
 }
+
+#: Paths a write can be aimed at, including the two the rules exist for. The hook must not
+#: care: a `file_path` carve-out exempting `.env` was demonstrated to pass every test while
+#: letting a client secret into `.env.production`, which `CLAUDE.md` names as the accident
+#: this repository will actually have.
+PROBE_PATHS = [
+    ".env",
+    ".env.production",
+    "docs/DEPLOYMENT.md",
+    "src/complyops/auth.py",
+    "/tmp/scratch.txt",  # noqa: S108
+]
+
+#: Enough benign text to sit in front of a credential that a length bound would truncate.
+#: A `.slice(0, 400)` on the joined content passed every test, because every probe is one
+#: short line.
+FILLER = ("This paragraph is ordinary prose carrying no credential of any kind. " * 128)[:8192]
 
 #: The matcher both registration files must carry. A hook that is correct and unregistered
 #: for `Edit` is a hook that never runs on an edit, which is the same outcome as a hook that
 #: cannot read `new_string`, and neither file ships so nothing else would notice.
-REQUIRED_MATCHER = "Write|Edit|MultiEdit"
+REQUIRED_MATCHER = "Write|Edit|MultiEdit|NotebookEdit"
 REGISTRATIONS = (
     ROOT / ".claude" / "settings.json",
     ROOT / ".claude" / "hooks" / "hooks.json",
 )
 
 
-def _hook_verdict(content: str, shape: str = "Write, content") -> subprocess.CompletedProcess[str]:
+def _hook_verdict(
+    content: str,
+    shape: str = "Write, content",
+    file_path: str = "docs/notes.md",
+) -> subprocess.CompletedProcess[str]:
     """Run the hook exactly as Claude Code runs it: a JSON payload on standard input."""
     tool, build = PAYLOAD_SHAPES[shape]
-    payload = json.dumps({"tool_name": tool, "tool_input": build(content)})
+    written = build(content)
+    written["file_path"] = file_path
+    payload = json.dumps({"tool_name": tool, "tool_input": written})
     node = shutil.which("node")
     # NOT a skip. The module already established that this is the developer tree rather than
     # the unpacked package, and in the developer tree `node` is the hook's own prerequisite:
@@ -246,6 +269,35 @@ def test_the_hook_reads_every_field_a_write_can_carry(shape: str) -> None:
     assert "Unquoted environment-file credential" in blocked.stderr, blocked.stderr
 
 
+@pytest.mark.parametrize("path", PROBE_PATHS)
+def test_the_hook_does_not_care_which_file_is_being_written(path: str) -> None:
+    """WHAT the rules see, which is a third control again, and was defeated third.
+
+    A single line exempting a `file_path` matching `.env` passed all twenty-seven tests
+    while letting a client secret into `.env.production`. Every probe carried no path at
+    all, so no carve-out on one was visible. `.env.example` is the file the rules exist for
+    and the package is required to ship, so it is the worst possible blind spot.
+    """
+    blocked = _hook_verdict(PROBES["Unquoted environment-file credential"], file_path=path)
+
+    assert blocked.returncode == 2, f"a write to {path} was not scanned"
+    assert "Unquoted environment-file credential" in blocked.stderr, blocked.stderr
+
+
+def test_the_hook_reads_past_the_start_of_a_long_write() -> None:
+    """A `.slice(0, 400)` on the joined content passed every test, for the same reason.
+
+    Every probe is one short line, so no length bound was visible to any of them. Eight
+    kilobytes of benign filler goes in front of the credential here, which is a realistic
+    size for the documents these rules actually guard.
+    """
+    probe = FILLER + "\n" + PROBES["Unquoted environment-file credential"]
+    blocked = _hook_verdict(probe)
+
+    assert blocked.returncode == 2, "a credential 8 KB into a write was not scanned"
+    assert "Unquoted environment-file credential" in blocked.stderr, blocked.stderr
+
+
 @pytest.mark.parametrize("registration", REGISTRATIONS)
 def test_the_hook_is_registered_for_every_write_tool(registration: Path) -> None:
     """A hook unregistered for `Edit` is a hook that never runs on an edit.
@@ -253,8 +305,10 @@ def test_the_hook_is_registered_for_every_write_tool(registration: Path) -> None
     Neither registration file ships in the package, and nothing else in the suite reads
     them, so deleting `Edit|MultiEdit` from either matcher was green.
     """
-    if not registration.is_file():
-        pytest.skip(f"{registration.name} is not present in this tree")
+    # NOT a skip, for the reason given at `_hook_verdict`: the module has already
+    # established this is the developer tree, and a missing registration file IS the
+    # control missing. Skipping here left deleting the file outright green.
+    assert registration.is_file(), f"{registration.name} is missing, so the hook is unregistered"
     declared = json.loads(registration.read_text(encoding="utf-8"))
 
     matchers = [
@@ -265,6 +319,37 @@ def test_the_hook_is_registered_for_every_write_tool(registration: Path) -> None
 
     assert matchers, f"{registration.name} does not register the secret scan at all"
     assert all(matcher == REQUIRED_MATCHER for matcher in matchers), matchers
+
+
+@pytest.mark.parametrize("registration", REGISTRATIONS)
+def test_the_registration_points_at_a_hook_that_exists(registration: Path) -> None:
+    """The matcher is pinned; the TARGET was not, and a substring satisfied it.
+
+    Renaming the command in both files to `hooks/secret-scan.disabled.mjs`, a file that does
+    not exist, left every test green and the hook dead on every write, because the check was
+    `"secret-scan" in command`. The path is resolved here and asserted to be this module's
+    own `HOOK`, so the hook that is executed by the tests above and the hook that is
+    registered are the same file by construction.
+    """
+    declared = json.loads(registration.read_text(encoding="utf-8"))
+    commands = [
+        hook.get("command", "")
+        for entry in declared.get("hooks", declared).get("PreToolUse", [])
+        for hook in entry.get("hooks", [])
+        if "secret-scan" in hook.get("command", "")
+    ]
+
+    assert commands, f"{registration.name} does not register the secret scan at all"
+    for command in commands:
+        quoted = re.findall(r'"([^"]+)"', command)
+        assert quoted, f"no path could be read out of {command!r}"
+        # Both files reach the same file by different roots: `$CLAUDE_PROJECT_DIR` is the
+        # repository and `${CLAUDE_PLUGIN_ROOT}` is `.claude`. Only the tail is compared,
+        # because the roots are the host's to define and the file is ours.
+        target = ROOT / ".claude" / quoted[-1].split("/hooks/", 1)[-1].join(("hooks/", ""))
+
+        assert target.is_file(), f"{registration.name} registers {target}, which does not exist"
+        assert target.resolve() == HOOK.resolve(), f"{registration.name} registers {target}"
 
 
 @pytest.mark.parametrize("label", sorted(PROBES))

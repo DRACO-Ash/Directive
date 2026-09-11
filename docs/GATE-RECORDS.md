@@ -36,7 +36,9 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `engineering-reviewer`, sixth pass | `5e28df4` | **FAIL** | Three MAJORs, one shared with the run above. The `$PWD` clause of the simulation's location assertion was held by no test: the guards above it fire first with a different message, and deleting it left all eleven simulation tests green. And two rule sets were duplicated across two runtimes with no parity test, in a delta whose own comment records that they had diverged. |
 | 2026-09-11 | `security-reviewer`, thirteenth run | `6d9394f` | **FAIL** | Four MAJORs. The hook's BEHAVIOUR was held by no test: leaving its rule array untouched and iterating only its first element stopped twelve of thirteen rules blocking with every parity test green, because the parity test compares rule text and nothing executed the hook. `ssh-keygen -t ed25519` writes an extensionless file that neither `*.pem` nor `*.key` matches, so an OpenSSH private key was still trackable. And two figures in shipped documents were not supported: 23 keyword arguments against 19 measured, and 156 tracked files against 157. |
 | 2026-09-11 | `security-reviewer`, fourteenth run | `72ab2d0` | **FAIL** | Three MAJORs. The hook was blinded again, this time by narrowing WHAT it reads rather than which rules it runs: every probe reached it through `tool_input.content`, so cutting `new_string`, `file_text` and the `edits` loop left all twenty-one tests green while every `Edit` and `MultiEdit` write stopped being scanned. Eight of the eleven filename patterns could be deleted with the suite green, because one test probed one name. And two cost figures in shipped files were unsupported. |
-| 2026-09-11 | `engineering-reviewer`, seventh pass | `72ab2d0` | **FAIL** | Three MAJORs, all three shared with the run above or its consequence: the five filename patterns added in that delta were held by no test; "eleven of twelve rules" was twelve of thirteen; and the `key_id=` cost figure read 12 where 9 is measurable. It also confirmed the hook-execution tests hold the rule set, and that the two former skips cannot flake. |
+| 2026-09-11 | `engineering-reviewer`, seventh pass | `72ab2d0` | **FAIL** | Three MAJORs, all three shared with the run above or its consequence: the five filename patterns added in that delta were held by no test; "eleven of twelve rules" was twelve of thirteen; and the leading-part cost figure read 12 where 9 findings in `src/` is measurable, eight of them `key_id=`. It also confirmed the hook-execution tests hold the rule set, and that the two former skips cannot flake. |
+| 2026-09-11 | `security-reviewer`, fifteenth run | `1bdbdb8` | **FAIL** | Three MAJORs. The hook was defeated a THIRD way, by a dimension the previous two rounds did not cover: what the rules see. A one-line `file_path` carve-out exempting `.env` passed all twenty-seven tests while letting a client secret into `.env.production`, and a `.slice(0, 400)` let a credential past 400 bytes into any document, because every probe was a short single line with no path. The registration test asserted the substring `secret-scan`, so pointing both files at a hook that does not exist was green. And a fourth cost figure was stale in two shipped documents and in the sweep, which contradicted itself about one experiment 154 lines apart. |
+| 2026-09-11 | `engineering-reviewer`, eighth pass | `1bdbdb8` | **FAIL** | Four MAJORs, three of them created by the delta under review. A count written stale in the commit that grew the list it counted; the same fourth figure; the filename mirror drifting in the ADD direction, where a pattern with no probe was green; and a `pytest.skip` reintroduced forty lines below the comment condemning the one it removed. It confirmed by mutation that the sweep, the hook's reach and the rule set are all genuinely held. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -76,15 +78,23 @@ credential-shaped token in any cell of a document table row whose name cell carr
 these names. The keyword may be followed by more of the name, so `CLIENT_SECRET_V2=` is
 caught. Case is folded everywhere except the prose rule.
 
+Every figure below is pinned by `tests/test_sweep_cost_figures.py`, which re-runs each
+experiment against the live rules and the live tree. Prose cannot hold a number: four of
+these went stale, one of them written stale in the commit that measured it, and one file
+contradicted itself about one experiment 154 lines apart. If a figure here disagrees with
+that test, the test is right and this section is out of date.
+
 **What it does not, and why each is left open.**
 
 ● `NAME = value` with spaces around the equals. Measured rather than assumed: allowing them
-  flags sixteen ordinary Python constants in this tree, so the rule would fire on every
-  build and be switched off within a week. The cost of closing it is a rule nobody keeps.
+  gives 22 findings on 22 lines across all 157 tracked files at `1bdbdb8`, so the rule would
+  fire on every build and be switched off within a week. The experiment is to replace `=`
+  with `[ \t]*=[ \t]*` in that rule alone and scan every tracked file. The cost of closing
+  it is a rule nobody keeps.
 ● A `name: value` mapping in YAML or JavaScript Object Notation (JSON), unquoted.
 ● A LOWER case name mid-line, such as `set client_secret=<value> in the console`. The prose
   rule is the one rule that does not fold case. Folding it gives 26 matches on 18 lines
-  across all 157 tracked files, measured at `72ab2d0`: 19 Python keyword arguments
+  across all 157 tracked files, measured at `1bdbdb8`: 19 Python keyword arguments
   (`outgoing_key=`, `sort_keys=`) and 7 `sonar.projectKey=` lines in the skill templates,
   the latter admitted by the preceding-character widening made in the same commit. The
   anchored rule and the table rule both fold, so a lower-case name is caught in those two
@@ -95,7 +105,7 @@ caught. Case is folded everywhere except the prose rule.
 ● A name that BEGINS with one of the keywords, such as `SECRET_FOR_ENTRA=<value>`. The name
   must contain one of these words and have at least one character before it. Making that
   leading part optional gives 14 findings across the tracked tree, 9 of them in `src/`
-  (eight `key_id=` and one `keys=`), at `72ab2d0`. Left open at a measured price rather
+  (eight `key_id=` and one `keys=`), at `1bdbdb8`. Left open at a measured price rather
   than bought.
 ● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it, in EITHER case, is skipped
   whole, because the rule folds case. That is a

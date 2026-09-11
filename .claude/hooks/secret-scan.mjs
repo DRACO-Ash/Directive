@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// secret-scan.mjs :: PreToolUse guardrail for Write|Edit|MultiEdit.
+// secret-scan.mjs :: PreToolUse guardrail for Write|Edit|MultiEdit|NotebookEdit.
 // Reads the hook payload on stdin, scans the content being written for credential
 // patterns and for banned anti-patterns (client-side access gate; Dockerfile ENV PORT),
 // and BLOCKS the write (exit code 2) if any match. Deterministic: same input, same verdict.
@@ -16,8 +16,13 @@ let payload = {};
 try { payload = JSON.parse(raw || '{}'); } catch { process.exit(0); }
 
 const ti = payload.tool_input || {};
-// Collect every string that could carry new content across Write/Edit/MultiEdit.
-const parts = [ti.content, ti.new_string, ti.file_text];
+// Collect every string that could carry new content across the four registered tools.
+// WHICH fields are read is a control in its own right, separate from what the rules are:
+// narrowing this array to `ti.content` alone blinded the hook to every Edit and MultiEdit
+// with the whole suite green. `tests/test_secret_rule_parity.py` drives one payload per
+// shape, and also per file path and at length, because a path carve-out and a `.slice()`
+// were each demonstrated to pass unnoticed.
+const parts = [ti.content, ti.new_string, ti.file_text, ti.new_source];
 if (Array.isArray(ti.edits)) for (const e of ti.edits) parts.push(e && e.new_string);
 const text = parts.filter(s => typeof s === 'string').join('\n');
 if (!text) process.exit(0);
