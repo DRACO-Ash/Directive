@@ -16,8 +16,10 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import shutil
+import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -644,12 +646,19 @@ def test_the_work_directory_is_private(clone: Path) -> None:
     0. A predictable name is the whole vulnerability, so both halves are asserted: the name
     is not the fixed one, and the directory is unreadable by anyone else.
     """
-    seen: list[Path] = []
+    # Name AND mode captured inside the watcher: the trap removes the directory when the
+    # build ends, so anything read afterwards is gone.
+    seen: dict[str, int] = {}
     stop = threading.Event()
 
     def watch() -> None:
         while not stop.is_set():
-            seen.extend(p for p in (clone / "dist").glob(".build.*") if p not in seen)
+            for candidate in (clone / "dist").glob(".build.*"):
+                with contextlib.suppress(OSError):
+                    seen.setdefault(candidate.name, candidate.stat().st_mode & 0o777)
+            # Not a busy spin: this runs for the whole of a build under a 60 second
+            # per-test timeout, and holding a core at 100% on a shared runner is rude.
+            time.sleep(0.01)
 
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
@@ -660,8 +669,10 @@ def test_the_work_directory_is_private(clone: Path) -> None:
         watcher.join(timeout=5)
 
     assert seen, "no mktemp work directory was created; is the name fixed again?"
-    for work in seen:
-        assert work.name != ".build", "the work directory name must not be predictable"
+    # The MODE, which the docstring claimed and the test never read. `chmod 755` after the
+    # `mktemp -d` left the whole suite green.
+    for name, mode in seen.items():
+        assert mode == 0o700, f"{name} is mode {mode:o}, traversable by others"
 
 
 @pytest.mark.parametrize(
@@ -673,6 +684,7 @@ def test_the_work_directory_is_private(clone: Path) -> None:
         ("forge token", "glpat-" + "b" * 21),
         ("chat token", "xoxb-" + "1234567890" + "-abcdef"),
         ("cloud key", "AIza" + "C" * 35),
+        ("bearer", "Bea" + "rer " + "D" * 24),
     ],
 )
 def test_each_sweep_rule_can_refuse(clone: Path, label: str, probe: str) -> None:
@@ -687,3 +699,78 @@ def test_each_sweep_rule_can_refuse(clone: Path, label: str, probe: str) -> None
     result = _build(clone)
 
     assert result.returncode != 0, f"{label} was not refused: {result.stdout}"
+
+
+def test_the_work_directory_name_is_unpredictable(clone: Path) -> None:
+    """Asserted as a property, because the previous test compared against one literal.
+
+    `WORK="dist/.build"` was caught; `WORK="dist/.build.fixed"` was not, and a symlink
+    planted at that name wrote the staged copy of HEAD and the manifest into a directory
+    outside the repository with the build exiting 0. Two builds must not agree on a name.
+    """
+    names: list[set[str]] = []
+    for _ in range(2):
+        seen: set[str] = set()
+        stop = threading.Event()
+
+        def watch(into: set[str] = seen, halt: threading.Event = stop) -> None:
+            while not halt.is_set():
+                into.update(p.name for p in (clone / "dist").glob(".build.*"))
+                time.sleep(0.01)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            assert _build(clone).returncode == 0
+        finally:
+            stop.set()
+            watcher.join(timeout=5)
+        assert seen, "no work directory was observed"
+        names.append(seen)
+
+    assert names[0] != names[1], f"two builds used the same work directory name: {names[0]}"
+
+
+def test_the_cleanup_trap_survives_a_signal(clone: Path) -> None:
+    """Dash runs an EXIT trap for neither a signal nor a closed pipe.
+
+    A piped build left a full copy of HEAD behind at mode 0700, and one such orphan was
+    sitting in `dist/` when the security gate looked. Deleting the trap, or reducing it back
+    to `EXIT` alone, left the whole suite green.
+    """
+    build = subprocess.Popen(  # noqa: S603
+        [_tool("sh"), "scripts/build-package.sh"],
+        cwd=clone,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if list((clone / "dist").glob(".build.*")):
+                break
+            if build.poll() is not None:
+                pytest.skip("the build finished before the work directory could be observed")
+            time.sleep(0.01)
+        else:
+            pytest.skip("the work directory was never observed")
+        build.send_signal(signal.SIGTERM)
+        build.wait(timeout=30)
+    finally:
+        if build.poll() is None:
+            build.kill()
+
+    assert not list((clone / "dist").glob(".build*")), "a signal left the work directory behind"
+
+
+def test_a_symlinked_dist_is_refused(clone: Path) -> None:
+    """`mkdir -p dist` follows a link, and every artefact then lands wherever it points."""
+    outside = clone.parent / "outside-dist"
+    outside.mkdir()
+    shutil.rmtree(clone / "dist", ignore_errors=True)
+    (clone / "dist").symlink_to(outside)
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "dist is a symlink" in result.stdout
+    assert not list(outside.iterdir()), "the build wrote through the link"

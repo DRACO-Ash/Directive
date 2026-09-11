@@ -28,6 +28,8 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, fifth run | `496f312` | **FAIL** | Three MAJORs. The pointer temporary race was still open at the `mv`; the exemption budget counted lines rather than matches or paths; and the coverage claim written for the previous MAJOR was itself false. |
 | 2026-09-11 | `security-reviewer`, sixth run | `102df44` | **FAIL** | Four MAJORs and a MINOR set. The pointer race survived `mktemp` because the shell re-opens the name; the exemption budget counted rule labels rather than credentials, so three secrets of one shape spent a budget of one; the simulation's central red-suite guard was held by no test; and the coverage claim written for the previous MAJOR over-claimed again, the sixth document in that class. |
 | 2026-09-11 | `security-reviewer`, seventh run | `ab16c1b` | **FAIL** | Four MAJORs. The manifest write was a fourth predictable name in `dist/` and fell to the same symlink race on the first attempt; the pointer fix and the exemption match count were both held by no test, so reverting either left the suite green; and two shipped documents over-claimed, one asserting a deletion matrix that did not exist. |
+| 2026-09-11 | `security-reviewer`, eighth run | `ef9c3f2` | **FAIL** | Three MAJORs. The `mktemp -d` work directory was held by no test; the test named for the `coverage.xml` guard was satisfied by an `echo` beneath it; and the deployment note claimed a deletion-matrix row per gate run against four rows for eight runs. |
+| 2026-09-11 | `security-reviewer`, ninth run | `52f3e14` | **FAIL** | Two MAJORs. The work-directory test asserted a literal name and, in its own docstring, a mode it never read, so a fixed name and a `chmod 755` both survived. And this table's eighth row carried a figure the source did not support. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Deletion matrix
@@ -44,8 +46,9 @@ points here rather than restating a figure, because restating it has been wrong 
 | Fourth | `533fa5c` | ~19 | 8 | Eleven build controls and both simulation guards, including three the same release had just added. |
 | Sixth | `102df44` | 44 | 26 | The pointer `mktemp` fix, the simulation's red-suite guard, the coverage artefact assertion, the extra-file check. |
 | Seventh | `ab16c1b` | 40 | 26 | The pointer private directory, the exemption match count, the coverage artefact guard, the `find -type l` refusal. |
-| Eighth | `ef9c3f2` | 51 | 31 | The `mktemp -d` work directory, the `coverage.xml` guard, eight of the nine sweep rules, the cleanup trap, the `find -type l` refusal. |
-| Ninth | `TBC, re-verify` | | | Tests were added after the eighth run for the work directory, the coverage guard and every sweep rule; the matrix has not been re-run since. |
+| Eighth | `ef9c3f2` | 51 | 31 | The `mktemp -d` work directory, the `coverage.xml` guard, **six** of the nine sweep rules, the cleanup trap, the `find -type l` refusal. This row said eight of nine until the ninth run re-measured it at that commit: the AWS, generic and GitLab rules were already held by the filename and directory-name tests. Corrected here rather than left, because `docs/DEPLOYMENT.md` sends the reader to this table as the record that exists BECAUSE restating a figure in prose was wrong three times. |
+| Ninth | `52f3e14` | 62 | 42 | The work directory's NAME beyond one literal and its MODE (a fixed `dist/.build.fixed`, and a `chmod 755`, both left the suite green), the `Bearer token` sweep rule, the cleanup trap, the `dist` symlink refusal. Sixteen further survivors are compensated by a control that fires earlier and are recorded as benign. |
+| Tenth | `TBC, re-verify` | | | Tests were added after the ninth run for the work directory's mode and unpredictability, the trap under a signal, the `dist` refusal and the bearer rule; the matrix has not been re-run since. |
 
 ## V2.1
 
