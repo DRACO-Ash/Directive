@@ -1,7 +1,14 @@
-# Secrets. Never tracked, in any form.
+# Secrets. Never tracked, in any form. `.env.*` rather than a list of suffixes: the list
+# held `.env.local` and `.env.*.local` and missed `.env.production`, `.env.prod` and
+# `.env.staging`, so `cp .env.example .env.production`, fill in the client secret, then
+# `git add -A` put a live credential in the object database and the history. No hook sees a
+# human `git add`, and the hard rule covers history as well as the shipped tree, so the
+# ignore file is the only control on that path. `.env.example` is the one name that must
+# stay trackable: it holds placeholders and the package requires it at its root.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+secrets.env
 secrets/
 
 # Local runtime and build output

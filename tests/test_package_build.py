@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import shutil
 import signal
 import subprocess
@@ -49,14 +50,19 @@ def _tool(name: str) -> str:
     return found
 
 
-def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run one command with an absolute executable and a fixed argument list.
 
     Every argument below is a literal or a pytest temporary path. There is no shell, no
     string interpolation and no caller-supplied input, which is what S603 asks about.
     """
     return subprocess.run(  # noqa: S603
-        argv, cwd=cwd, capture_output=True, text=True, check=False
+        argv, cwd=cwd, env=env, capture_output=True, text=True, check=False
     )
 
 
@@ -849,10 +855,62 @@ def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
     assert not (clone / "dist" / "latest").exists(), "a pointer was left over a finding"
 
 
-def test_the_simulation_fails_when_the_install_fails(clone: Path) -> None:
-    """Most refusals are an explicit `exit 1`; the install and unzip legs rely on `set -e`.
+def test_the_exempt_env_example_name_is_the_only_one_exempt(clone: Path) -> None:
+    """The filename sweep exempts one name; widening it lets a whole family ship.
 
-    Deleting it left those legs able to continue to a green read-out.
+    `.env.example` must ship, so the sweep carries a `! -name` exemption for it. Widening
+    that to `.env*` kept all of the packaging tests green and let `docs/.env.production`
+    into the package, which is the control-held-by-no-test pattern this suite exists to
+    close. The probe file holds placeholders only: what is refused is the NAME.
+    """
+    assert _build(clone).returncode == 0
+    probe = clone / "docs" / ".env.production"
+    probe.write_text(_PROBE_NAME + "=" + "[REDACTED:secret]\n", encoding="utf-8")
+    _commit(clone, "probe: a production environment file under docs")
+
+    refused = _build(clone)
+    assert refused.returncode != 0, refused.stdout
+    assert "docs/.env.production" in refused.stdout, refused.stdout
+    assert not list((clone / "dist").glob("*.zip")), "a package shipped with the probe in it"
+
+
+@pytest.mark.timeout(SIMULATION_TIMEOUT_SECONDS)
+def test_the_simulation_refuses_rather_than_testing_the_repository(clone: Path) -> None:
+    """The one fall-through that returns a FALSE pass rather than a failure.
+
+    If the work directory is never created, every later line runs in the repository, where
+    the lockfile installs and the whole suite passes: `SIMULATION: PASS` for a package that
+    was never unpacked. The probe makes `mktemp -d` fail by pointing `TMPDIR` at a path
+    that does not exist. It is asserted twice: once as the script ships, and once with
+    `set -e` removed, because `set -e` alone hid the absence of a guard here and a later
+    edit dropping the option must not quietly reopen it.
+    """
+    assert _build(clone).returncode == 0
+    environment = dict(os.environ, TMPDIR=str(clone / "no-such-directory"))
+    simulation = [_tool("sh"), "scripts/simulate-pipeline.sh"]
+
+    for label in ("as shipped", "with set -e removed"):
+        if label != "as shipped":
+            script = clone / "scripts" / "simulate-pipeline.sh"
+            body = script.read_text(encoding="utf-8")
+            assert "set -eu" in body
+            script.write_text(body.replace("set -eu", "set +e\nset -u", 1), encoding="utf-8")
+
+        result = _run(simulation, cwd=clone, env=environment)
+        assert result.returncode != 0, label + ": " + result.stdout
+        assert "SIMULATION: PASS" not in result.stdout, label
+        assert not (clone / ".venv").exists(), label + ": it built an environment in the tree"
+
+
+def test_the_simulation_fails_when_the_install_fails(clone: Path) -> None:
+    """An uninstallable lockfile must not reach a green read-out.
+
+    Be precise about WHICH control this holds, because the docstring was wrong once. It is
+    the explicit STATUS guard below the pytest call, not `set -e`: with `set +e` in place
+    the failing install falls through to a pytest run that cannot pass, and the guard
+    refuses on the exit code. `set -e` is load-bearing only further up, where a
+    fall-through would test the repository instead of the package, and the test below is
+    what holds that.
     """
     assert _build(clone).returncode == 0
     lock = clone / "requirements.txt"

@@ -111,16 +111,35 @@ if [ "$FROM_POINTER" = yes ]; then
   fi
 fi
 
-WORK="$(mktemp -d)"
+# Every step from here to the `cd` is an EXPLICIT refusal rather than a reliance on
+# `set -e`, and the reason is what the fall-through DOES rather than tidiness. If the work
+# directory is never created, or never entered, the current directory is still the
+# REPOSITORY: a tree where every file exists, the lockfile installs and the whole suite
+# passes. The script would then print SIMULATION: PASS having tested the one thing it
+# exists to avoid testing, and a package that cannot even unzip would read as green. The
+# install and pytest legs are different: both are caught downstream by the STATUS guard
+# whether `set -e` is present or not. So this is the only region where the option was ever
+# load-bearing, and the guards below are what a test can delete to prove it.
+WORK="$(mktemp -d)" || { echo "FAIL: no work directory could be created"; exit 1; }
+if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
+  echo "FAIL: no work directory to unpack into"
+  exit 1
+fi
 trap 'rm -rf "$WORK"' EXIT
 echo "package:     $PKG"
 echo "unpacked to: $WORK"
-unzip -q "$PKG" -d "$WORK"
+unzip -q "$PKG" -d "$WORK" || { echo "FAIL: $PKG did not unpack"; exit 1; }
 
 PY312="${PYTHON312:-/usr/bin/python3.12}"
 [ -x "$PY312" ] || { echo "SKIP: no interpreter at $PY312; this leg cannot run locally."; exit 1; }
 
-cd "$WORK"
+cd "$WORK" || { echo "FAIL: could not enter the work directory"; exit 1; }
+# The assertion the fall-through defeats. Everything below runs in the current directory,
+# so this is the line that decides WHAT was tested, and it is cheap to state plainly.
+[ "$PWD" != "$ROOT" ] || {
+  echo "FAIL: still in the repository; refusing to report on the tree as if it were the package"
+  exit 1
+}
 "$PY312" -m venv .venv
 echo "== stage 5, install: pip install -r requirements.txt =="
 .venv/bin/python -m pip install -q -r requirements.txt
