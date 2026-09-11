@@ -16,6 +16,10 @@ set -eu
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
+# `dist` itself is the last predictable component, and `mkdir -p` follows a link planted
+# there. Weaker than the class closed below, since anyone who can create it in the
+# repository root can edit this script instead, but it costs one line to refuse.
+[ ! -L dist ] || { echo "FAIL: dist is a symlink; refusing to build through it"; exit 1; }
 mkdir -p dist
 
 # The content sweep below needs an interpreter. The project's own is preferred; a system
@@ -57,8 +61,11 @@ OUT="dist/comply-ops-${VERSION}-${STAMP}-${COMMIT}.zip"
 # REPLACES a symlink at the destination rather than following it. So the class ends here
 # rather than being narrowed again.
 WORK="$(mktemp -d dist/.build.XXXXXX)"
-# Removed however the build ends, so a failure leaves no half-built stage behind.
-trap 'rm -rf "$WORK"' EXIT
+# Removed on a normal exit AND on the signals a build actually meets: dash does not run an
+# EXIT trap for INT, TERM, HUP or PIPE, so `sh scripts/build-package.sh | head -2` left a
+# full copy of HEAD behind at mode 0700. Harmless in content, unbounded in number, and the
+# comment here said "however the build ends", which was not true.
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM PIPE
 STAGE="$WORK/stage"
 MANIFEST="$WORK/manifest"
 BUILT="$WORK/package.zip"
@@ -381,9 +388,17 @@ if not examined:
 allowed_counts = {path: rule["matches"] for path, rule in EXEMPT_ALLOWED.items()}
 if dict(suppressed) != allowed_counts:
     hits.append(f"exemptions claimed {dict(suppressed)} against {allowed_counts} allowed")
-for hit in hits:
-    print(f"FAIL: {hit}")
-if hits:
+try:
+    for hit in hits:
+        print(f"FAIL: {hit}")
+    if hits:
+        sys.exit(1)
+except BrokenPipeError:
+    # `sh scripts/build-package.sh | head -1` closes stdout under the sweep. The build
+    # already fails closed, but in POSIX sh the pipeline's status is `head`'s, which is 0,
+    # and the last line the operator sees is the success-shaped verification banner. So the
+    # refusal is written to stderr, which the pipe has not closed.
+    print("FAIL: the credential sweep could not finish; stdout closed", file=sys.stderr)
     sys.exit(1)
 print(f"credential sweep: {examined} files examined, exemptions {allowed_counts} honoured")
 SWEEP
