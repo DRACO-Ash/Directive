@@ -277,10 +277,28 @@ RULES = [
     # tree and catching every shape demonstrated. `[REDACTED:...]` is the placeholder the
     # hard rule mandates and is allowed through.
     ("Unquoted environment-file credential",
-     r"^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*"
+     r"^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*[A-Z][A-Z0-9_]*"
      r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}"),
+    # The same names in the shape a DOCUMENT writes them: a two-column parameter table.
+    # `docs/DEPLOYMENT.md` carries exactly that table, for exactly these names, so it is
+    # the likeliest place in the tree for a real value to be pasted beside the name it
+    # belongs to. The value cell must be one token with no spaces, which is what separates
+    # a credential from the prose the four live rows actually hold; `[REDACTED:...]` and
+    # `TBC` are the two placeholders the hard rules mandate and both pass. Measured at zero
+    # false positives across all tracked files, and it catches the row with or without the
+    # backticks the table uses.
+    ("Credential in a document table row",
+     r"^[ \t]*\|[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?"
+     r"[ \t]*\|[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)"),
 ]
-COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in RULES]
+# MULTILINE as well as IGNORECASE, and both are load-bearing. Without IGNORECASE the
+# lower-case `client_secret=` spelling walks past. Without MULTILINE the two `^`-anchored
+# rules above are DEAD in the whole-file and NUL-stripped passes, because `^` then matches
+# only at offset zero: a UTF-16 file carrying the credential on any line but the first
+# shipped, and the NUL-stripped view is exactly the pass that exists to see it. The hook at
+# `.claude/hooks/secret-scan.mjs` carries the same two flags for the same reason.
+COMPILED = [(label, re.compile(pattern, re.MULTILINE | re.IGNORECASE))
+            for label, pattern in RULES]
 
 #: WHICH path may claim the exemption, and how many findings it may suppress there. A bare
 #: total was spendable two ways, both demonstrated. One exempt LINE holding a tuple of three
@@ -348,10 +366,18 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # this sweep as the compensating control for the whole secret regime: base64 or other
     # encodings of a credential, anything inside a compressed container, and a credential
     # carried in a filename or a directory name rather than a file body, an UNQUOTED
-    # assignment outside the dotenv shape the rule below matches, and an assignment
-    # split across lines by an intervening COMMENT, which neither pass sees because the
-    # rule's whitespace class cannot cross the comment text. The path case is closed just
-    # below, for every component. The rest are open and are real limits, not theoretical.
+    # assignment outside the dotenv and table shapes the rules below match, and an
+    # assignment split across lines by an intervening COMMENT, which neither pass sees
+    # because the rule's whitespace class cannot cross the comment text. The path case is
+    # closed just below, for every component. The rest are open and are real limits, not
+    # theoretical. Be specific about the unquoted case, because it has been described too
+    # loosely once already: `NAME=value` is caught with an `ENV`, `ARG`, `export`, `-e`,
+    # `--env` or list-marker prefix and at any indent, and `| NAME | value |` is caught as
+    # a document table row, but `NAME = value` with spaces around the equals is NOT, and a
+    # `name: value` mapping in YAML or JSON is NOT. The spaces form was measured: widening
+    # the equals to allow them flags sixteen ordinary Python constants in this tree, so the
+    # rule would fire on every build and be turned off within a week. It is a real gap and
+    # it is recorded here rather than closed.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1

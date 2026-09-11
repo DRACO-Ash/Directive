@@ -39,9 +39,14 @@ const RULES = [
   // The generic rule above requires QUOTES and every secret this application consumes is
   // written without them. Kept identical in shape to the packaging sweep's rule, because
   // the two guard the same repository by different routes and a difference between them is
-  // a hole in whichever is narrower.
+  // a hole in whichever is narrower. That claim was false once: the hook carried `m` and no
+  // `i` while the sweep carried the reverse, so `client_secret=` walked past here and a
+  // credential below line one walked past there. Both now carry both flags, and the shape
+  // difference to check on any future edit is the flags as much as the pattern.
   ['Unquoted environment-file credential',
-                                 /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}/m]
+                                 /^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}/im],
+  ['Credential in a document table row',
+                                 /^[ \t]*\|[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)/im]
 ];
 
 const hits = [];

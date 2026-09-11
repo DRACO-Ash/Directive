@@ -36,17 +36,21 @@ row says so rather than reconstructing it.
 ## Accepted residual
 
 Findings outside the threat model in `CLAUDE.md`, recorded rather than fixed silently or
-dropped. Each was demonstrated by the security gate, and each needs an adversary who can
-commit to this repository or write to the build host during a build. Such an adversary can
-edit `src/complyops/views/api.py` or substitute the artefact outright, so hardening the
-packaging script against them is theatre rather than defence.
+dropped. Each was demonstrated by the security gate. The first three rows need an adversary
+who can commit to this repository or write to the build host during a build. Such an
+adversary can edit `src/complyops/views/api.py` or substitute the artefact outright, so
+hardening the packaging script against them is theatre rather than defence. The last two
+rows are a different class and are recorded here for the same reason rather than that one:
+the historical-probe row is a fact about history that no live control can change, and the
+anchor row's adversary is a runtime writer on the persistent volume, already stated openly
+in `SECURITY.md` and carried as an accreditation condition.
 
 | Residual | Demonstrated | Why it is accepted |
 | --- | --- | --- |
 | A base64-encoded credential, and one inside a DEFLATE-compressed nested zip, pass the credential sweep | Tenth run, `2819cf5` | A pattern sweep over text cannot see a re-encoding. Recorded beside the sweep in `scripts/build-package.sh`. The sweep exists for an honest committer's paste, which is not encoded. |
 | A quoted assignment split by an intervening comment passes both the sweep and the pre-write hook | Tenth run | Same class. Neither route crosses the comment text; recorded beside the sweep. |
 | `verify-mode-check` and `verify-extra-file-check` survive deletion | Tenth run | Neither condition is reachable through `git archive`; a build under `umask 0111` did not strip the mode. Benign but unheld, and recorded as such rather than given a test that could not fail. |
-| Two historical test probes in git history: a `-----BEGIN RSA PRIVATE KEY-----` header at `330fb36` and a file named `AKIAABCDEFGHIJKLMNOP.md` at `24d93cc` | Tenth run | Neither carries key material; both were later assembled from parts. No history rewrite warranted. |
+| Two historical test probes in git history: a Privacy Enhanced Mail (PEM) private-key opening line at `330fb36`, and a file whose NAME carried the Amazon Web Services access-key-identifier shape at `24d93cc` | Tenth run | Neither carries key material; both were later assembled from parts, and neither is reachable from the current tree. No history rewrite warranted. Written here by description rather than by literal: writing either out in full makes this document refuse its own build. |
 | A volume writer can delete the anchor and its first-use marker together | Recorded since V2.1 | Stated openly in `SECURITY.md` and carried as an accreditation condition. |
 
 ## Deletion matrix
