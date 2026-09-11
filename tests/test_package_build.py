@@ -291,8 +291,16 @@ def test_a_second_exemption_is_refused(clone: Path) -> None:
 
 
 def test_a_credential_named_file_is_refused_by_name(clone: Path) -> None:
-    """The name sweep, which the body sweep does not subsume."""
-    (clone / "docs" / "deploy.pem").write_text("not actually a key\n", encoding="utf-8")
+    """The name sweep, which the body sweep does not subsume.
+
+    Force-added because `.gitignore` now refuses `*.pem` first. Two controls on one path
+    rather than a redundancy: the ignore rule stops the ordinary accident and cannot stop a
+    `git add -f` or an edited ignore file, and this sweep decides what actually ships.
+    """
+    probe = clone / "docs" / "deploy.pem"
+    probe.write_text("not actually a key\n", encoding="utf-8")
+    forced = _run([_tool("git"), "-C", str(clone), "add", "-f", str(probe)])
+    assert forced.returncode == 0, forced.stderr
     _commit(clone, "probe: credential-shaped name")
     result = _build(clone)
 

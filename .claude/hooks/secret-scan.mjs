@@ -45,7 +45,7 @@ const RULES = [
   ['Client-side access gate', /\b(?:ADMIN_)?PIN\s*=\s*['"][0-9A-Za-z]{4,}['"]/im],
   ['Unquoted environment-file credential', /^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*['"`]?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}/im],
   ['Credential written into prose', /(?:^|[ \t(\[{,;'"`])['"`]?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)(?!MISSING\()[^\s'"`]{8,}/m],
-  ['Credential in a document table row', /^[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)/im],
+  ['Credential in a document table row', /^[ \t]*\|(?![^\n]*(?:\[REDACTED:|TBC))(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?[^ \t|]{8,}`?[ \t]*(?:\||$)/im],
   // The one rule with no counterpart in the packaging sweep: a build-contract check, not a
   // credential check. `ENV PORT` in a Dockerfile silently overrides the platform port 8080.
   ['Dockerfile ENV PORT', /^\s*ENV\s+PORT\s*=/im],

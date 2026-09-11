@@ -21,9 +21,21 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts" / "build-package.sh"
 HOOK = ROOT / ".claude" / "hooks" / "secret-scan.mjs"
+
+#: The platform runs this suite against the UNPACKED PACKAGE, and `.claude/` is the
+#: assistant's baseline rather than shipped code, so the hook is not there. Skipping is
+#: honest; failing would turn a green local loop into a red upload for a reason that has
+#: nothing to do with the code. Found by `scripts/simulate-pipeline.sh` on the first run
+#: after this module was written, which is what that simulation is for.
+pytestmark = pytest.mark.skipif(
+    not (SWEEP.is_file() and HOOK.is_file()),
+    reason="the sweep and the hook are not both present; this is the unpacked package",
+)
 
 #: The one rule the hook carries and the sweep does not. It is a build-contract check rather
 #: than a credential check: `ENV PORT` in a Dockerfile silently overrides the platform's
