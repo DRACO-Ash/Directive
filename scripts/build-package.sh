@@ -273,18 +273,21 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # claimed by it either.
     scannable = []
     for number, line in enumerate(text.splitlines(), start=1):
-        if _exempt(path, line):
-            exempted += 1
-            continue
-        if any(marker in line for marker in EXEMPT_MARKERS) and any(
-            rule.search(line) for _, rule in COMPILED
-        ):
+        matched = [label for label, rule in COMPILED if rule.search(line)]
+        marked = any(marker in line for marker in EXEMPT_MARKERS)
+        if matched and marked:
+            # Counted as claiming the exemption only when it would otherwise have been a
+            # finding. A line that merely MENTIONS the marker, as this script's own tests
+            # do when they write a probe, is not relying on it, and counting those made the
+            # pinned total meaningless.
+            if _exempt(path, line):
+                exempted += 1
+                continue
             hits.append(f"{path}:{number}: an exemption marker outside tests/*.py")
         scannable.append(line)
-        for label, rule in COMPILED:
-            if rule.search(line):
-                hits.append(f"{path}:{number}: {label}")
-                found_on_a_line.add((str(path), label))
+        for label in matched:
+            hits.append(f"{path}:{number}: {label}")
+            found_on_a_line.add((str(path), label))
     for label, rule in COMPILED:
         if rule.search("\n".join(scannable)) and (str(path), label) not in found_on_a_line:
             hits.append(f"{path}: {label}, split across lines")

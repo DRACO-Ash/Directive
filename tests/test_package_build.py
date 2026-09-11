@@ -21,6 +21,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: The probe credential, assembled from parts so the literal never appears in this file.
+#: Written whole, the packaging script's own content sweep flags this module and refuses to
+#: build, which is the sweep working correctly and the test being careless. Marking the
+#: lines exempt would have been the wrong fix: the exemption count is pinned at one on
+#: purpose, and spending it here to test the sweep would blunt the control being tested.
+PROBE_CREDENTIAL = "CLIENT_" + "SECRET=" + chr(34) + "hunter2-a-real-looking-secret" + chr(34)
+
 
 def _tool(name: str) -> str:
     """Return the absolute path of a tool, so no lookup depends on PATH order."""
@@ -55,7 +62,10 @@ def _clone(tmp_path: Path) -> Path:
     # shape of the gap they were written to close.
     for script in sorted((ROOT / "scripts").glob("*.sh")):
         shutil.copy2(script, work / "scripts" / script.name)
-    _commit(work, "suite: exercise the working tree's scripts")
+    # Only when the copy actually changed something. With the scripts already committed the
+    # sync is a no-op, and `git commit` exits non-zero on an empty one.
+    if _run([git, "-C", str(work), "status", "--porcelain"]).stdout.strip():
+        _commit(work, "suite: exercise the working tree's scripts")
     return work
 
 
@@ -138,7 +148,7 @@ def test_a_credential_in_a_file_the_sweep_cannot_decode_is_caught(clone: Path) -
     called clean. The same held for a credential inside a binary file.
     """
     probe = clone / "docs" / "probe-binary.md"
-    probe.write_bytes(b'CLIENT_SECRET="hunter2-a-real-looking-secret"\n\xff')
+    probe.write_bytes(PROBE_CREDENTIAL.encode("utf-8") + b"\n\xff")
     _commit(clone, "probe: non-utf8 credential")
     result = _build(clone)
 
@@ -153,7 +163,7 @@ def test_an_exemption_marker_outside_the_suite_is_refused(clone: Path) -> None:
     `tests/*.py`, and the count of honoured lines is pinned.
     """
     probe = clone / "docs" / "probe-exempt.md"
-    probe.write_text('CLIENT_SECRET="hunter2-a-real-looking-secret"  # nosec\n', encoding="utf-8")
+    probe.write_text(f"{PROBE_CREDENTIAL}  # nosec\n", encoding="utf-8")
     _commit(clone, "probe: exemption abuse")
     result = _build(clone)
 
@@ -164,7 +174,8 @@ def test_an_exemption_marker_outside_the_suite_is_refused(clone: Path) -> None:
 def test_a_credential_split_across_lines_is_caught(clone: Path) -> None:
     """The pre-write hook matches a joined blob; a line-based sweep alone did not."""
     probe = clone / "docs" / "probe-split.md"
-    probe.write_text('CLIENT_SECRET =\n    "hunter2-a-real-looking-secret"\n', encoding="utf-8")
+    split = PROBE_CREDENTIAL.replace("=", " =\n    ", 1)
+    probe.write_text(f"{split}\n", encoding="utf-8")
     _commit(clone, "probe: split credential")
     result = _build(clone)
 
