@@ -230,7 +230,9 @@ LINK="$(find "$STAGE" -type l -print -quit)"
 # package root, so it is the one name in this shape that must ship.
 SECRET="$(find "$STAGE" ! -name '.env.example' \
                \( -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \
-                  -o -name 'id_rsa*' -o -name '*.p12' -o -name '*.pfx' \) -print -quit)"
+                  -o -name 'id_rsa*' -o -name 'id_ed25519*' -o -name 'id_ecdsa*' \
+                  -o -name 'id_dsa*' -o -name '*.jks' -o -name '*.p12' \
+                  -o -name '*.pfx' \) -print -quit)"
 [ -z "$SECRET" ] || { echo "FAIL: $SECRET looks like a credential and is in the package"; exit 1; }
 
 # By CONTENT, because a name sweep is only a name sweep. A tracked file with an innocuous
@@ -275,25 +277,39 @@ RULES = [
     #
     # Matched on the dotenv SHAPE rather than by widening the quoted rule, which flagged
     # sixteen ordinary Python constants. Python writes `SUITE_KEY = bytes(...)` with spaces
-    # around the equals; dotenv never does. `[REDACTED:...]` is the placeholder the hard
+    # around the equals; dotenv never does. The trailing `[A-Z0-9_]*` is there because the
+    # keyword need not END the name: `CLIENT_SECRET_V2=` walked past without it. The name
+    # must still CONTAIN one of these words and not begin with one, and that restriction is
+    # deliberate and measured: making the leading part optional flags twelve indented
+    # `key_id=` keyword arguments in `src/`, so `SECRET_FOR_ENTRA=` is left open and
+    # recorded rather than bought at that price. `[REDACTED:...]` is the placeholder the hard
     # rule mandates and is allowed through. The optional opening delimiter is not decoration:
     # a backtick between the bullet and the name defeated the whole prefix set, and this
     # project's own house style puts every identifier in backticks behind a bullet, so the
     # likeliest real shape was the one walking past.
     ("Unquoted environment-file credential",
      r"^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*['\"`]?[A-Z][A-Z0-9_]*"
-     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}"),
+     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)[A-Z0-9_]*=(?!\[REDACTED:)\S{8,}"),
     # The same assignment anywhere in a LINE OF PROSE, which is how a runbook writes it:
     # "Set NAME=value in the console", or a `docker run -e NAME=value` that does not begin
     # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
-    # than a relaxed anchor on the one above. Folding case here flags 23 ordinary Python
+    # than a relaxed anchor on the one above. Folding case here flags 19 ordinary Python
     # keyword arguments in this tree (`outgoing_key=`, `sort_keys=`); requiring the upper
-    # case name that every environment variable actually has leaves zero. The one carve-out
+    # case name that every environment variable actually has leaves zero. Re-measure that
+    # figure if you change this rule or the tree: it read 23 for one commit, which was the
+    # count before the `MISSING(` carve-out existed, and a stale figure in a shipped file
+    # is a finding here. The one carve-out
     # is the diagnostics read-out shape `NAME=MISSING(n)`, which is a value-ABSENT marker
     # this application prints on purpose and which appears in a document and a test.
+    #
+    # "Anywhere in a line" means it: the character before the name need only be a non-word
+    # one. A narrower list of separators was written first and ten shapes walked past it,
+    # the plausible ones being a query string (`?NAME=`, `&NAME=`) and a bullet written with
+    # no space after it. The widening costs zero false positives here, so the narrower list
+    # bought nothing.
     ("Credential written into prose",
-     r"(?:^|[ \t(\[{,;'\"`])['\"`]?[A-Z][A-Z0-9_]*"
-     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)="
+     r"(?:^|[^A-Za-z0-9_])['\"`]?[A-Z][A-Z0-9_]*"
+     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)[A-Z0-9_]*="
      r"(?!\[REDACTED:)(?!MISSING\()[^\s'\"`]{8,}"),
     # The same names in the shape a DOCUMENT writes them: a parameter table row. The table
     # in `docs/DEPLOYMENT.md` is the likeliest place in the tree for a real value to be
@@ -311,7 +327,7 @@ RULES = [
     # adversary this rule is for is an honest committer pasting a value into a table.
     ("Credential in a document table row",
      r"^[ \t]*\|(?![^\n]*(?:\[REDACTED:|TBC))(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*"
-     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|(?:[^|\n]*\|)*?"
+     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)[A-Z0-9_]*`?[ \t]*\|(?:[^|\n]*\|)*?"
      r"[ \t]*`?[^ \t|]{8,}`?[ \t]*(?:\||$)"),
 ]
 #: The rules that must NOT fold case. Every other rule folds, because `client_secret=` is a

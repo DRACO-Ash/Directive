@@ -11,12 +11,12 @@ deployed yet, so every row below records a release that was cut, gated and merge
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
-review PASS at `b3b798c`, then twelve further runs against the packaging and verification
+review PASS at `b3b798c`, then thirteen further runs against the packaging and verification
 machinery, every one of them FAIL and every finding in that machinery or in a shipped
 document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
 Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
 still describing the pre-split dependency tree and on a test count in this file that had
-never been measured. Verification loop PASS, 902 passed, 2 skipped, coverage 98.98%, measured at the
+never been measured. Verification loop PASS, 924 passed, 2 skipped, coverage 98.98%, measured at the
 last commit of this release rather than at the commit this row is headed by. The test count here was once replaced with a LATER commit's figure while the commit
 name stayed, inside the sentence below that criticises that very mistake; both halves are now
 measured at the commit named. An earlier row here recorded a 98.84 to 98.89 range and was not
@@ -49,14 +49,16 @@ records against others.
   line of prose; and a credential-shaped token in any cell of a document parameter table
   row. Everything compiles with MULTILINE as well as IGNORECASE, without which the anchored
   rules matched only at the first byte of a file and a UTF-16 credential below line one
-  shipped. Measured at zero false positives across all 156 tracked files. What is still
+  shipped. Measured at zero false positives across all 157 tracked files. What is still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
   closed, and the largest item is `NAME = value` with spaces: closing it flags sixteen
   ordinary constants here.
 ● The sweep and the pre-write hook are asserted to be one rule set by
   `tests/test_secret_rule_parity.py`, patterns and flags compared character for character,
   with one named exception. Both files claimed to be in step in a comment, and the claim
-  was false twice.
+  was false twice. The same module also EXECUTES the hook against a probe per rule: the text
+  comparison alone was defeated by leaving the rule array untouched and iterating only its
+  first element, which stopped eleven of twelve rules blocking with the suite green.
 ● `.gitignore` refuses `.env.*` with `.env.example` excepted, and the same key and
   certificate family the packaging sweep refuses inside a package. The two controls
   disagreed: an `audit.key` at the repository root was trackable and is outside the package
