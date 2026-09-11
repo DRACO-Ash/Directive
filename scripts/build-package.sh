@@ -265,40 +265,66 @@ RULES = [
     ("GitLab personal token", r"\bglpat-[0-9A-Za-z_\-]{20,}\b"),
     ("Client-side access gate", r"\b(?:ADMIN_)?PIN\s*=\s*['\"][0-9A-Za-z]{4,}['\"]"),
     # The generic rule above requires QUOTES, and every secret this application actually
-    # consumes is written without them. `CLIENT_SECRET=Abc8Q~...` pasted into `.env.example`
-    # built clean and shipped at the package root, demonstrated end to end. That file is the
-    # worst possible place for the gap: its whole purpose is to carry exactly these names,
-    # dotenv format is unquoted by convention, the build REQUIRES it to ship, and it is
-    # deliberately exempt from the filename sweep, so this is the only control over it.
+    # consumes is written without them. An unquoted assignment of the client secret, pasted
+    # into `.env.example`, built clean and shipped at the package root, demonstrated end to
+    # end. That file is the worst possible place for the gap: its whole purpose is to carry
+    # exactly these names, dotenv format is unquoted by convention, the build REQUIRES it to
+    # ship, and it is deliberately exempt from the filename sweep, so this is the only
+    # control over it. The shape is written here by description rather than as a literal,
+    # because the prose rule below correctly matched this very comment twice.
     #
     # Matched on the dotenv SHAPE rather than by widening the quoted rule, which flagged
     # sixteen ordinary Python constants. Python writes `SUITE_KEY = bytes(...)` with spaces
-    # around the equals; dotenv never does. Measured at zero false positives across this
-    # tree and catching every shape demonstrated. `[REDACTED:...]` is the placeholder the
-    # hard rule mandates and is allowed through.
+    # around the equals; dotenv never does. `[REDACTED:...]` is the placeholder the hard
+    # rule mandates and is allowed through. The optional opening delimiter is not decoration:
+    # a backtick between the bullet and the name defeated the whole prefix set, and this
+    # project's own house style puts every identifier in backticks behind a bullet, so the
+    # likeliest real shape was the one walking past.
     ("Unquoted environment-file credential",
-     r"^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*[A-Z][A-Z0-9_]*"
+     r"^[ \t]*(?:(?:ENV|ARG|export|-e|--env|[-*\u25cf])[ \t]+)*['\"`]?[A-Z][A-Z0-9_]*"
      r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}"),
-    # The same names in the shape a DOCUMENT writes them: a two-column parameter table.
-    # `docs/DEPLOYMENT.md` carries exactly that table, for exactly these names, so it is
-    # the likeliest place in the tree for a real value to be pasted beside the name it
-    # belongs to. The value cell must be one token with no spaces, which is what separates
-    # a credential from the prose the four live rows actually hold; `[REDACTED:...]` and
-    # `TBC` are the two placeholders the hard rules mandate and both pass. Measured at zero
-    # false positives across all tracked files, and it catches the row with or without the
-    # backticks the table uses.
+    # The same assignment anywhere in a LINE OF PROSE, which is how a runbook writes it:
+    # "Set NAME=value in the console", or a `docker run -e NAME=value` that does not begin
+    # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
+    # than a relaxed anchor on the one above. Folding case here flags 23 ordinary Python
+    # keyword arguments in this tree (`outgoing_key=`, `sort_keys=`); requiring the upper
+    # case name that every environment variable actually has leaves zero. The one carve-out
+    # is the diagnostics read-out shape `NAME=MISSING(n)`, which is a value-ABSENT marker
+    # this application prints on purpose and which appears in a document and a test.
+    ("Credential written into prose",
+     r"(?:^|[ \t(\[{,;'\"`])['\"`]?[A-Z][A-Z0-9_]*"
+     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)="
+     r"(?!\[REDACTED:)(?!MISSING\()[^\s'\"`]{8,}"),
+    # The same names in the shape a DOCUMENT writes them: a parameter table row. The table
+    # in `docs/DEPLOYMENT.md` is the likeliest place in the tree for a real value to be
+    # pasted beside the name it belongs to, and it has THREE columns, headed Variable,
+    # Source and Value. A rule reading only the cell after the name therefore scanned the
+    # Source cell and never the one literally headed Value, which is where a credential
+    # lands; the row shipped clean, demonstrated. Any cell of the row is scanned now. The
+    # value cell must be one token with no spaces, which is what separates a credential from
+    # the prose the live rows actually hold; `[REDACTED:...]` and `TBC` are the two
+    # placeholders the hard rules mandate and both pass.
     ("Credential in a document table row",
-     r"^[ \t]*\|[ \t]*`?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?"
-     r"[ \t]*\|[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)"),
+     r"^[ \t]*\|(?:[^|\n]*\|)*?[ \t]*`?[A-Z][A-Z0-9_]*"
+     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)`?[ \t]*\|(?:[^|\n]*\|)*?"
+     r"[ \t]*`?(?!\[REDACTED:)(?!TBC)[^ \t|]{8,}`?[ \t]*(?:\||$)"),
 ]
-# MULTILINE as well as IGNORECASE, and both are load-bearing. Without IGNORECASE the
-# lower-case `client_secret=` spelling walks past. Without MULTILINE the two `^`-anchored
-# rules above are DEAD in the whole-file and NUL-stripped passes, because `^` then matches
-# only at offset zero: a UTF-16 file carrying the credential on any line but the first
-# shipped, and the NUL-stripped view is exactly the pass that exists to see it. The hook at
-# `.claude/hooks/secret-scan.mjs` carries the same two flags for the same reason.
-COMPILED = [(label, re.compile(pattern, re.MULTILINE | re.IGNORECASE))
-            for label, pattern in RULES]
+#: The rules that must NOT fold case. Every other rule folds, because `client_secret=` is a
+#: real spelling and a sweep that misses it is a sweep with a hole. This one is the
+#: exception BY MEASUREMENT rather than by taste: it matches anywhere in a line, so folding
+#: case turns every Python keyword argument ending in `_key` into a finding.
+CASE_SENSITIVE = {"Credential written into prose"}
+
+# MULTILINE on everything, and it is load-bearing rather than tidy. Without it the
+# `^`-anchored rules are DEAD in the whole-file and NUL-stripped passes, because `^` then
+# matches only at offset zero: a UTF-16 file carrying the credential on any line but the
+# first shipped, and the NUL-stripped view is exactly the pass that exists to see it. The
+# hook at `.claude/hooks/secret-scan.mjs` carries the same rules under the same flags, and
+# `tests/test_secret_rule_parity.py` asserts that rather than trusting it.
+COMPILED = [
+    (label, re.compile(pattern, re.MULTILINE | (0 if label in CASE_SENSITIVE else re.IGNORECASE)))
+    for label, pattern in RULES
+]
 
 #: WHICH path may claim the exemption, and how many findings it may suppress there. A bare
 #: total was spendable two ways, both demonstrated. One exempt LINE holding a tuple of three
