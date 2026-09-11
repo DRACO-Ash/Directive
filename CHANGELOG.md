@@ -11,12 +11,13 @@ deployed yet, so every row below records a release that was cut, gated and merge
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security
-review PASS at `b3b798c`. Deploy gate **FAIL**, first run, at `ee7a1e1`. Engineering review
-**FAIL** at `c4a33cf`, on the Continuous Integration bill of materials still describing the
-pre-split dependency tree and on a test count in this file that had never been measured.
-Verification loop PASS at `b315a21`, 823 passed, 2 skipped, measured
-after the gate fixes rather than at the commit this row is headed by. Coverage measured at 98.98% at that
-commit. The test count here was once replaced with a LATER commit's figure while the commit
+review PASS at `b3b798c`, then eleven further runs against the packaging and verification
+machinery, every one of them FAIL and every finding in that machinery or in a shipped
+document rather than in the application. Deploy gate **FAIL**, first run, at `ee7a1e1`.
+Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of materials
+still describing the pre-split dependency tree and on a test count in this file that had
+never been measured. Verification loop PASS at `d5eef89`, 874 passed, 2 skipped, coverage
+98.98%, measured at that commit rather than at the commit this row is headed by. The test count here was once replaced with a LATER commit's figure while the commit
 name stayed, inside the sentence below that criticises that very mistake; both halves are now
 measured at the commit named. An earlier row here recorded a 98.84 to 98.89 range and was not
 re-measured when the test count beside it was updated, which is the same defect this file
@@ -38,6 +39,19 @@ records against others.
 ● `scripts/build-package.sh` and `scripts/simulate-pipeline.sh`. The artefact that would be
   uploaded had never been built or tested; both failures found by running it are now
   assertions in the build script.
+● The credential sweep over the staged package, and the matching pre-write hook, catch an
+  UNQUOTED assignment. Every secret this application consumes is written without quotes, so
+  the previous rule covered none of them: `CLIENT_SECRET=...` in `.env.example` built clean
+  and shipped at the package root. The rule now tolerates an `ENV`, `ARG`, `export`, `-e`,
+  `--env` or list-marker prefix at any indent, a second rule catches the same names in a
+  document parameter table, and both compile with MULTILINE as well as IGNORECASE, without
+  which they matched only at the first byte of a file and a UTF-16 credential below line one
+  shipped. Measured at zero false positives across every tracked file. `NAME = value` with
+  spaces stays uncaught and is recorded as an open limit under Open in scope in
+  `docs/GATE-RECORDS.md`: closing it flags sixteen ordinary constants here.
+● `.gitignore` refuses `.env.*` with `.env.example` excepted. The suffix list it replaced
+  missed `.env.production`, `.env.prod` and `.env.staging`, and no hook sees a human
+  `git add`, so the ignore file is the only control on that path into the history.
 ● `docs/OWASP-TOP-10-TEST.md`, the AMD-001 10.6 pre-deployment test, 82 checks, none failed.
 ● `docs/ACCREDITATION-REVIEW.md`, the AMD-001 10.4 review. **Signed, accredited with
   conditions**, by Ash Higgins as UK Information Security Officer, 2026-09-10.

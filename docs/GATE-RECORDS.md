@@ -31,6 +31,7 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, eighth run | `ef9c3f2` | **FAIL** | Three MAJORs. The `mktemp -d` work directory was held by no test; the test named for the `coverage.xml` guard was satisfied by an `echo` beneath it; and the deployment note claimed a deletion-matrix row per gate run against four rows for eight runs. |
 | 2026-09-11 | `security-reviewer`, ninth run | `52f3e14` | **FAIL** | Two MAJORs. The work-directory test asserted a literal name and, in its own docstring, a mode it never read, so a fixed name and a `chmod 755` both survived. And this table's eighth row carried a figure the source did not support. |
 | 2026-09-11 | `security-reviewer`, tenth run | `2819cf5` | **FAIL** | First run scored against the stated threat model. Three binding MAJORs: the credential sweep only matched a QUOTED assignment, so an unquoted `CLIENT_SECRET=...` in `.env.example` shipped at the package root, demonstrated end to end; the accreditation record pointed at a limits list that did not name it; and four constant-time comparisons were held by no test, replacing each with `==` leaving all 845 green. The reviewer endorsed the boundary and named two under-specifications, both since written in. |
+| 2026-09-11 | `security-reviewer`, eleventh run | `ff2c5d7` | **FAIL** | One BLOCKER and five MAJORs. The Accepted residual row written in that very commit spelled two probe names out in full, so the sweep matched its own record and the build refused: no package, twenty red tests, the loop exit 1. The new unquoted rule was anchored to the start of a line, so the same credential behind `ENV`, `ARG`, `-e` or a bullet, or between the pipes of a parameter table, shipped. The sweep compiled without MULTILINE, which made both anchored rules dead in exactly the NUL-stripped pass that exists to see a UTF-16 credential. `.gitignore` missed `.env.production`, `.env.prod` and `.env.staging`. And two controls were held by no test: the `.env.example` filename exemption and `set -e` in the simulation. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -51,7 +52,23 @@ in `SECURITY.md` and carried as an accreditation condition.
 | A quoted assignment split by an intervening comment passes both the sweep and the pre-write hook | Tenth run | Same class. Neither route crosses the comment text; recorded beside the sweep. |
 | `verify-mode-check` and `verify-extra-file-check` survive deletion | Tenth run | Neither condition is reachable through `git archive`; a build under `umask 0111` did not strip the mode. Benign but unheld, and recorded as such rather than given a test that could not fail. |
 | Two historical test probes in git history: a Privacy Enhanced Mail (PEM) private-key opening line at `330fb36`, and a file whose NAME carried the Amazon Web Services access-key-identifier shape at `24d93cc` | Tenth run | Neither carries key material; both were later assembled from parts, and neither is reachable from the current tree. No history rewrite warranted. Written here by description rather than by literal: writing either out in full makes this document refuse its own build. |
+| The `find -type l` staged-symlink refusal and the `examined == 0` guard both survive deletion | Eleventh run | Each is shadowed by a control that fires first: the manifest's mode-120000 refusal catches a committed symlink, and the `git archive produced nothing` check catches an empty stage. Benign, and recorded rather than given a test that could not fail. |
 | A volume writer can delete the anchor and its first-use marker together | Recorded since V2.1 | Stated openly in `SECURITY.md` and carried as an accreditation condition. |
+
+## Open in scope
+
+Not residual, and deliberately not in the table above: these are inside the threat model and
+are open. They are here so the next reviewer scores them as known rather than as new.
+
+● The content sweep matches `NAME=value` and a `| NAME | value |` table row. It does NOT
+  match `NAME = value` with spaces around the equals, and it does not match a `name: value`
+  mapping in YAML or JavaScript Object Notation (JSON). The spaces form was measured rather
+  than assumed: widening the equals to allow them flags sixteen ordinary Python constants in
+  this tree, so the rule would fire on every build and be switched off within a week. The
+  cost of closing it is a rule nobody keeps.
+● The sweep is a pattern sweep over text. Base64 or any other re-encoding, and anything
+  inside a compressed container, pass it. That limit is structural and is recorded beside
+  the sweep as well as here.
 
 ## Deletion matrix
 
