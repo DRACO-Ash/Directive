@@ -35,7 +35,8 @@ row says so rather than reconstructing it.
 What the security gate measured when it deleted each control in `scripts/build-package.sh`
 and `scripts/simulate-pipeline.sh` in turn and re-ran the packaging suite. A control that
 survives deletion is one the next edit can silently undo, which is how the pointer race was
-defeated three releases running. This table is the authoritative record; `docs/DEPLOYMENT.md`
+defeated three releases running. The probe sets differ between runs, so the counts are not
+comparable across rows; the survivor names are. This table is the authoritative record; `docs/DEPLOYMENT.md`
 points here rather than restating a figure, because restating it has been wrong three times.
 
 | Run | Commit | Probed | Caught | Survivors that mattered |
@@ -43,7 +44,8 @@ points here rather than restating a figure, because restating it has been wrong 
 | Fourth | `533fa5c` | ~19 | 8 | Eleven build controls and both simulation guards, including three the same release had just added. |
 | Sixth | `102df44` | 44 | 26 | The pointer `mktemp` fix, the simulation's red-suite guard, the coverage artefact assertion, the extra-file check. |
 | Seventh | `ab16c1b` | 40 | 26 | The pointer private directory, the exemption match count, the coverage artefact guard, the `find -type l` refusal. |
-| Eighth | `TBC, re-verify` | | | Tests were added for the pointer race, the match count and the coverage artefact after the seventh run; the matrix has not been re-run since. |
+| Eighth | `ef9c3f2` | 51 | 31 | The `mktemp -d` work directory, the `coverage.xml` guard, eight of the nine sweep rules, the cleanup trap, the `find -type l` refusal. |
+| Ninth | `TBC, re-verify` | | | Tests were added after the eighth run for the work directory, the coverage guard and every sweep rule; the matrix has not been re-run since. |
 
 ## V2.1
 

@@ -558,7 +558,11 @@ def test_a_planted_symlink_cannot_redirect_a_build_write(clone: Path) -> None:
     """
     victim = clone.parent / "outside-the-repository"
     victim.write_text("untouched\n", encoding="utf-8")
-    targets = ["latest", "latest.sha256", ".stage.manifest", ".stage"]
+    # Every predictable name the build has EVER used, including the current scheme's work
+    # directory. The previous version of this list held only the old names, so replacing the
+    # `mktemp -d` with a fixed `dist/.build` left the suite green while a symlink planted
+    # there destroyed a file outside the repository.
+    targets = ["latest", "latest.sha256", ".stage.manifest", ".stage", ".build", "package.zip"]
     stop = threading.Event()
 
     def plant() -> None:
@@ -573,11 +577,14 @@ def test_a_planted_symlink_cannot_redirect_a_build_write(clone: Path) -> None:
     racer = threading.Thread(target=plant, daemon=True)
     racer.start()
     try:
-        _build(clone)
+        built = _build(clone)
     finally:
         stop.set()
         racer.join(timeout=5)
 
+    # The build must SUCCEED as well as leave the victim alone, or an edit that makes it die
+    # early under the racer would satisfy this test for the wrong reason.
+    assert built.returncode == 0, built.stdout
     assert victim.read_text(encoding="utf-8") == "untouched\n", "a build write followed a symlink"
 
 
@@ -604,8 +611,73 @@ def test_the_simulation_asserts_the_coverage_artefact(clone: Path) -> None:
 
     A suite that passes without writing it still fails stage 6.
     """
+    manifest = clone / "pyproject.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'output = "coverage.xml"', 'output = "elsewhere.xml"'
+        ),
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: write the coverage report somewhere else")
     assert _build(clone).returncode == 0
     result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
 
-    assert result.returncode == 0, result.stdout
-    assert "coverage.xml:" in result.stdout
+    # Asserting the artefact's own message, not the `echo` beneath it: `wc -c < missing`
+    # leaves an empty substitution and `echo` still succeeds, so "coverage.xml:" appeared
+    # in the output with the guard deleted and this test held nothing.
+    assert result.returncode != 0, result.stdout
+    assert "coverage.xml was not written" in result.stdout
+    assert "SIMULATION: PASS" not in result.stdout
+
+
+def test_the_work_directory_is_private(clone: Path) -> None:
+    """The intermediates live in a mode-0700 directory, and nothing asserted the mode.
+
+    Replacing `mktemp -d` with a fixed `dist/.build` left every test green, and a symlink
+    planted at that name then destroyed a file outside the repository with the build exiting
+    0. A predictable name is the whole vulnerability, so both halves are asserted: the name
+    is not the fixed one, and the directory is unreadable by anyone else.
+    """
+    seen: list[Path] = []
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.is_set():
+            seen.extend(p for p in (clone / "dist").glob(".build.*") if p not in seen)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        assert _build(clone).returncode == 0
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+
+    assert seen, "no mktemp work directory was created; is the name fixed again?"
+    for work in seen:
+        assert work.name != ".build", "the work directory name must not be predictable"
+
+
+@pytest.mark.parametrize(
+    ("label", "probe"),
+    [
+        ("private key", "-----BEGIN RSA PRIVATE KEY-----"),
+        ("access gate", "ADMIN_" + "PIN = " + chr(39) + "9911" + chr(39)),
+        ("provider key", "sk-" + "a" * 24),
+        ("forge token", "glpat-" + "b" * 21),
+        ("chat token", "xoxb-" + "1234567890" + "-abcdef"),
+        ("cloud key", "AIza" + "C" * 35),
+    ],
+)
+def test_each_sweep_rule_can_refuse(clone: Path, label: str, probe: str) -> None:
+    """Eight of the nine rules were unexercised and could be deleted silently.
+
+    The access-gate rule is the sweep's arm of a CLAUDE.md hard rule; it had no test at all.
+    """
+    (clone / "docs" / f"probe-{label.replace(' ', '-')}.md").write_text(
+        f"notes\n{probe}\n", encoding="utf-8"
+    )
+    _commit(clone, f"probe: {label}")
+    result = _build(clone)
+
+    assert result.returncode != 0, f"{label} was not refused: {result.stdout}"
