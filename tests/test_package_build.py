@@ -22,9 +22,12 @@ import subprocess
 import threading
 import time
 import zipfile
+from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
+
+from sweep_rules import load_swept_filenames
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -290,12 +293,14 @@ def test_a_second_exemption_is_refused(clone: Path) -> None:
     assert "exemptions claimed" in result.stdout
 
 
-#: Every name the package filename sweep refuses, mirrored from the `find` expression in
-#: `scripts/build-package.sh`. It is a list rather than one probe because five of these were
-#: added in a single commit and deleting all five left the whole suite green: the only test
-#: of the sweep probed `deploy.pem`, and the 22-name parametrised test below it asserts
-#: `git check-ignore`, which holds `.gitignore` and never runs the sweep at all. The two
-#: lists are deliberately different and the difference is recorded beside the `find`.
+#: One probe name per `-name` pattern of the package filename sweep. It is a list rather
+#: than one probe because five patterns were added in a single commit and deleting all five
+#: left the whole suite green: the only test of the sweep probed `deploy.pem`, and the
+#: parametrised ignore test below it asserts `git check-ignore`, which holds `.gitignore`
+#: and never runs the sweep at all. The two lists are deliberately different and the
+#: difference is recorded beside the `find`. The mapping is asserted to be a bijection
+#: against the patterns read out of that `find`, because a hand-copied list holds nothing in
+#: the ADD direction: a new pattern with no probe beside it left the suite green.
 SWEPT_NAMES = [
     ".env",
     ".env.production",
@@ -313,6 +318,28 @@ SWEPT_NAMES = [
     "vault.kdbx",
     "signing.p8",
 ]
+
+
+def test_every_swept_pattern_has_exactly_one_probe() -> None:
+    """The mirror, asserted rather than maintained by hand.
+
+    `SWEPT_NAMES` is a list of example names; the sweep carries shell glob patterns. Each
+    pattern must match exactly one probe and each probe exactly one pattern, so neither
+    direction can drift. Deleting a pattern is caught by the probes going green when they
+    should be red; ADDING one was caught by nothing until this test existed.
+    """
+    patterns = load_swept_filenames()
+    matched = {
+        pattern: [name for name in SWEPT_NAMES if fnmatch(name, pattern)] for pattern in patterns
+    }
+
+    unprobed = sorted(pattern for pattern, names in matched.items() if not names)
+    assert not unprobed, f"patterns in the sweep with no probe in SWEPT_NAMES: {unprobed}"
+
+    stray = sorted(
+        name for name in SWEPT_NAMES if not any(fnmatch(name, pattern) for pattern in patterns)
+    )
+    assert not stray, f"probes in SWEPT_NAMES matching no pattern in the sweep: {stray}"
 
 
 @pytest.mark.parametrize("name", SWEPT_NAMES)
@@ -1145,6 +1172,9 @@ def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
         "service.keytab",
         "vault.kdbx",
         "signing.p8",
+        # The one pattern in that block that is a DIRECTORY. Nothing else catches a file
+        # inside it, and deleting the line left the suite green.
+        "secrets/live.txt",
         # `ssh-keygen -t ed25519` is the current default and writes an extensionless file,
         # so neither `*.pem` nor `*.key` matches it. `id_rsa` alone read as covered.
         "id_ed25519",
@@ -1165,6 +1195,7 @@ def test_a_credential_shaped_file_cannot_be_tracked(clone: Path, name: str) -> N
     into a file is the ordinary accident rather than an exotic one, and history is one-way.
     """
     probe = clone / name
+    probe.parent.mkdir(parents=True, exist_ok=True)
     probe.write_text(_PROBE_NAME + "=" + _PROBE_VALUE + "\n", encoding="utf-8")
     ignored = _run([_tool("git"), "-C", str(clone), "check-ignore", "-q", name])
 

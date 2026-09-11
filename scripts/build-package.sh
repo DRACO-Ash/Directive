@@ -299,7 +299,7 @@ RULES = [
     # must still CONTAIN one of these words and not begin with one, and that restriction is
     # deliberate and measured: making the leading `[A-Z][A-Z0-9_]*` optional gives 14
     # findings across the tracked tree, 9 of them in `src/` (eight `key_id=` and one
-    # `keys=`), at `72ab2d0`. So `SECRET_FOR_ENTRA=` is left open and recorded rather than
+    # `keys=`), at `1bdbdb8`. So `SECRET_FOR_ENTRA=` is left open and recorded rather than
     # bought at that price. `[REDACTED:...]` is the placeholder the hard
     # rule mandates and is allowed through. The optional opening delimiter is not decoration:
     # a backtick between the bullet and the name defeated the whole prefix set, and this
@@ -312,7 +312,7 @@ RULES = [
     # "Set NAME=value in the console", or a `docker run -e NAME=value` that does not begin
     # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
     # than a relaxed anchor on the one above. Folding case here gives 26 matches on 18 lines
-    # across all 157 tracked files at `72ab2d0`: 19 Python keyword arguments
+    # across all 157 tracked files at `1bdbdb8`: 19 Python keyword arguments
     # (`outgoing_key=`, `sort_keys=`) and 7 `sonar.projectKey=` lines in the skill
     # templates, the latter admitted by the preceding-character widening in this same
     # commit. Requiring the upper case name that every environment variable actually has
@@ -443,9 +443,12 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # `--env` or list-marker prefix and at any indent, and `| NAME | value |` is caught as
     # a document table row, but `NAME = value` with spaces around the equals is NOT, and a
     # `name: value` mapping in YAML or JSON is NOT. The spaces form was measured: widening
-    # the equals to allow them flags sixteen ordinary Python constants in this tree, so the
-    # rule would fire on every build and be turned off within a week. It is a real gap and
-    # it is recorded here rather than closed.
+    # the equals to allow them gives 22 findings on 22 lines across all 157 tracked files at
+    # `1bdbdb8`, so the rule would fire on every build and be turned off within a week. The
+    # experiment is to replace `=` with `[ \t]*=[ \t]*` in the unquoted rule alone and scan
+    # every tracked file; that sentence is the point, because this figure read "sixteen"
+    # here and "22" 154 lines above for one commit, one file contradicting itself about one
+    # experiment. It is a real gap and it is recorded here rather than closed.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
