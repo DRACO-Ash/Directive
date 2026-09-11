@@ -13,6 +13,7 @@ reimplementation of it in Python would pin the reimplementation.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -191,3 +192,155 @@ def test_a_credential_split_across_lines_is_caught(clone: Path) -> None:
 
     assert result.returncode != 0, result.stdout
     assert "split across lines" in result.stdout
+
+
+def test_the_exemption_cannot_be_claimed_from_a_nested_tests_directory(clone: Path) -> None:
+    """`"tests" in path.parts` matched any component of the ABSOLUTE stage path.
+
+    So `docs/tests/probe.py` with a marked credential satisfied it, and the credential
+    shipped in a clean-stamped package while the build printed one honoured exemption. The
+    check is anchored to the package root now.
+    """
+    nested = clone / "docs" / "tests"
+    nested.mkdir(parents=True)
+    (nested / "probe.py").write_text(f"{PROBE_CREDENTIAL}  # nosec\n", encoding="utf-8")
+    _commit(clone, "probe: nested tests directory")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "exemption marker outside" in result.stdout
+
+
+def test_a_utf16_credential_is_caught(clone: Path) -> None:
+    """The commonest non-UTF-8 text encoding carried a plain credential straight through.
+
+    Decoded as UTF-8 with replacement the credential is NUL-separated, which no ASCII rule
+    matches. PowerShell's `Out-File` and `>` produce exactly this, so it is a paste away.
+    """
+    probe = clone / "docs" / "probe-utf16.md"
+    probe.write_bytes(PROBE_CREDENTIAL.encode("utf-16-le"))
+    _commit(clone, "probe: utf-16 credential")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "NUL-separated" in result.stdout
+
+
+def test_a_credential_in_a_filename_is_caught(clone: Path) -> None:
+    """A key pasted as a filename never reaches a body scan."""
+    (clone / "docs" / "AKIAABCDEFGHIJKLMNOP.md").write_text("notes\n", encoding="utf-8")
+    _commit(clone, "probe: credential in a filename")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "in the filename" in result.stdout
+
+
+def test_a_second_exemption_is_refused(clone: Path) -> None:
+    """The count is pinned at the one line that needs it, so a second is a reviewed change."""
+    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite.write_text(
+        suite.read_text(encoding="utf-8") + f"\nSECOND = {PROBE_CREDENTIAL!r}  # nosec\n",
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: second exemption")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "claimed the exemption against" in result.stdout
+
+
+def test_a_credential_named_file_is_refused_by_name(clone: Path) -> None:
+    """The name sweep, which the body sweep does not subsume."""
+    (clone / "docs" / "deploy.pem").write_text("not actually a key\n", encoding="utf-8")
+    _commit(clone, "probe: credential-shaped name")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "looks like a credential" in result.stdout
+
+
+def test_a_nested_dockerfile_is_refused(clone: Path) -> None:
+    """A nested Dockerfile breaks App Store template detection and the build context."""
+    (clone / "src" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    _commit(clone, "probe: nested Dockerfile")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "nested Dockerfile" in result.stdout
+
+
+def test_an_implausible_version_is_refused(clone: Path) -> None:
+    """A slash in the version makes the recorded path and the written path disagree."""
+    manifest = clone / "pyproject.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('version = "2.2"', 'version = "2.2/../x"'),
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: implausible version")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "implausible version" in result.stdout
+
+
+def test_a_missing_required_file_is_refused(clone: Path) -> None:
+    """The suite reads these from the package root, so a package without one fails stage 5."""
+    _run([_tool("git"), "-C", str(clone), "rm", "--quiet", ".env.example"])
+    _commit(clone, "probe: remove a required file")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert ".env.example" in result.stdout
+
+
+def test_the_builder_records_a_digest_beside_the_pointer(clone: Path) -> None:
+    """The simulation binds the pointer to the bytes, so the builder must write the digest."""
+    result = _build(clone)
+
+    assert result.returncode == 0, result.stdout
+    digest = (clone / "dist" / "latest.sha256").read_text(encoding="utf-8").strip()
+    package = Path((clone / "dist" / "latest").read_text(encoding="utf-8").strip())
+    assert len(digest) == 64, digest
+    assert digest == hashlib.sha256((clone / package).read_bytes()).hexdigest()
+
+
+def test_the_simulation_refuses_a_pointer_with_no_digest(clone: Path) -> None:
+    """A MISSING digest was a skip, so the actor the check exists to stop removed it.
+
+    Repoint `dist/latest` at a foreign archive, delete `dist/latest.sha256`, and the
+    simulation unpacked it. It is a refusal now.
+    """
+    assert _build(clone).returncode == 0
+    (clone / "dist" / "latest.sha256").unlink()
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "cannot be trusted" in result.stdout
+
+
+def test_the_simulation_refuses_a_package_whose_bytes_changed(clone: Path) -> None:
+    """The pointer is a file in `dist/`; anything that can write there can rename an archive."""
+    assert _build(clone).returncode == 0
+    package = clone / (clone / "dist" / "latest").read_text(encoding="utf-8").strip()
+    package.write_bytes(package.read_bytes() + b"tampered")
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "does not match the digest" in result.stdout
+
+
+def test_the_simulation_refuses_a_tree_with_a_skip_bit_set(clone: Path) -> None:
+    """`git ls-files -v` reports `S` for skip-worktree, which `^[a-z]` silently missed.
+
+    With the bit set, a gutted control is invisible to `git status` and the stale package
+    returned SIMULATION: PASS.
+    """
+    assert _build(clone).returncode == 0
+    git = _tool("git")
+    _run([git, "-C", str(clone), "update-index", "--skip-worktree", "src/complyops/records.py"])
+    (clone / "src" / "complyops" / "records.py").write_text("# gutted\n", encoding="utf-8")
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "skip-worktree" in result.stdout
