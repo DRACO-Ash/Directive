@@ -264,6 +264,21 @@ RULES = [
     ("Slack token", r"\bxox[baprs]-[0-9A-Za-z\-]{10,}\b"),
     ("GitLab personal token", r"\bglpat-[0-9A-Za-z_\-]{20,}\b"),
     ("Client-side access gate", r"\b(?:ADMIN_)?PIN\s*=\s*['\"][0-9A-Za-z]{4,}['\"]"),
+    # The generic rule above requires QUOTES, and every secret this application actually
+    # consumes is written without them. `CLIENT_SECRET=Abc8Q~...` pasted into `.env.example`
+    # built clean and shipped at the package root, demonstrated end to end. That file is the
+    # worst possible place for the gap: its whole purpose is to carry exactly these names,
+    # dotenv format is unquoted by convention, the build REQUIRES it to ship, and it is
+    # deliberately exempt from the filename sweep, so this is the only control over it.
+    #
+    # Matched on the dotenv SHAPE rather than by widening the quoted rule, which flagged
+    # sixteen ordinary Python constants. Python writes `SUITE_KEY = bytes(...)` with spaces
+    # around the equals; dotenv never does. Measured at zero false positives across this
+    # tree and catching every shape demonstrated. `[REDACTED:...]` is the placeholder the
+    # hard rule mandates and is allowed through.
+    ("Unquoted environment-file credential",
+     r"^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*"
+     r"(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}"),
 ]
 COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in RULES]
 
@@ -332,7 +347,8 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # What this still does NOT see, recorded because the accreditation record now names
     # this sweep as the compensating control for the whole secret regime: base64 or other
     # encodings of a credential, anything inside a compressed container, and a credential
-    # carried in a filename or a directory name rather than a file body, and an assignment
+    # carried in a filename or a directory name rather than a file body, an UNQUOTED
+    # assignment outside the dotenv shape the rule below matches, and an assignment
     # split across lines by an intervening COMMENT, which neither pass sees because the
     # rule's whitespace class cannot cross the comment text. The path case is closed just
     # below, for every component. The rest are open and are real limits, not theoretical.

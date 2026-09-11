@@ -785,3 +785,84 @@ def test_a_symlinked_dist_is_refused(clone: Path) -> None:
     assert result.returncode != 0, result.stdout
     assert "dist is a symlink" in result.stdout
     assert not list(outside.iterdir()), "the build wrote through the link"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["CLIENT_" + "SECRET", "SESSION_" + "KEY", "AUDIT_HMAC_" + "KEY"],
+)
+def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -> None:
+    """Every secret this application consumes is written WITHOUT quotes.
+
+    The generic rule required them, so `CLIENT_SECRET=Abc8Q~...` pasted into `.env.example`
+    built clean and shipped at the package root. That file is the worst place for the gap:
+    its whole purpose is to carry exactly these names, dotenv format is unquoted by
+    convention, the build requires it to ship, and it is exempt from the filename sweep, so
+    the content rule is the only control over it. Every probe here is unquoted on purpose.
+    """
+    example = clone / ".env.example"
+    example.write_text(
+        example.read_text(encoding="utf-8") + f"\n{name}=Abc8QkPz3nR9wLmT2xV6yH1jF4dS7gB0\n",
+        encoding="utf-8",
+    )
+    _commit(clone, f"probe: unquoted {name}")
+    result = _build(clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "Unquoted environment-file credential" in result.stdout
+
+
+def test_the_redacted_placeholder_still_ships(clone: Path) -> None:
+    """The positive control. `[REDACTED:type]` is the form the hard rule mandates.
+
+    A rule that refused it would make `.env.example` unshippable and the package unbuildable,
+    which is how a credential control gets switched off.
+    """
+    result = _build(clone)
+
+    assert result.returncode == 0, result.stdout
+    package = clone / (clone / "dist" / "latest").read_text(encoding="utf-8").strip()
+    assert package.exists()
+
+
+def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
+    """`| head -1` closes stdout under the sweep, and the pipeline's status is `head`'s.
+
+    Without the handler the operator sees a last line of `package verified against HEAD`,
+    over a credential finding, for a build that produced nothing. Nothing ships either way;
+    the defect is that the read-out says the opposite of what happened.
+    """
+    example = clone / ".env.example"
+    example.write_text(
+        example.read_text(encoding="utf-8") + "\nCLIENT_" + "SECRET=Abc8QkPz3nR9wLmT2xV6yH1\n",
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: a finding behind a pipe")
+    piped = _run([_tool("sh"), "-c", "sh scripts/build-package.sh | head -1"], cwd=clone)
+
+    # NOT the exit code. A POSIX pipeline reports the LAST command's status, so `| head`
+    # returns 0 whatever the build did, and no change to this script can alter that: it is
+    # the caller's shell that decides, and `pipefail` is not POSIX. What the script can do
+    # is put the refusal where the closed pipe cannot swallow it, and write no artefact.
+    assert "could not finish" in piped.stderr, piped.stdout + piped.stderr
+    assert not list((clone / "dist").glob("*.zip")), "a package was written over a finding"
+    assert not (clone / "dist" / "latest").exists(), "a pointer was left over a finding"
+
+
+def test_the_simulation_fails_when_the_install_fails(clone: Path) -> None:
+    """Most refusals are an explicit `exit 1`; the install and unzip legs rely on `set -e`.
+
+    Deleting it left those legs able to continue to a green read-out.
+    """
+    assert _build(clone).returncode == 0
+    lock = clone / "requirements.txt"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace("flask==", "flask-does-not-exist=="),
+        encoding="utf-8",
+    )
+    _commit(clone, "probe: an uninstallable lockfile")
+    assert _build(clone).returncode == 0
+    result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
+
+    assert result.returncode != 0, result.stdout
+    assert "SIMULATION: PASS" not in result.stdout
