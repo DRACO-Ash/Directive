@@ -24,6 +24,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# EVERY probe in this module is assembled from parts, and that is not fussiness. The build
+# sweeps the package for credentials and this module SHIPS inside it, so a probe written
+# whole makes the script refuse its own test suite. It has happened four times in this file
+# alone: the credential, the AWS filename, the path-component token and the private-key
+# block. If you add a rule, add its probe in pieces.
+
 #: The probe credential, assembled from parts so the literal never appears in this file.
 #: Written whole, the packaging script's own content sweep flags this module and refuses to
 #: build, which is the sweep working correctly and the test being careless. Marking the
@@ -661,7 +667,7 @@ def test_the_work_directory_is_private(clone: Path) -> None:
 @pytest.mark.parametrize(
     ("label", "probe"),
     [
-        ("private key", "-----BEGIN RSA PRIVATE KEY-----"),
+        ("private key", "-----BEGIN " + "RSA PRIVATE KEY-----"),
         ("access gate", "ADMIN_" + "PIN = " + chr(39) + "9911" + chr(39)),
         ("provider key", "sk-" + "a" * 24),
         ("forge token", "glpat-" + "b" * 21),
