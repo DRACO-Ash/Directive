@@ -928,6 +928,26 @@ def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -
             "docker run -e " + _PROBE_NAME + "=" + _PROBE_VALUE + " comply-ops",
             "Credential written into prose",
         ),
+        (
+            "a list marker with no space after it",
+            "\u25cf" + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Credential written into prose",
+        ),
+        (
+            "a query string",
+            "https://comply-ops.example/cb?" + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Credential written into prose",
+        ),
+        (
+            "a query string after another parameter",
+            "https://comply-ops.example/cb?state=x&" + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "Credential written into prose",
+        ),
+        (
+            "a name the keyword does not end",
+            _PROBE_NAME + "_V2=" + _PROBE_VALUE,
+            "Unquoted environment-file credential",
+        ),
     ],
 )
 def test_a_credential_is_refused_wherever_the_line_starts(
@@ -1056,6 +1076,11 @@ def test_a_piped_build_reports_its_refusal(clone: Path) -> None:
         "secrets.yml",
         "credentials.json",
         "client_secret.json",
+        # `ssh-keygen -t ed25519` is the current default and writes an extensionless file,
+        # so neither `*.pem` nor `*.key` matches it. `id_rsa` alone read as covered.
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
     ],
 )
 def test_a_credential_shaped_file_cannot_be_tracked(clone: Path, name: str) -> None:
