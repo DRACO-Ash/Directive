@@ -12,6 +12,30 @@ Authentication stays in the application, against Entra ID with MSAL, rather than
 
 > Superseded by the App Store decision: the flight plan's Azure App Service target, Azure Key Vault, staging-slot deploy, Application Insights telemetry, and edge IP restriction. AUD-001's Monitoring and Alerting table names five Application Insights alerts that the App Store does not provide; the table is recorded as `TBC, re-verify` pending an AUD-001 amendment, and the gap is stated openly in `docs/DEPLOYMENT.md` rather than implied to be covered. Adam Field owns both amendments. AUD-001 and AMD-001 are otherwise binding on this build; note that the approval row of each is signed by no date yet.
 
+## Threat model (what the gates score against)
+
+Written down because nine security-gate runs found the application clean after the third and then kept finding build-machinery attacks, each correctly and each unbounded. A gate with no stated model scores against every adversary anyone can imagine. Ash's decision, 2026-09-11.
+
+**In scope, and every finding here is binding.**
+
+● **An unauthenticated caller** reaching the application over HTTP. Any route, any header, any body, any volume of traffic. This is the whole of the running service's attack surface and it is where the audit chain, the refusal bounds, the authentication flow and the security headers earn their place.
+● **An authenticated actor** doing something they should not, whether careless or hostile. One role exists, so the boundary is what the application refuses everyone, and the audit log is what makes it attributable.
+● **A supply-chain adversary** upstream of a dependency. Hash-locked lockfiles, a digest-pinned base, and a bill of materials that inventories what actually ships.
+● **Anyone reading the repository or the package.** No secret in any shippable file, in source or in history. The credential sweep over the staged package is part of this, not of the build-host model below.
+● **Anyone reading a shipped document.** A record that over-claims is a finding whatever the adversary, because it is evidence in front of an assessor. This class has been found in seven documents across V2.2 and it costs credibility rather than confidentiality.
+
+**Out of scope, and a finding here is advisory unless it is also one of the above.**
+
+● **An adversary who can commit to this repository.** They can change the application directly, so a control they can edit is not a control against them. The exemption allowance and the rule set in `scripts/build-package.sh` sit here.
+● **An adversary who can write to the build host's working tree or to `dist/` during a build.** They already hold enough to substitute the artefact outright. The symlink races, the work directory's mode and the pointer digest sit here.
+
+**Two things that this exclusion does NOT license, and they are the reason the exclusion is safe to state.**
+
+● **A control that exists must still be held by a test.** The build-host controls are hardening, and they stay, because they are written and they work. But this project narrowed and re-defeated the same one over five consecutive releases, every time because no test held it. A control that is correct today and unheld is one edit from being wrong, and the quality bar below already says so.
+● **Nothing here weakens a hard rule.** "No secrets in any shippable file" is in scope above and is not softened by the build-host exclusion beneath it.
+
+If a gate finds something outside the model, record it in `docs/GATE-RECORDS.md` as accepted residual with the reason, rather than fixing it silently or dropping it.
+
 ## Hard rules (never violate)
 
 ● **No secrets in any shippable file**, in source or in history. Read secrets from the environment; render any value in docs as `[REDACTED:type]`. The pre-write hook blocks a credential before it lands.
