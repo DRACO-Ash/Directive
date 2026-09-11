@@ -30,7 +30,24 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `security-reviewer`, seventh run | `ab16c1b` | **FAIL** | Four MAJORs. The manifest write was a fourth predictable name in `dist/` and fell to the same symlink race on the first attempt; the pointer fix and the exemption match count were both held by no test, so reverting either left the suite green; and two shipped documents over-claimed, one asserting a deletion matrix that did not exist. |
 | 2026-09-11 | `security-reviewer`, eighth run | `ef9c3f2` | **FAIL** | Three MAJORs. The `mktemp -d` work directory was held by no test; the test named for the `coverage.xml` guard was satisfied by an `echo` beneath it; and the deployment note claimed a deletion-matrix row per gate run against four rows for eight runs. |
 | 2026-09-11 | `security-reviewer`, ninth run | `52f3e14` | **FAIL** | Two MAJORs. The work-directory test asserted a literal name and, in its own docstring, a mode it never read, so a fixed name and a `chmod 755` both survived. And this table's eighth row carried a figure the source did not support. |
+| 2026-09-11 | `security-reviewer`, tenth run | `2819cf5` | **FAIL** | First run scored against the stated threat model. Three binding MAJORs: the credential sweep only matched a QUOTED assignment, so an unquoted `CLIENT_SECRET=...` in `.env.example` shipped at the package root, demonstrated end to end; the accreditation record pointed at a limits list that did not name it; and four constant-time comparisons were held by no test, replacing each with `==` leaving all 845 green. The reviewer endorsed the boundary and named two under-specifications, both since written in. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
+
+## Accepted residual
+
+Findings outside the threat model in `CLAUDE.md`, recorded rather than fixed silently or
+dropped. Each was demonstrated by the security gate, and each needs an adversary who can
+commit to this repository or write to the build host during a build. Such an adversary can
+edit `src/complyops/views/api.py` or substitute the artefact outright, so hardening the
+packaging script against them is theatre rather than defence.
+
+| Residual | Demonstrated | Why it is accepted |
+| --- | --- | --- |
+| A base64-encoded credential, and one inside a DEFLATE-compressed nested zip, pass the credential sweep | Tenth run, `2819cf5` | A pattern sweep over text cannot see a re-encoding. Recorded beside the sweep in `scripts/build-package.sh`. The sweep exists for an honest committer's paste, which is not encoded. |
+| A quoted assignment split by an intervening comment passes both the sweep and the pre-write hook | Tenth run | Same class. Neither route crosses the comment text; recorded beside the sweep. |
+| `verify-mode-check` and `verify-extra-file-check` survive deletion | Tenth run | Neither condition is reachable through `git archive`; a build under `umask 0111` did not strip the mode. Benign but unheld, and recorded as such rather than given a test that could not fail. |
+| Two historical test probes in git history: a `-----BEGIN RSA PRIVATE KEY-----` header at `330fb36` and a file named `AKIAABCDEFGHIJKLMNOP.md` at `24d93cc` | Tenth run | Neither carries key material; both were later assembled from parts. No history rewrite warranted. |
+| A volume writer can delete the anchor and its first-use marker together | Recorded since V2.1 | Stated openly in `SECURITY.md` and carried as an accreditation condition. |
 
 ## Deletion matrix
 

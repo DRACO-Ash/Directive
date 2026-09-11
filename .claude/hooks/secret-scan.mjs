@@ -35,7 +35,13 @@ const RULES = [
   // Banned anti-pattern: a hardcoded client-side access gate (public artifact PIN).
   ['Client-side access gate',    /\b(?:ADMIN_)?PIN\s*=\s*['"][0-9A-Za-z]{4,}['"]/],
   // Banned anti-pattern: ENV PORT in a Dockerfile silently overrides the platform port 8080.
-  ['Dockerfile ENV PORT',        /^\s*ENV\s+PORT\s*=/im]
+  ['Dockerfile ENV PORT',        /^\s*ENV\s+PORT\s*=/im],
+  // The generic rule above requires QUOTES and every secret this application consumes is
+  // written without them. Kept identical in shape to the packaging sweep's rule, because
+  // the two guard the same repository by different routes and a difference between them is
+  // a hole in whichever is narrower.
+  ['Unquoted environment-file credential',
+                                 /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|KEYS|PASSWORD|PASSWD|PWD)=(?!\[REDACTED:)\S{8,}/m]
 ];
 
 const hits = [];
