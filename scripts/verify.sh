@@ -89,8 +89,12 @@ for LOCKFILE in requirements-runtime.txt requirements.txt requirements-dev.txt; 
     echo "SKIPPED: the advisory service was unreachable, so $LOCKFILE was NOT checked."
     echo "Compensating control: the CI job on a networked runner fails hard on this."
   else
+    # Neither a finding nor a network failure. Reported as what it is rather than as a
+    # vulnerability: an unpinned requirement under `--require-hashes` exits non-zero here
+    # and was announced as a CVE, which is the mirror image of the mis-triage this loop set
+    # out to fix.
     cat "$REPORT"
-    echo "FAIL: a known vulnerability was reported in $LOCKFILE"
+    echo "FAIL: $LOCKFILE could not be audited; the report above says why"
     exit 1
   fi
 done

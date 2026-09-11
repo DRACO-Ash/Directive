@@ -296,7 +296,7 @@ a later reviewer, a gate, or a fresh session.
 
   Compensating controls in the meantime: restricting write access to the FILE_STORAGE volume as tightly as the platform allows, SharePoint versioning and retention on the exported packs once uploaded, and exporting on a defined cadence so an off-volume copy always exists. See "The export cadence is a security control" below.
 ● The base image is patched by rebasing to a newer pinned digest, not by `apt-get upgrade` at build time, so the image stays reproducible from its pinned inputs. Check for a newer `python:3.12-slim` digest before each release.
-● The platform pipeline simulation has not been run against a package artefact, because no package script exists yet. It must be green before any upload.
+● ~~The platform pipeline simulation has not been run against a package artefact.~~ **Closed.** `scripts/build-package.sh` and `scripts/simulate-pipeline.sh` exist, are documented under The upload package above, and the simulation returns `SIMULATION: PASS` against the built artefact. Seven tests in `tests/test_package_build.py` exercise the build's refusals, which nothing did for three consecutive security gates.
 ● Deployment to the App Store rather than Azure App Service is not yet signed off by the Managing Director.
 
 ## AUD-001 and AMD-001 conformance
