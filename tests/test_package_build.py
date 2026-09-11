@@ -228,7 +228,10 @@ def test_a_utf16_credential_is_caught(clone: Path) -> None:
 
 def test_a_credential_in_a_filename_is_caught(clone: Path) -> None:
     """A key pasted as a filename never reaches a body scan."""
-    (clone / "docs" / "AKIAABCDEFGHIJKLMNOP.md").write_text("notes\n", encoding="utf-8")
+    # Assembled from parts, for the same reason as PROBE_CREDENTIAL: written whole, the
+    # filename rule this test exercises flags this very module and refuses the build.
+    probe_key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    (clone / "docs" / f"{probe_key}.md").write_text("notes\n", encoding="utf-8")
     _commit(clone, "probe: credential in a filename")
     result = _build(clone)
 
