@@ -314,9 +314,9 @@ _SHAPES = (
 #: nothing. MEMBERSHIP is held by `PHRASINGS`, which catches a deletion semantically: the
 #: phrasing stops being readable. What `FROZEN_SHAPES` uniquely holds is ORDER, and order is
 #: load-bearing: the alternation is leftmost-first, and the sweep compares the text that
-#: matched against the allowed set, so a reorder changes which alternative wins. The sweep
-#: does catch a harmful reorder, measured; this makes it red at the anchor rather than four
-#: hundred lines away in a message about a document.
+#: matched against the allowed set, so a reorder changes which alternative wins. The sweep catches a
+#: harmful reorder too; what this uniquely holds, measured, is MEMBERSHIP under a
+#: coordinated deletion from `_SHAPES` and `PHRASINGS` together, which nothing else sees.
 FROZEN_SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -563,30 +563,6 @@ def test_the_sonar_split_adds_up() -> None:
     assert len(sonar) - len(templates) == EXPECTED_SONAR_IN_PROJECT
 
 
-@pytest.mark.parametrize("shape", _SHAPES)
-def test_every_shape_matches_its_own_rendering(shape: str) -> None:
-    """The scanner must be able to read what it is written to read.
-
-    Widening `_EMPHASIS` to strip backticks made four hand-written alternatives unmatchable,
-    because they still carried backticks themselves, and the sweep went silently blind to a
-    whole canonical sentence and three clauses. Nothing failed. A false figure of that shape
-    then passed green in the accreditation record, which is the document the sweep's own comment
-    sends an assessor to.
-
-    This asserts the property that was violated: each shape, rendered with a number and put
-    through the same normalisation as a file, is found by the compiled pattern. It is the
-    check to keep whenever `_EMPHASIS` or `_SHAPES` changes.
-    """
-    rendered = _normalise(shape.replace("{n}", "42"))
-
-    # Its OWN pattern, not the whole alternation: a shape subsumed by a shorter sibling
-    # would otherwise pass while being individually broken, which was measured.
-    assert re.compile(_shape_pattern(shape)).search(rendered), (
-        f"the scanner cannot read its own shape {shape!r}, which renders as {rendered!r}. "
-        "Something normalised on one side of the comparison and not the other."
-    )
-
-
 def test_every_declared_figure_is_a_shape_the_scanner_reads() -> None:
     """And the other direction: every figure this module asserts is one it can also find.
 
@@ -649,10 +625,9 @@ def test_the_shape_set_is_the_frozen_one() -> None:
     deleted three shapes and shipped a false figure into the accreditation record with the
     suite green.
 
-    `PHRASINGS` catches a deletion semantically, so a two-place edit is red. What this
-    anchor adds is ORDER: the alternation is leftmost-first and the sweep judges the text
-    that matched, so a reorder changes the verdict. The sweep does catch a harmful reorder
-    on its own; this makes it red here rather than four hundred lines away.
+    Deleting a shape from `_SHAPES` alone is red at the phrasing corpus. Deleting it from
+    `_SHAPES` and `PHRASINGS` together is red HERE and nowhere else, measured, which is why
+    this anchor stays.
     """
     assert _SHAPES == FROZEN_SHAPES
 
@@ -681,16 +656,17 @@ def test_every_phrasing_is_banned_by_the_compiled_scanner() -> None:
     for shape, phrasing in PHRASINGS.items():
         normalised = _normalise(phrasing)
 
-        match = _RENDERINGS.search(normalised)
+        # The shape's OWN pattern. The alternation is leftmost-first, so a decoy earlier in
+        # the phrasing became the match and the shape under test was never judged: a
+        # phrasing of `47 findings on 47 lines and 0 false positives` passed on the first
+        # clause while carrying an allowed figure in the second.
+        match = re.compile(_shape_pattern(shape)).search(normalised)
 
         assert match is not None, (
             f"{phrasing!r} would not be read back, so a figure in the shape {shape!r} could "
             "be written into a shipped document unnoticed"
         )
-        # The MATCHED text, which is what the sweep judges. Comparing the whole phrasing let
-        # a phrasing whose matched substring was an allowed figure pass while the sweep
-        # allowed it: `0 false positives in the tree` is not an allowed string, and
-        # `0 false positives` is.
+        # The MATCHED text, which is what the sweep judges, rather than the whole phrasing.
         assert match.group(0) not in allowed, (
             f"{phrasing!r} matches as {match.group(0)!r}, a number this module MEASURED, so "
             "it is an allowed figure rather than a banned one and this test proves nothing"
@@ -713,10 +689,15 @@ def test_the_scanner_reads_a_figure_through_every_markup_it_knows(marker: str) -
     for shape, phrasing in PHRASINGS.items():
         marked = _emphasised(phrasing, marker)
 
-        # The fixture must actually emphasise. Reducing `_emphasised` to `return phrasing`
-        # left this test asserting what every other test already asserts, and the stripper
-        # was unheld again for one invisible line.
-        assert marker in marked, f"{marker!r} was not applied to {phrasing!r}"
+        # EVERY digit run wrapped, not merely the marker present somewhere. `return phrasing`
+        # retired this leg once; `return f"{marker}{phrasing}"` satisfies a presence check
+        # while leaving every digit bare, which retires it again. The property is that the
+        # scanner reads a figure THROUGH the markup, so the fixture must put markup on the
+        # figures.
+        for run in _DIGITS.findall(phrasing):
+            assert f"{marker}{run}{marker}" in marked, (
+                f"{marker!r} was not wrapped around {run!r} in {phrasing!r}"
+            )
         assert _RENDERINGS.search(_normalise(marked)), (
             f"{marked!r} is invisible to the scanner, so a figure in the shape {shape!r} "
             f"wrapped in {marker!r} would ship unread. The emphasis stripper has been "
@@ -745,3 +726,7 @@ def test_the_marker_corpus_covers_the_stripper() -> None:
     exercised = {character for marker in EMPHASIS_MARKERS for character in marker}
 
     assert exercised == set(_STRIPPED_CHARACTERS)
+    # And both against a literal, because tying them to each other alone let them be
+    # narrowed together: one marker and a one-character class was green, and three markups
+    # went unread again.
+    assert exercised == {"`", "*", "~", "_"}

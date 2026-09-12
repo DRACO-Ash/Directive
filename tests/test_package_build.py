@@ -939,8 +939,8 @@ def test_the_simulations_cleanup_trap_survives_a_signal(clone: Path) -> None:
     # The SCRIPT'S OWN work directory, not everything in `TMPDIR`. The simulation runs a
     # nested pytest at stage 5, which creates its own `pytest-of-*` tree there and owns it;
     # asserting the whole directory is empty made this test stricter than the property it
-    # names and it went red under concurrent load, on a runner exactly as loaded as
-    # Continuous Integration. `mktemp -d` names the script's directory `tmp.XXXXXXXX`.
+    # names and it went red under concurrent load. `mktemp -d` names the script's own
+    # directory `tmp.` followed by random characters, which is what this matches.
     survivors = list(scratch.glob("tmp.*"))
 
     assert not survivors, f"a signal left the unpacked package behind: {survivors}"

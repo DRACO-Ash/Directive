@@ -83,7 +83,8 @@ one.
   anything written in the same shapes. Every part of that was added only because an earlier attempt at it
   closed one and left the next open: the measurement, then the prose reporting it, then
   the files outside the declared three, then the clauses inside a pinned sentence. Every
-  figure is a digit now, because a figure written as a word is invisible to any scanner.
+  figure the module reads back is a digit, because one written as a word is invisible
+  to any scanner.
 ● `tests/test_house_voice_hook.py` executes the house-voice hook once per registered tool.
   Nothing referenced that hook at all, and it had shipped unable to read a notebook write
   while registered for one. Four figures in shipped files
