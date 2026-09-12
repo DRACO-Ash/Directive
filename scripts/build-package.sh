@@ -470,9 +470,12 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # keyword group carries `api_key`, `secret`, `token`, `password`, `passwd` and `pwd` but
     # not a bare `key` or `keys`, which the unquoted rule's group does carry, so `key = "..."`
     # in source is not caught. Adding them gives 7 findings on 7 lines across every tracked
-    # file, 6 beyond the declared double the shipped rules already report; every one of the
-    # six is a session or header NAME rather than a value, such as `ACTOR_KEY` and
-    # `TOKEN_KEY`. Left open at a measured price, like the other three.
+    # file, 6 beyond the declared double the shipped rules already report, every one a
+    # session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`.
+    # Those three module names are derived from the scan and asserted, and the count is not
+    # restated as a word: a decomposed figure needs every part held, and a figure written as
+    # a word is invisible to any scanner. Left open at a measured price, like the other
+    # three.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1

@@ -120,19 +120,30 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
     public set or refuses an anonymous caller. A new route is then gated or it is a
     deliberate one-line addition to that set, reviewable in the diff, rather than an
     unauthenticated hole nobody notices.
+
+    `HEAD` and `OPTIONS` are not walked, because Werkzeug adds both to every rule that
+    declares `GET` and neither reaches a handler the rule does not already declare. A rule
+    that declared `HEAD` ALONE would therefore be walked by nothing; none exists, and `HEAD`
+    on every gated route was probed directly at the twenty-ninth security run and answered
+    401. Recorded rather than closed, because the exclusion is real.
     """
     adapter = client.application.url_map.bind("localhost")
     walked = []
     for rule in client.application.url_map.iter_rules():
         for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
-            if (method, rule.rule) in PUBLIC_ROUTES:
-                continue
             path = rule.rule.replace("<register>", "tasks").replace("<path:filename>", "x")
+            #: BEFORE the exemption, not after. Skipping a declared-public pair first left
+            #: nothing checking WHO serves it: a second `GET /api/diagnostics` registered on
+            #: another blueprint ahead of `health_bp` shadowed the read-out and served the
+            #: credential presence map and `DATA_DIR` to an anonymous caller, with this test
+            #: and its companion both green.
             reached, _ = adapter.match(path, method=method)
             assert reached == rule.endpoint, (
                 f"{method} {path} reaches {reached}, not {rule.endpoint}, so this walk "
                 "never exercised the rule it thinks it did"
             )
+            if (method, rule.rule) in PUBLIC_ROUTES:
+                continue
             response = client.open(path, method=method)
             if rule.rule.startswith("/api/"):
                 gated = response.status_code in {401, 403}

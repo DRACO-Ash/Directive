@@ -545,6 +545,80 @@ def test_every_breakdown_clause_is_still_said_where_it_belongs(clause: str) -> N
         )
 
 
+#: The declared test double the shipped rules already report, which is the seventh of the
+#: quoted rule's widened findings and the one that is NOT part of the price. Pinned by path
+#: so the split below is measured rather than assumed: if the double moves, the split is
+#: re-derived rather than silently counting a real finding as the double.
+DECLARED_DOUBLE = "tests/test_entra_sign_in.py"
+
+
+def _beyond_the_double() -> list[tuple[str, int, str]]:
+    """Return the widened quoted rule's findings that are not the declared test double."""
+    pattern, flags = _widenings()["quoted rule with bare key and keys in its keyword group"]
+    return [
+        entry for entry in _scan(pattern, flags, tracked_files()) if entry[0] != DECLARED_DOUBLE
+    ]
+
+
+def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
+    """The decomposition of the 7, held the way the sonar split is held.
+
+    A figure decomposed into parts needs EVERY part held. The count was pinned and the
+    sentence around it was not, so `All six ... in `store.py` and `config.py`` - a count
+    contradicting itself inside one sentence, naming two modules that carry none of the
+    findings - passed the whole suite. The module names are derived from the scan here, and
+    the prose states no second count at all, because a count written as a word is invisible
+    to any scanner and was free for exactly that reason.
+    """
+    beyond = _beyond_the_double()
+
+    assert len(beyond) == EXPECTED_BEYOND_THE_DOUBLE, (
+        f"{len(beyond)} findings beyond the declared double, not {EXPECTED_BEYOND_THE_DOUBLE}"
+    )
+    widened = EXPECTED["quoted rule with bare key and keys in its keyword group"][0]
+    assert widened == EXPECTED_BEYOND_THE_DOUBLE + 1, (
+        "the price and the double no longer add up to the widened rule's total"
+    )
+
+    #: The module basenames the carriers name. Basenames rather than paths, because both
+    #: carriers write them that way and a path would put `src/complyops/` into a sentence
+    #: that is about which modules hold the names, not where the tree puts them.
+    modules = sorted({Path(entry[0]).name for entry in beyond})
+    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
+        flowed = _flowed(path)
+        missing = [name for name in modules if _normalise(f"`{name}`") not in flowed]
+        assert not missing, (
+            f"{path.name} does not name {missing}, which is where the findings beyond the "
+            "declared double actually are"
+        )
+
+    #: And nothing else: naming a module that carries none of them is the half of the defect
+    #: a positive check alone would miss. Read from the sentence itself rather than the whole
+    #: file, because these basenames appear all over both carriers for unrelated reasons.
+    #: Compared through `_normalise` on both sides, because it strips the backticks a
+    #: carrier writes around a module name and the underscore inside one.
+    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
+        sentence = _quoted_rule_sentence(path)
+        named = set(re.findall(r"\b([A-Za-z0-9_]+\.py)\b", sentence))
+        assert named == {_normalise(name) for name in modules}, (
+            f"{path.name} names {sorted(named)} where the scan gives {modules}, compared "
+            "with the emphasis markers stripped from both sides"
+        )
+
+
+def _quoted_rule_sentence(path: Path) -> str:
+    """Return the clause of `path` that states the quoted rule's price, flowed.
+
+    Bounded at the pinned clause so the module check reads the sentence that makes the
+    claim rather than the file, which mentions every one of these modules elsewhere.
+    """
+    flowed = _flowed(path)
+    clause = _normalise(f"{EXPECTED_BEYOND_THE_DOUBLE} beyond the declared double")
+    start = flowed.find(clause)
+    assert start != -1, f"{path.name} no longer states the price at all"
+    return flowed[start : start + 400]
+
+
 def test_the_sonar_split_adds_up() -> None:
     """The three parts of one figure, asserted against each other as well as the tree.
 
