@@ -571,9 +571,14 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     The passage states no count as a WORD, and that is asserted rather than claimed. Saying
     it in a docstring was not enough twice: `All six` went in, was removed, and `Those three
     module names` went in behind it, both free because no scanner reads a word. The digits
-    in the passage are held by the shape sweep and the breakdown clauses; a word count is
-    banned, case-folded, with the ordinals that name a gate run removed first. Banning it
-    is the only way to hold a figure no scanner can read.
+    in the passage that are written in one of the pinned SHAPES are held by the shape sweep
+    and the breakdown clauses. A free-form digit clause is held by neither, so every digit
+    here must belong to a measured rendering, clause and all: `5 of these sit in auth.py.`
+    was green, and so was `7 modules carry them.`, which uses a pinned VALUE in an unpinned
+    clause and is false. Saying the digits were already held was the premise that justified
+    banning only words, and it was false. A word count is banned too,
+    case-folded, with the ordinals that name a gate run removed first: banning it is the
+    only way to hold a figure no scanner can read.
     """
     beyond = _beyond_the_double()
 
@@ -600,6 +605,23 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
         assert not spelled, (
             f"{path.name} states {spelled} as a word in the price passage, where no scanner "
             "can read it. Write the figure as a digit and pin it, or delete the clause."
+        )
+
+    #: Every DIGIT in the passage belongs to a rendering this module measured, CLAUSE and
+    #: all. Requiring only that the value was pinned somewhere is not enough: `7` is the
+    #: widened rule's finding count, so `7 modules carry them.` - false, there are three -
+    #: passed a value-level check and was green on the whole suite. The renderings are
+    #: removed longest first so a short one cannot consume part of a longer one, and code
+    #: spans go first because a commit hash is a span full of digits that is not a figure.
+    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
+        residue = _normalise(_CODE_SPAN.sub(" ", _quoted_rule_passage_raw(path)))
+        for rendering in sorted(_allowed(), key=len, reverse=True):
+            residue = residue.replace(rendering, " ")
+        loose = sorted(set(re.findall(r"[0-9]+", residue)))
+        assert not loose, (
+            f"{path.name} states {loose} in the price passage outside any rendering this "
+            "module measured. Pin the measurement and write the figure in its shape, or "
+            "delete the clause."
         )
 
     #: The module basenames the carriers name. Basenames rather than paths, because both
@@ -633,6 +655,11 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
 #: locating on it too would make one edit red in two places and say nothing extra.
 _PRICE_CLAUSE = "beyond the declared double"
 
+#: A Markdown or shell code span. Removed before the digit ban reads the passage: a commit
+#: hash is a span full of digits that are not a figure, and `9b3bba3` alone would otherwise
+#: have to be pinned as though someone had measured nine of something.
+_CODE_SPAN = re.compile(r"`[^`]*`")
+
 #: The ordinals the passage legitimately writes, removed before the ban reads it. They name
 #: the gate runs that asked for the figure; `twenty-eighth` is a run's number, not a
 #: quantity of anything. Named explicitly rather than matched as "anything hyphenated",
@@ -640,20 +667,34 @@ _PRICE_CLAUSE = "beyond the declared double"
 #: required: with the suffix optional this pattern stripped a bare `Thirty` and handed the
 #: ban a passage the count had already been removed from, which was green. A standalone
 #: ordinal such as `twentieth` is matched by the second alternation instead.
+#:
+#: `third` is deliberately NOT in that alternation, because it is a fraction as well as an
+#: ordinal: stripping it handed the ban a passage `A third of these sit in auth.py` had
+#: already been removed from, which was green. A compound `twenty-third` is still stripped,
+#: by the first alternation, which is where an ordinal naming a gate run actually appears.
 _ORDINALS = re.compile(
     r"\b(?:twen|thir|for|fif|six|seven|eigh|nine)ty[- ]"
     r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b"
-    r"|\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth"
+    r"|\b(?:first|second|fourth|fifth|sixth|seventh|eighth|ninth|tenth"
     r"|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth"
     r"|eighteenth|nineteenth|twentieth|thirtieth)\b",
     re.IGNORECASE,
 )
 
-#: The counts a restatement in the price passage could take, banned there in either case.
-#: From two upwards, because `one` appears as a pronoun in that passage and banning it would
-#: buy nothing but a worse sentence. Carried past twenty because the ban is declared as a
-#: class closure and a class that stops at twenty is not closed; `hundred` and `dozen` are
-#: here for the same reason, though no figure in this project has reached either.
+#: The words a restatement in the price passage could take, banned there in either case.
+#: NOT a closure over "a count written as a word", and the claim is narrowed rather than the
+#: list called complete: English has more ways to say a number than a list can hold, and the
+#: numerals-only version of this list was walked around with `A pair sit in csrf.py, a
+#: couple in auth_routes.py and the rest in auth.py`, a false decomposition of the very
+#: figure the ban is for, green on the whole suite. The vague counts below are the near end
+#: of that class, which is where the walk-arounds actually came from; the far end is open
+#: and is recorded as accepted residual in `docs/GATE-RECORDS.md` rather than implied
+#: closed.
+#:
+#: Two exclusions, each because the passage uses the word for something else and banning it
+#: would buy a worse sentence rather than a held figure. `one` is a pronoun there ("every
+#: one a session key NAME"), and `both` counts the keyword group's two words ("the unquoted
+#: rule's group carries both words"), not the price.
 _WORD_NUMBERS = (
     "two",
     "three",
@@ -683,10 +724,38 @@ _WORD_NUMBERS = (
     "ninety",
     "hundred",
     "dozen",
+    "dozens",
+    "score",
+    "couple",
+    "pair",
+    "pairs",
+    "trio",
+    "quartet",
+    "handful",
+    "several",
+    "twice",
+    "thrice",
+    "third",
+    "thirds",
+    "quarter",
+    "quarters",
+    "half",
+    "halves",
+    "twos",
+    "threes",
+    "fours",
+    "fives",
+    "sixes",
+    "sevens",
 )
 
 
 def _quoted_rule_passage(path: Path) -> str:
+    """Return `_quoted_rule_passage_raw` as a reader sees it: flowed, markers stripped."""
+    return _normalise(_quoted_rule_passage_raw(path))
+
+
+def _quoted_rule_passage_raw(path: Path) -> str:
     """Return the passage of `path` that states the quoted rule's price, flowed.
 
     Bounded at the PASSAGE, which is the contiguous comment block in the script and the
@@ -697,8 +766,8 @@ def _quoted_rule_passage(path: Path) -> str:
     whole file, still found the true ones, and the suite stayed green. A window measured in
     characters is a window an editor can walk out of. A window measured in the structure of
     the document is harder to walk out of, and be exact about which structure: the comment
-    PARAGRAPH here, bounded by a bare `#`, not the comment run, which is 3865 characters
-    over nine paragraphs about unrelated parts of this sweep; and the bullet up to the next
+    PARAGRAPH here, bounded by a bare `#`, not the comment run, which carries several
+    unrelated paragraphs about other parts of this sweep; and the bullet up to the next
     bullet or heading, not up to the next blank line, because a continuation indented one
     blank line below the bullet reads as part of the same claim and was green when the
     bound stopped at the blank.
@@ -718,10 +787,13 @@ def _quoted_rule_passage(path: Path) -> str:
     start = end = index
     if path.suffix == ".sh":
         #: The comment PARAGRAPH, not the whole comment run. The run around this clause is
-        #: 3865 characters over nine paragraphs about unrelated parts of the sweep, and it
-        #: already contains the word `Two`, so a run-wide ban would have been red on arrival
-        #: and a run-wide module check reads claims that are not this one's. A bare `#` line
-        #: separates paragraphs in this script, which is the structure the bound uses.
+        #: several thousand characters over several paragraphs about unrelated parts of the
+        #: sweep, and it already contains the word `Two`, so a run-wide ban would have been
+        #: red on arrival and a run-wide module check reads claims that are not this one's.
+        #: No figure is given for either, deliberately: the first version of this comment
+        #: gave both, and one was invalidated by the same commit that wrote it while the
+        #: other was never measured at all. A bare `#` line separates paragraphs in this
+        #: script, which is the structure the bound uses.
         while start > 0 and _is_prose_comment(lines[start - 1]):
             start -= 1
         while end + 1 < len(lines) and _is_prose_comment(lines[end + 1]):
@@ -739,7 +811,7 @@ def _quoted_rule_passage(path: Path) -> str:
             or lines[end + 1].lstrip().startswith("|")
         ):
             end += 1
-    return _normalise("\n".join(lines[start : end + 1]))
+    return "\n".join(lines[start : end + 1])
 
 
 def _is_prose_comment(line: str) -> bool:
@@ -750,6 +822,69 @@ def _is_prose_comment(line: str) -> bool:
     """
     stripped = line.strip()
     return stripped.startswith("#") and stripped != "#"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "body", "expected", "unexpected"),
+    [
+        pytest.param(
+            ".md",
+            "● A bullet. 6 beyond the declared double, in `auth.py`.\n\n"
+            "  A continuation one blank line below.\n"
+            "## A heading\n"
+            "  Text under the heading.\n",
+            "A continuation one blank line below",
+            "Text under the heading",
+            id="the record bullet ends at a heading, not at a blank line",
+        ),
+        pytest.param(
+            ".md",
+            "● A bullet. 6 beyond the declared double, in `auth.py`.\n| a | table | row |\n",
+            "A bullet",
+            "table",
+            id="the record bullet ends at a table row",
+        ),
+        pytest.param(
+            ".md",
+            "● A bullet. 6 beyond the declared double, in `auth.py`.\n● The next bullet.\n",
+            "A bullet",
+            "The next bullet",
+            id="the record bullet ends at the next bullet",
+        ),
+        pytest.param(
+            ".sh",
+            "    # A paragraph. 6 beyond the declared double, in `auth.py`.\n"
+            "    #\n"
+            "    # The next paragraph.\n",
+            "A paragraph",
+            "The next paragraph",
+            id="the script paragraph ends at a bare hash",
+        ),
+        pytest.param(
+            ".sh",
+            "    # A paragraph. 6 beyond the declared double, in `auth.py`.\n    code_line=1\n",
+            "A paragraph",
+            "codeline",
+            id="the script paragraph ends at a line of code",
+        ),
+    ],
+)
+def test_the_passage_bound_ends_where_the_structure_does(
+    tmp_path: Path, suffix: str, body: str, expected: str, unexpected: str
+) -> None:
+    """Each terminator of `_quoted_rule_passage`, against a document written to need it.
+
+    The live carriers exercise one terminator each, so the heading and the table row were
+    held by nothing: deleting either left the suite green, because the price bullet happens
+    to be followed by another bullet today. A control is unfinished until a mutation shows
+    it can fail, and a terminator no document reaches cannot fail.
+    """
+    document = tmp_path / f"carrier{suffix}"
+    document.write_text(body, encoding="utf-8")
+    passage = _quoted_rule_passage(document)
+
+    assert _normalise(expected) in passage, f"the bound dropped {expected!r}"
+    assert _normalise(unexpected) not in passage, f"the bound ran past into {unexpected!r}"
 
 
 def test_the_sonar_split_adds_up() -> None:
