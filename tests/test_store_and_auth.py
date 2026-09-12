@@ -654,6 +654,46 @@ def test_the_build_context_hides_the_test_inclusive_lockfile() -> None:
     assert "requirements-runtime.txt" not in entries, "the image needs this one"
 
 
+def test_the_shipped_stage_runs_as_the_non_root_numeric_user() -> None:
+    """A hard rule, and it was held by nothing: deleting the line ships a root container.
+
+    No test in this suite referenced `USER` at all, and the sibling test below inspects only
+    the instructions that add a layer, so `USER` was invisible to it. Removing the line left
+    the whole suite green and the package build at exit 0. The setuid sweep and the single
+    layer are both held; this was the one member of the set that was not.
+
+    Numeric on purpose: a name needs `/etc/passwd`, which a scratch image does not carry,
+    and a platform that reads the image config would see an unresolvable name rather than a
+    non-root user.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    ship = dockerfile.split("FROM scratch", 1)[1]
+    users = [
+        line.split(maxsplit=1)[1].strip() for line in ship.splitlines() if line.startswith("USER ")
+    ]
+
+    assert users, "the shipped stage sets no USER, so the container runs as root"
+    assert users[-1] == "10001:10001", f"the shipped stage ends as {users[-1]!r}"
+
+
+def test_the_shipped_stage_sets_neither_port_nor_data_dir() -> None:
+    """The other half of the same hard rule, and unheld for the same reason.
+
+    `ENV PORT=` in the image overrides the platform's own value, which is how a container
+    binds the wrong port and fails its health check with nothing in the logs to say why.
+    `ENV DATA_DIR=` does the same to the storage contract.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    ship = dockerfile.split("FROM scratch", 1)[1]
+    declared = [
+        line.strip()
+        for line in ship.splitlines()
+        if line.strip().startswith("ENV ") and ("PORT" in line or "DATA_DIR" in line)
+    ]
+
+    assert not declared, f"the image pins a platform value: {declared}"
+
+
 def test_the_shipped_stage_adds_no_layer_after_the_flattening_copy() -> None:
     """One layer is a hard rule, and a WORKDIR is a filesystem mutation like any other.
 
