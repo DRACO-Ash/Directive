@@ -419,6 +419,37 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
         )
 
 
+def word_counts_in(passage: str) -> list[str]:
+    """Return the counts written as WORDS in `passage`, in either case.
+
+    A function rather than four lines inside the live check, because the live carriers are
+    the only thing that reached it and they are correct: dropping the case fold, or making
+    the ordinal suffix optional again, left the whole suite green. A control no carrier
+    reaches is one edit from being wrong, which this project has now proved three rounds
+    running. `test_the_bans_catch_what_they_were_written_for` reaches every refinement.
+    """
+    readable = _ORDINALS.sub(" ", passage)
+    return [word for word in _WORD_NUMBERS if re.search(rf"(?i)\b{word}\b", readable)]
+
+
+def loose_digits_in(raw_passage: str) -> list[str]:
+    """Return the digits in `raw_passage` that belong to no rendering this passage may use.
+
+    Takes the RAW passage, before normalisation, because the commit-hash exemption reads
+    backticks and `_normalise` strips them.
+
+    Each entitled rendering is removed ONCE. `replace` with no count removes every
+    occurrence, so a second copy of a rendering sharing a line was cleared with the first
+    and carried a false claim out with it. A Unicode-aware digit class rather than an ASCII
+    one, because an Arabic-Indic
+    digit renders to a reader as a number and was invisible to an ASCII class.
+    """
+    residue = _normalise(_COMMIT_HASH_SPAN.sub(" ", raw_passage))
+    for rendering in sorted(_entitled(), key=len, reverse=True):
+        residue = residue.replace(rendering, " ", 1)
+    return sorted(set(re.findall(r"\d+", residue)))
+
+
 def _entitled() -> set[str]:
     """Return the renderings the PRICE PASSAGE may carry a digit for, and no others.
 
@@ -620,9 +651,7 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: `one` is not banned: the passage uses it as a pronoun ("every one a session key
     #: NAME") and banning it would force a worse sentence to satisfy a test.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        passage = _quoted_rule_passage(path)
-        readable = _ORDINALS.sub(" ", passage)
-        spelled = [word for word in _WORD_NUMBERS if re.search(rf"(?i)\b{word}\b", readable)]
+        spelled = word_counts_in(_quoted_rule_passage(path))
         assert not spelled, (
             f"{path.name} states {spelled} as a word in the price passage, where no scanner "
             "can read it. Write the figure as a digit and pin it, or delete the clause."
@@ -638,16 +667,7 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: renderings are removed longest first so a short one cannot consume part of a longer
     #: one, and the hash goes first because it is the one run of digits that is no figure.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        residue = _normalise(_COMMIT_HASH_SPAN.sub(" ", _quoted_rule_passage_raw(path)))
-        #: ONCE each. `replace` with no count removes every occurrence, so a second copy of
-        #: an entitled rendering on the same line was cleared with the first and carried a
-        #: false claim out with it: `6 beyond the declared double are in auth.py.` asserts
-        #: six findings in a module that holds two, and was green in both carriers. The
-        #: module-name check cannot see it, because the true sentence already names all
-        #: three modules.
-        for rendering in sorted(_entitled(), key=len, reverse=True):
-            residue = residue.replace(rendering, " ", 1)
-        loose = sorted(set(re.findall(r"[0-9]+", residue)))
+        loose = loose_digits_in(_quoted_rule_passage_raw(path))
         assert not loose, (
             f"{path.name} states {loose} in the price passage outside any rendering this "
             "module measured. Pin the measurement and write the figure in its shape, or "
@@ -884,11 +904,13 @@ def _quoted_rule_passage_raw(path: Path) -> str:
         #: named, `examined += 1  # 9 of these sit in auth.py.`, is the THIRD code line and
         #: was still green. Reach the whole run, or say the bound is one line; claiming the
         #: general case while implementing the specific one is how the last four rounds went.
+        #: Blank lines included, for the same reason: stopping at the first one left a
+        #: trailing claim one blank line below the paragraph unread while the record said
+        #: every line of the run was taken in, which is the general claim over the specific
+        #: implementation again, one round later.
         trailing = []
         cursor = end + 1
-        while (
-            cursor < len(lines) and lines[cursor].strip() and not _is_prose_comment(lines[cursor])
-        ):
+        while cursor < len(lines) and not _is_prose_comment(lines[cursor]):
             if "#" in lines[cursor]:
                 trailing.append(lines[cursor][lines[cursor].index("#") :])
             cursor += 1
@@ -1026,6 +1048,36 @@ def _is_prose_comment(line: str) -> bool:
             "A heading",
             id="a line beginning with a hash and no space does not end the bullet",
         ),
+        pytest.param(
+            ".sh",
+            "    x = 1\n"
+            "    #\n"
+            "    # A claim above the clause.\n"
+            "    # 6 beyond the declared double, in `auth.py`.\n",
+            "A claim above the clause",
+            "x = 1",
+            id="the script paragraph reaches back above the clause",
+        ),
+        pytest.param(
+            ".md",
+            "● The previous bullet.\n"
+            "● A claim above the clause.\n"
+            "  6 beyond the declared double, in `auth.py`.\n",
+            "A claim above the clause",
+            "The previous bullet",
+            id="the record bullet reaches back above the clause",
+        ),
+        pytest.param(
+            ".sh",
+            "    # A paragraph. 6 beyond the declared double, in `auth.py`.\n"
+            "    first_line=1\n"
+            "\n"
+            "    later_line=2  # a claim below a blank line\n"
+            "    # The next paragraph.\n",
+            "a claim below a blank line",
+            "The next paragraph",
+            id="the take crosses a blank line in the code run",
+        ),
     ],
 )
 def test_the_passage_bound_ends_where_the_structure_does(
@@ -1050,6 +1102,113 @@ def test_the_passage_bound_ends_where_the_structure_does(
 
     assert _normalise(expected) in passage, f"the bound dropped {expected!r}"
     assert _normalise(unexpected) not in passage, f"the bound ran past into {unexpected!r}"
+
+
+@pytest.mark.parametrize(
+    ("passage", "expected_words", "expected_digits"),
+    [
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
+            [],
+            [],
+            id="a commit hash is exempt and the true clause is clean",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
+            [],
+            ["1000000"],
+            id="a backticked run of decimal digits is not a hash",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. 6 beyond the declared double "
+            "are in `auth.py`.",
+            [],
+            ["6"],
+            id="a repeated entitled rendering is removed once, not twice",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
+            ["fifth"],
+            [],
+            id="a bare ordinal is a fraction and is banned",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
+            ["three"],
+            [],
+            id="a count at the start of a sentence is banned, case folded",
+        ),
+        pytest.param(
+            "6 beyond the declared double, asked for at the twenty-eighth run.",
+            [],
+            [],
+            id="a compound ordinal names a gate run and is not a count",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
+            ["thirty"],
+            [],
+            id="a bare tens word is a count, not half an ordinal",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. \u0666 sit in `csrf.py`.",
+            [],
+            ["\u0666"],
+            id="an Arabic-Indic digit is a digit",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
+            ["pair"],
+            [],
+            id="a vague count on the list is banned",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. The split is 19 Python keyword "
+            "arguments in `auth.py`.",
+            [],
+            ["19"],
+            id="another experiment's figure is not this passage's to state",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
+            [],
+            ["123"],
+            id="a backticked hex run shorter than a hash is not exempt",
+        ),
+    ],
+)
+def test_the_bans_catch_what_they_were_written_for(
+    passage: str, expected_words: list[str], expected_digits: list[str]
+) -> None:
+    """Every refinement of both bans, against a passage written to need it.
+
+    The live carriers are correct, so they reach no refinement: dropping the case fold,
+    making the ordinal suffix optional, exempting every code span, or replacing an entitled
+    rendering everywhere rather than once all left the whole suite green. That is the same
+    defect the terminator carriers were added for, one layer along, and it has now produced
+    a MAJOR three rounds running. These cases fail when any one refinement is undone.
+    """
+    assert word_counts_in(_normalise(passage)) == expected_words
+    assert loose_digits_in(passage) == expected_digits
+
+
+def test_a_repeated_price_clause_is_refused(tmp_path: Path) -> None:
+    """Two copies of the clause on ONE line must not read as one.
+
+    Counting LINES that carry the clause let a second copy share a line with the first and
+    pass, which is exactly what a repeated entitled rendering needs to launder a false
+    decomposition. Held here because both live carriers state it once, correctly, so no
+    mutation of the count reached anything: reverting to a line count was green.
+    """
+    document = tmp_path / "carrier.md"
+    document.write_text(
+        "● A bullet. 6 beyond the declared double, in `auth.py`. Of the 6 beyond the "
+        "declared double, all are in `auth.py`.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="states the price 2 times"):
+        _quoted_rule_passage_raw(document)
 
 
 def test_the_sonar_split_adds_up() -> None:
