@@ -255,14 +255,19 @@ def test_an_enumerated_workflow_state_is_accepted(state: str) -> None:
         ("a short sentence", "REPORTER CHANGED"),
     ],
 )
-def test_a_state_field_structurally_cannot_carry_record_content(label: str, value: str) -> None:
+def test_a_state_field_rejects_the_common_shapes_of_record_content(label: str, value: str) -> None:
     """The pattern is the data-minimisation control, not a convention.
 
     AUD-001 asks for the old and new value of a changed field. For a status that is
     right; for an incident's content it would put personal data into a log that is
-    immutable by design, which no correction and no Article 17 erasure can reach. A field
-    that cannot hold a name, an address, an email or a sentence cannot carry that content
-    by accident, whatever a future caller intends.
+    immutable by design, which no correction and no Article 17 erasure can reach.
+
+    Be exact about what the rule buys, because CLAUDE.md forbids the stronger claim BY
+    NAME and this test made it anyway: it rejects the common SHAPES of record content,
+    which is what the cases below are, and it does not make record content impossible.
+    `HIGGINS`, `ASHLEY_HIGGINS`, `JANE_DOE_LONDON` and `SW1A1AA` are all accepted,
+    measured. A single upper-case token can be a surname. The guarantee is a large
+    reduction in surface plus caller discipline, which is what `validation.py` says.
     """
     with pytest.raises(validation.AuditFieldError, match="cannot carry record content"):
         validation.normalise_fields(fixed_entry(new_state=value))
