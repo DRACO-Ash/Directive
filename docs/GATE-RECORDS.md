@@ -55,8 +55,10 @@ row says so rather than reconstructing it.
 | 2026-09-12 | `engineering-reviewer`, fifteenth pass | `e787043` | **FAIL** | Two MAJORs. The test named for banning a phrasing asserted only that the scanner could READ it, so a phrasing carrying a measured number would be read and then allowed, and the property survived its own falsification. And the figure for the previous round's deletion was the UNMUTATED pass count attached to a mutated run. It also measured that the frozen shape copy holds ORDER rather than membership, which the comment beside it got wrong. |
 | 2026-09-12 | `security-reviewer`, twenty-third run | `e07434d` | **FAIL** | Two MAJORs. The ban assertion compared the WHOLE phrasing while the sweep judges the matched substring, so a phrasing whose match was an allowed figure passed the test named for banning it. And this sweep's own comment claimed every figure in the file was re-measured, in a file the accreditation record sends an assessor to, while a line count in a note four lines below it was free to be anything. |
 | 2026-09-12 | `engineering-reviewer`, sixteenth pass | `e07434d` | **FAIL** | Two MAJORs. The asymmetric leg added to hold the emphasis stripper was retired by one invisible line: neutering the fixture left it asserting what every other test already asserted. And a comment counted four unbacked shapes five lines from an assertion deriving two, in the module whose purpose is that prose cannot hold a number. It judged the module past the point where its own complexity is the risk, on the evidence that both MAJORs were false sentences rather than wrong code. |
-| 2026-09-12 | `security-reviewer`, twenty-fourth run | `3b4fb54` | **FAIL** | Two MAJORs. The guard added the round before closed the INSTANCE and not the class: a fixture returning the marker prepended to the phrasing satisfied a presence check while leaving every digit bare, and with the stripper then disabled a false figure shipped green. And the ban assertion read the alternation's leftmost match, so a decoy clause earlier in a phrasing became the match and the shape under test was never judged. Fifteen injection probes against the live sweep were refused, one being the recorded open limit. |
+| 2026-09-12 | `security-reviewer`, twenty-fourth run | `3b4fb54` | **FAIL** | Two MAJORs. The guard added the round before closed the INSTANCE and not the class: a fixture returning the marker prepended to the phrasing satisfied a presence check while leaving every digit bare, and with the stripper then disabled a false figure shipped green. And the ban assertion read the alternation's leftmost match, so a decoy clause earlier in a phrasing became the match and the shape under test was never judged. Of fifteen injection probes against the live sweep, fourteen were refused and one shipped, that one being the recorded open limit. |
 | 2026-09-12 | `engineering-reviewer`, seventeenth pass | `3b4fb54` | **FAIL** | One MAJOR, shared: two experiment figures written as WORDS sat outside the carve-out of a sentence claiming every experiment figure in the block was re-measured, in a file the accreditation record sends an assessor to. Both gates were asked for a deletion plan rather than more findings, and both gave one. |
+| 2026-09-12 | `security-reviewer`, twenty-fifth run | `221d5ef` | **FAIL** | One MAJOR and one MINOR, both shared with the pass below: a docstring and this record pointed a maintainer at a test the same commit had deleted, and the justification for keeping the shape anchor was stated generally where it holds narrowly. It withdrew its own twenty-fourth-run recommendation to delete that anchor, on measurement. Its attacks on the live sweep, the audit chain, the route gating and the container rules all held. |
+| 2026-09-12 | `engineering-reviewer`, eighteenth pass | `221d5ef` | **FAIL** | Two MAJORs, the dangling citation and the over-stated anchor justification, measured exhaustively across all fifteen shapes. It judged the test set minimal on measurement and proposed the structural answer to the class that has produced every MAJOR for five rounds: make a named test reference machine-checkable rather than auditing it by eye. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -84,8 +86,11 @@ in `SECURITY.md` and carried as an accreditation condition.
 
 The twenty-fourth security run recommended deleting `FROZEN_SHAPES` on the ground that
 membership is held twice without it. The seventeenth engineering pass measured the case that
-recommendation does not cover: deleting a shape from `_SHAPES` and `PHRASINGS` TOGETHER is
-red at that anchor and nowhere else. The anchor is kept on the engineering gate's
+recommendation does not cover, and both gates have since re-measured it across all fifteen
+shapes: for the two that are substrings of a longer sibling, deleting from `_SHAPES` and
+`PHRASINGS` together is red at that anchor and nowhere else. For the other thirteen another
+test is red as well. The twenty-fifth security run withdrew its recommendation on that
+measurement. The anchor is kept on the engineering gate's
 measurement, and its docstring now states that narrower reason rather than the order claim
 it carried before. Both gates agreed on everything else they proposed cutting, and that was
 done: a self-consistency test measured redundant under the exact defeat it was written for,
@@ -123,9 +128,9 @@ Be exact about what that cost, because the widening reopened a larger hole than 
 stripping backticks from the text while four of the shapes still contained backticks made
 those four unmatchable, and a false figure of that shape shipped green in the accreditation
 record. The shapes are written once as templates and compiled through the same normalisation
-the text goes through, so the two agree by construction, and a test asserts that every shape
-still matches its own rendering. That assertion is the one to keep whenever the stripper
-changes; it is what nothing checked. All three parts, because every earlier attempt closed one and left the next
+the text goes through, so the two agree by construction, and each shape is exercised
+against its own phrasing, so a stripper change that makes a shape unreadable is red there.
+That is the assertion to keep whenever the stripper changes; it is what nothing checked. All three parts, because every earlier attempt closed one and left the next
 open: pinning the measurement left the prose free, and a reviewer rewrote 22 to 47 and 26 to
 99 in three documents with the suite green; pinning three named files left every other
 shipped document free, and a reviewer put false figures in `README.md` and in the
