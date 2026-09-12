@@ -292,9 +292,12 @@ RULES = [
     # around it, which flags 22 findings on 22 lines across every tracked file. Python
     # writes `SUITE_KEY = bytes(...)` with spaces around the equals; dotenv never does.
     #
-    # Every figure in this file is re-measured by `tests/test_sweep_cost_figures.py`, which
-    # runs the experiment against the live rules and the live tree AND asserts the sentence
-    # you are reading. No commit hash is cited because none is needed: a figure that drifts
+    # Every EXPERIMENT figure in this rules block is re-measured by
+    # `tests/test_sweep_cost_figures.py`, which runs the experiment against the live rules
+    # and the live tree AND asserts the sentence you are reading. Not every number in this
+    # file: the line counts and dates in the notes below narrate what went wrong and are
+    # history, not measurement, and saying otherwise here was an over-claim in a file an
+    # assessor is sent to. No commit hash is cited because none is needed: a figure that drifts
     # from the tree is a red test, not a stale sentence. That is the fifth attempt at this
     # class, after a number written three ways, a file contradicting itself 154 lines apart,
     # and a count written stale in the commit that changed what it counted.
