@@ -274,34 +274,11 @@ def _normalise(text: str) -> str:
 #: caught and a clause reworded away was not, until the carrier map existed.
 #:
 #: THE RESIDUAL, stated in both directions because only one of them was stated before.
-#: Adding a new phrasing to a document without adding it here drifts silently, and there is
-#: no way to close that with a regular expression. REMOVING a phrasing from here drifts
-#: silently too, and that one IS closable: the shapes in `UNBACKED_SHAPES` back no declared
-#: figure and exist only to ban a wording this project has retired or could regress to, so
-#: nothing else would miss them. Deleting three shapes left the suite green while a false
-#: figure sailed into the accreditation record. Changing the set costs an edit in three
-#: places, here, `FROZEN_SHAPES` and `PHRASINGS`, and four for an unbacked one, which is
-#: also in `UNBACKED_SHAPES`.
-_SHAPES = (
-    "{n} findings on {n} lines across every tracked file",
-    "{n} matches on {n} lines across every tracked file",
-    "{n} findings on {n} lines",
-    "{n} matches on {n} lines",
-    "{n} findings across the tracked tree, {n} of them in `src/`",
-    "{n} tracked files",
-    "{n} Python keyword arguments",
-    "{n} `sonar.projectKey=` lines",
-    "{n} of them in the skill templates",
-    "{n} in this project's own",
-    "{n} are `key_id=`",
-    "{n} is `keys=`",
-    "{n} beyond the declared double",
-    "{n} findings across every tracked file",
-    "{n} finding across every tracked file",
-    "{n} false positives",
-)
-
-
+#: Defined ABOVE its live twin on purpose. Below it, `FROZEN_SHAPES = _SHAPES` compiles
+#: and retires the anchor in one edit, which was green; above it, the same alias raises
+#: `NameError` at collection. `FROZEN_WORD_NUMBERS` had that protection by accident, and
+#: it is deliberate for both now. A committer removing what looks like duplication is the
+#: honest mistake this pair exists to survive.
 #: The same set, written out again on purpose, and be exact about what this holds, because
 #: a reader who thinks it is a redundant copy will update it reflexively and it will hold
 #: nothing.
@@ -331,6 +308,34 @@ FROZEN_SHAPES = (
     "{n} finding across every tracked file",
     "{n} false positives",
 )
+
+#: Adding a new phrasing to a document without adding it here drifts silently, and there is
+#: no way to close that with a regular expression. REMOVING a phrasing from here drifts
+#: silently too, and that one IS closable: the shapes in `UNBACKED_SHAPES` back no declared
+#: figure and exist only to ban a wording this project has retired or could regress to, so
+#: nothing else would miss them. Deleting three shapes left the suite green while a false
+#: figure sailed into the accreditation record. Changing the set costs an edit in three
+#: places, here, `FROZEN_SHAPES` and `PHRASINGS`, and four for an unbacked one, which is
+#: also in `UNBACKED_SHAPES`.
+_SHAPES = (
+    "{n} findings on {n} lines across every tracked file",
+    "{n} matches on {n} lines across every tracked file",
+    "{n} findings on {n} lines",
+    "{n} matches on {n} lines",
+    "{n} findings across the tracked tree, {n} of them in `src/`",
+    "{n} tracked files",
+    "{n} Python keyword arguments",
+    "{n} `sonar.projectKey=` lines",
+    "{n} of them in the skill templates",
+    "{n} in this project's own",
+    "{n} are `key_id=`",
+    "{n} is `keys=`",
+    "{n} beyond the declared double",
+    "{n} findings across every tracked file",
+    "{n} finding across every tracked file",
+    "{n} false positives",
+)
+
 
 #: One concrete phrasing per shape, with a number that is NOT the measured one, so each
 #: shape is exercised against its own pattern rather than against whichever sibling happens
@@ -512,18 +517,6 @@ def test_the_ban_list_is_the_frozen_one() -> None:
     assert _WORD_NUMBERS == FROZEN_WORD_NUMBERS
 
 
-#: A Roman numeral. Closed rather than recorded: the residual row that carried it gave a
-#: reason the tree does not support, claiming a pattern for these would be red on arrival,
-#: and measurement says neither price passage carries one. Upper case only, so the ordinary
-#: words `i`, `c` and `d` are not swept up.
-_ROMAN = re.compile(r"\b[IVXLCDM]{1,7}\b")
-
-
-def roman_numerals_in(passage: str) -> list[str]:
-    """Return the Roman numerals in `passage`, which are counts no digit scan reads."""
-    return _ROMAN.findall(_normalise(passage))
-
-
 def price_passage_findings(raw_passage: str) -> dict[str, list[str]]:
     """Return everything the price passage would be refused for, as one verdict.
 
@@ -531,10 +524,9 @@ def price_passage_findings(raw_passage: str) -> dict[str, list[str]]:
     the two real carriers, which are correct, so no mutation of it reaches anything: a line
     per check is a line per check that can be deleted with the suite green, demonstrated on
     the Roman-numeral check the round it was added. Everything the loop refuses is decided
-    here, where `test_the_bans_catch_what_they_were_written_for` reaches it.
+    here, where `test_the_bans_catch_what_they_were_written_for` reaches both keys.
     """
     return {
-        "roman": roman_numerals_in(raw_passage),
         "words": word_counts_in(raw_passage),
         "digits": loose_digits_in(raw_passage),
     }
@@ -786,6 +778,18 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: it licensed `the three-module list`, which is exactly the figure the ban is for.
     #: `one` is not banned: the passage uses it as a pronoun ("every one a session key
     #: NAME") and banning it would force a worse sentence to satisfy a test.
+    #: Every DIGIT in the passage, a commit hash excepted, belongs to a rendering this
+    #: passage is ENTITLED to, CLAUSE and all. Requiring only that the value was pinned
+    #: somewhere is not enough: `7` is the widened rule's finding count, so `7 modules
+    #: carry them.` - false, there are three - passed a value-level check and was green.
+    #: Nor is every rendering the module measured enough: clearing the whole allowed set
+    #: let a figure belonging to ANOTHER experiment stand here, and `The split is 19 Python
+    #: keyword arguments in auth.py.` was green on a figure that is the prose rule's. The
+    #: renderings are removed longest first, which is SHADOWED today and recorded as
+    #: residual rather than claimed as held: the two entitled renderings are disjoint, so
+    #: no short one can consume part of a longer one. The hash goes first because it is the
+    #: one run of digits that is no figure.
+    #:
     #: ONE assertion over the whole verdict, not one per check. A live loop with a line per
     #: check has a line per check to delete, and deleting the Roman-numeral line was green
     #: because no carrier reaches this loop - it iterates the two real carriers, which are
@@ -794,22 +798,11 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
         findings = price_passage_findings(_quoted_rule_passage_raw(path))
         assert not any(findings.values()), (
-            f"{path.name} states {findings} in the price passage. A word or a Roman numeral "
-            "is a count no scanner can read; a loose digit belongs to no rendering this "
-            "module measured. Write the figure in a pinned shape, or delete the clause."
+            f"{path.name} states {findings} in the price passage. A count written as a word "
+            "is one no scanner can read; a loose digit belongs to no rendering this module "
+            "measured. Write the figure in a pinned shape, or delete the clause."
         )
 
-    #: Every DIGIT in the passage, a commit hash excepted, belongs to a rendering this
-    #: passage is ENTITLED to, CLAUSE and all. Requiring only that the value was pinned
-    #: somewhere is not enough: `7` is the widened rule's finding count, so `7 modules carry
-    #: them.` - false, there are three - passed a value-level check and was green. Nor is
-    #: every rendering the module measured enough: clearing the whole allowed set let a
-    #: figure belonging to ANOTHER experiment stand here, and `The split is 19 Python
-    #: keyword arguments in auth.py.` was green on a figure that is the prose rule's. The
-    #: renderings are removed longest first, which is SHADOWED today and recorded as
-    #: residual rather than claimed as held: the two entitled renderings are disjoint, so no
-    #: short one can consume part of a longer
-    #: one, and the hash goes first because it is the one run of digits that is no figure.
     #: The module basenames the carriers name. Basenames rather than paths, because both
     #: carriers write them that way and a path would put `src/complyops/` into a sentence
     #: that is about which modules hold the names, not where the tree puts them.
@@ -869,8 +862,30 @@ _COMMIT_HASH_SPAN = re.compile(r"`(?=[0-9a-f]{7,40}`)[0-9a-f]*[a-f][0-9a-f]*`")
 #: auth.py` was stripped before the ban could read it and was green, which is the same
 #: walk-around one word over for the third time on this construct. `A fifth` was caught and
 #: `A twenty-fifth` was not. The lookahead requires the noun these passages actually use,
-#: within two words, so `twenty-eighth security run` and `twenty-second engineering pass`
-#: are stripped and no fraction is.
+#: with AT MOST ONE word between, and only the two nouns these documents actually use. Each
+#: of those three numbers was bought with a measured walk-around, so none is arbitrary.
+#:
+#: Two words of slack let a fraction through: `A twenty-fifth OF EACH run` reached the noun
+#: and was stripped. One word does not, because a fraction puts its preposition in that slot
+#: and the noun then lands a word too far. `gate` and `round` were in the set and were
+#: inert, measured: dropping both left every case green, and `round` in particular reads as
+#: an ordinary noun anywhere near a figure. `pass` stays because the record writes
+#: `engineering pass`, and it is the reason the bound matters: `A twenty-fifth of these PASS
+#: the gate` was stripped while three words of slack were allowed.
+#:
+#: So `twenty-eighth security run`, `twenty-eighth run` and `twenty-second engineering pass`
+#: are stripped, and a compound fraction is not.
+#:
+#: The ordinal SUFFIX is required and that requirement is SHADOWED, measured rather than
+#: assumed: the separator before it is mandatory, so a bare tens word consumes the space the
+#: lookahead then needs, and no input distinguishes the strict pattern from one with the
+#: suffix optional. Recorded as residual rather than given a carrier that could not fail,
+#: which is how the `find -type l` and `examined == 0` guards are treated. It stays because
+#: it is correct and because the lookahead it depends on is one edit from changing.
+#:
+#: That is the fourth generation of this
+#: walk-around, and what is still open is recorded rather than claimed: an ordinal one word
+#: from `run` or `pass` in any other construction is stripped whatever it means.
 #:
 #: The rest of this note is why the compound form is the only shape here at all. A
 #: standalone alternation once carried `fourth` through
@@ -885,7 +900,7 @@ _COMMIT_HASH_SPAN = re.compile(r"`(?=[0-9a-f]{7,40}`)[0-9a-f]*[a-f][0-9a-f]*`")
 _ORDINALS = re.compile(
     r"\b(?:twen|thir|for|fif|six|seven|eigh|nine)ty[- ]"
     r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b"
-    r"(?=(?:\s+\w+){0,2}\s+(?:run|pass|gate|round)\b)",
+    r"(?=(?:\s+\w+)?\s+(?:run|pass)\b)",
     re.IGNORECASE,
 )
 
@@ -1248,121 +1263,306 @@ def test_the_passage_bound_ends_where_the_structure_does(
     assert _normalise(unexpected) not in passage, f"the bound ran past into {unexpected!r}"
 
 
+#: The ban corpus, written out again on purpose and ABOVE its live twin, so that
+#: `FROZEN_BAN_CASES = BAN_CASES` raises `NameError` at collection rather than quietly
+#: retiring the anchor. Same reason and same placement as `FROZEN_SHAPES`.
+#:
+#: CONTENT, not pytest ids. Freezing the ids alone let a case be hollowed out to inert
+#: values with its id kept and the whole suite green, which is an id promising a
+#: refinement over a body asserting none.
+FROZEN_BAN_CASES = (
+    (
+        "a commit hash is exempt and the true clause is clean",
+        "6 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
+        [],
+        [],
+    ),
+    (
+        "a backticked run of decimal digits is not a hash",
+        "6 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
+        [],
+        ["1000000"],
+    ),
+    (
+        "a repeated entitled rendering is removed once, not twice",
+        "6 beyond the declared double, in `auth.py`. 6 beyond the declared "
+        "double are in `auth.py`.",
+        [],
+        ["6"],
+    ),
+    (
+        "a bare ordinal is a fraction and is banned",
+        "6 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
+        ["fifth"],
+        [],
+    ),
+    (
+        "a count at the start of a sentence is banned, case folded",
+        "6 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
+        ["three"],
+        [],
+    ),
+    (
+        "a compound ordinal names a gate run and is not a count",
+        "6 beyond the declared double, asked for at the twenty-eighth run.",
+        [],
+        [],
+    ),
+    (
+        "a bare tens word is a count, not half an ordinal",
+        "6 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
+        ["thirty"],
+        [],
+    ),
+    (
+        "an Arabic-Indic digit is a digit",
+        "6 beyond the declared double, in `auth.py`. ٦ sit in `csrf.py`.",
+        [],
+        ["٦"],
+    ),
+    (
+        "a vague count on the list is banned",
+        "6 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
+        ["pair"],
+        [],
+    ),
+    (
+        "another experiment's figure is not this passage's to state",
+        "6 beyond the declared double, in `auth.py`. The split is 19 "
+        "Python keyword arguments in `auth.py`.",
+        [],
+        ["19"],
+    ),
+    (
+        "a backticked hex run shorter than a hash is not exempt",
+        "6 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
+        [],
+        ["123"],
+    ),
+    (
+        "a count split by markup is still a count",
+        "6 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
+        ["three"],
+        [],
+    ),
+    (
+        "an unbackticked hex run is not exempt",
+        "6 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
+        [],
+        ["1000000"],
+    ),
+    (
+        "a compound fraction is a count, not a gate run",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
+        ["twenty", "fifth"],
+        [],
+    ),
+    (
+        "a compound ordinal one word from its noun names a gate run",
+        "6 beyond the declared double, asked for at the twenty-second engineering pass.",
+        [],
+        [],
+    ),
+    (
+        "a hyphenated compound is not an ordinal just for being hyphenated",
+        "6 beyond the declared double, in `auth.py`. The three-module split covers them.",
+        ["three"],
+        [],
+    ),
+    (
+        "a tens word beside a run noun is still a count",
+        "6 beyond the declared double, in `auth.py`. Thirty in each run sit in `csrf.py`.",
+        ["thirty"],
+        [],
+    ),
+    (
+        "a hyphenated compound beside a run noun is still a count",
+        "6 beyond the declared double, in `auth.py`. A three-module run covers them.",
+        ["three"],
+        [],
+    ),
+    (
+        "a fraction's preposition pushes the noun out of reach",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth of each run sit here.",
+        ["twenty", "fifth"],
+        [],
+    ),
+    (
+        "a backticked hex run longer than a hash is not exempt",
+        "6 beyond the declared double, in `auth.py`. "
+        "`1234567890123456789012345678901234567890a` sit there.",
+        [],
+        ["1234567890123456789012345678901234567890"],
+    ),
+    (
+        "a compound ordinal beside its noun names a gate run",
+        "6 beyond the declared double, asked for at the twenty-eighth run.",
+        [],
+        [],
+    ),
+    (
+        "a compound ordinal two words from its noun is a count again",
+        "6 beyond the declared double, asked for at the twenty-eighth big security run.",
+        ["twenty", "eighth"],
+        [],
+    ),
+    (
+        "a tens word one word from a run noun is still a count",
+        "6 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
+        ["thirty"],
+        [],
+    ),
+)
+
+#: Every case the ban corpus runs, as (id, passage, expected words, expected digits).
+BAN_CASES = (
+    (
+        "a commit hash is exempt and the true clause is clean",
+        "6 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
+        [],
+        [],
+    ),
+    (
+        "a backticked run of decimal digits is not a hash",
+        "6 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
+        [],
+        ["1000000"],
+    ),
+    (
+        "a repeated entitled rendering is removed once, not twice",
+        "6 beyond the declared double, in `auth.py`. 6 beyond the declared "
+        "double are in `auth.py`.",
+        [],
+        ["6"],
+    ),
+    (
+        "a bare ordinal is a fraction and is banned",
+        "6 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
+        ["fifth"],
+        [],
+    ),
+    (
+        "a count at the start of a sentence is banned, case folded",
+        "6 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
+        ["three"],
+        [],
+    ),
+    (
+        "a compound ordinal names a gate run and is not a count",
+        "6 beyond the declared double, asked for at the twenty-eighth run.",
+        [],
+        [],
+    ),
+    (
+        "a bare tens word is a count, not half an ordinal",
+        "6 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
+        ["thirty"],
+        [],
+    ),
+    (
+        "an Arabic-Indic digit is a digit",
+        "6 beyond the declared double, in `auth.py`. ٦ sit in `csrf.py`.",
+        [],
+        ["٦"],
+    ),
+    (
+        "a vague count on the list is banned",
+        "6 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
+        ["pair"],
+        [],
+    ),
+    (
+        "another experiment's figure is not this passage's to state",
+        "6 beyond the declared double, in `auth.py`. The split is 19 "
+        "Python keyword arguments in `auth.py`.",
+        [],
+        ["19"],
+    ),
+    (
+        "a backticked hex run shorter than a hash is not exempt",
+        "6 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
+        [],
+        ["123"],
+    ),
+    (
+        "a count split by markup is still a count",
+        "6 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
+        ["three"],
+        [],
+    ),
+    (
+        "an unbackticked hex run is not exempt",
+        "6 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
+        [],
+        ["1000000"],
+    ),
+    (
+        "a compound fraction is a count, not a gate run",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
+        ["twenty", "fifth"],
+        [],
+    ),
+    (
+        "a compound ordinal one word from its noun names a gate run",
+        "6 beyond the declared double, asked for at the twenty-second engineering pass.",
+        [],
+        [],
+    ),
+    (
+        "a hyphenated compound is not an ordinal just for being hyphenated",
+        "6 beyond the declared double, in `auth.py`. The three-module split covers them.",
+        ["three"],
+        [],
+    ),
+    (
+        "a tens word beside a run noun is still a count",
+        "6 beyond the declared double, in `auth.py`. Thirty in each run sit in `csrf.py`.",
+        ["thirty"],
+        [],
+    ),
+    (
+        "a hyphenated compound beside a run noun is still a count",
+        "6 beyond the declared double, in `auth.py`. A three-module run covers them.",
+        ["three"],
+        [],
+    ),
+    (
+        "a fraction's preposition pushes the noun out of reach",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth of each run sit here.",
+        ["twenty", "fifth"],
+        [],
+    ),
+    (
+        "a backticked hex run longer than a hash is not exempt",
+        "6 beyond the declared double, in `auth.py`. "
+        "`1234567890123456789012345678901234567890a` sit there.",
+        [],
+        ["1234567890123456789012345678901234567890"],
+    ),
+    (
+        "a compound ordinal beside its noun names a gate run",
+        "6 beyond the declared double, asked for at the twenty-eighth run.",
+        [],
+        [],
+    ),
+    (
+        "a compound ordinal two words from its noun is a count again",
+        "6 beyond the declared double, asked for at the twenty-eighth big security run.",
+        ["twenty", "eighth"],
+        [],
+    ),
+    (
+        "a tens word one word from a run noun is still a count",
+        "6 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
+        ["thirty"],
+        [],
+    ),
+)
+
+
 @pytest.mark.parametrize(
     ("passage", "expected_words", "expected_digits"),
-    [
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
-            [],
-            [],
-            id="a commit hash is exempt and the true clause is clean",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
-            [],
-            ["1000000"],
-            id="a backticked run of decimal digits is not a hash",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. 6 beyond the declared double "
-            "are in `auth.py`.",
-            [],
-            ["6"],
-            id="a repeated entitled rendering is removed once, not twice",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
-            ["fifth"],
-            [],
-            id="a bare ordinal is a fraction and is banned",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
-            ["three"],
-            [],
-            id="a count at the start of a sentence is banned, case folded",
-        ),
-        pytest.param(
-            "6 beyond the declared double, asked for at the twenty-eighth run.",
-            [],
-            [],
-            id="a compound ordinal names a gate run and is not a count",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
-            ["thirty"],
-            [],
-            id="a bare tens word is a count, not half an ordinal",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. \u0666 sit in `csrf.py`.",
-            [],
-            ["\u0666"],
-            id="an Arabic-Indic digit is a digit",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
-            ["pair"],
-            [],
-            id="a vague count on the list is banned",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. The split is 19 Python keyword "
-            "arguments in `auth.py`.",
-            [],
-            ["19"],
-            id="another experiment's figure is not this passage's to state",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
-            [],
-            ["123"],
-            id="a backticked hex run shorter than a hash is not exempt",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
-            ["three"],
-            [],
-            id="a count split by markup is still a count",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
-            [],
-            ["1000000"],
-            id="an unbackticked hex run is not exempt",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
-            ["twenty", "fifth"],
-            [],
-            id="a compound fraction is a count, not a gate run",
-        ),
-        pytest.param(
-            "6 beyond the declared double, asked for at the twenty-second engineering pass.",
-            [],
-            [],
-            id="a compound ordinal two words from its noun still names a gate run",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. The three-module split covers them.",
-            ["three"],
-            [],
-            id="a hyphenated compound is not an ordinal just for being hyphenated",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. VI of them sit in `csrf.py`.",
-            [],
-            [],
-            id="a Roman numeral is a count no digit scan reads",
-        ),
-        pytest.param(
-            "6 beyond the declared double, in `auth.py`. "
-            "`1234567890123456789012345678901234567890a` sit there.",
-            [],
-            ["1234567890123456789012345678901234567890"],
-            id="a backticked hex run longer than a hash is not exempt",
-        ),
-    ],
+    [pytest.param(*case[1:], id=case[0]) for case in BAN_CASES],
 )
 def test_the_bans_catch_what_they_were_written_for(
     passage: str, expected_words: list[str], expected_digits: list[str]
@@ -1379,13 +1579,14 @@ def test_the_bans_catch_what_they_were_written_for(
     rendering everywhere rather than once all left the whole suite green. That is the same
     defect the terminator carriers were added for, one layer along, and it has now produced
     a MAJOR three rounds running. Each case below fails when the refinement it names is
-    undone; the ones no case names are in the residual table.
+    undone, and that is asserted rather than asserted ABOUT: an earlier case compared the
+    result against the same pattern it was testing, so retiring the pattern to one matching
+    nothing was green. The refinements no case names are in the residual table.
     """
     findings = price_passage_findings(passage)
 
     assert findings["words"] == expected_words
     assert findings["digits"] == expected_digits
-    assert findings["roman"] == _ROMAN.findall(_normalise(passage))
 
 
 @pytest.mark.parametrize("word", _WORD_NUMBERS)
@@ -1451,44 +1652,15 @@ def test_a_repeated_price_clause_is_refused(tmp_path: Path) -> None:
         _quoted_rule_passage_raw(document)
 
 
-#: The ban corpus, written out again on purpose, for the reason `FROZEN_SHAPES` exists: the
-#: corpus is the sole holder of seven refinements, and a case can be deleted singly with the
-#: whole suite green. Demonstrated on two of them.
-FROZEN_BAN_CASES = (
-    "a commit hash is exempt and the true clause is clean",
-    "a backticked run of decimal digits is not a hash",
-    "a repeated entitled rendering is removed once, not twice",
-    "a bare ordinal is a fraction and is banned",
-    "a count at the start of a sentence is banned, case folded",
-    "a compound ordinal names a gate run and is not a count",
-    "a bare tens word is a count, not half an ordinal",
-    "an Arabic-Indic digit is a digit",
-    "a vague count on the list is banned",
-    "another experiment's figure is not this passage's to state",
-    "a backticked hex run shorter than a hash is not exempt",
-    "a count split by markup is still a count",
-    "an unbackticked hex run is not exempt",
-    "a compound fraction is a count, not a gate run",
-    "a compound ordinal two words from its noun still names a gate run",
-    "a hyphenated compound is not an ordinal just for being hyphenated",
-    "a Roman numeral is a count no digit scan reads",
-    "a backticked hex run longer than a hash is not exempt",
-)
+def test_the_ban_corpus_is_the_frozen_one() -> None:
+    """Changing a case must be an edit in two places, not one.
 
-
-def test_the_ban_corpus_is_the_frozen_one(request: pytest.FixtureRequest) -> None:
-    """Deleting a case must be an edit in two places, not one.
-
-    The corpus holds refinements nothing else holds, so a case quietly removed takes a
-    control with it and the suite stays green.
+    Content, not ids. The first version froze the pytest ids, and a case could then be
+    hollowed to inert values with its id kept and the whole suite green: an id promising a
+    refinement over a body asserting none. It also read `request.session.items`, so it
+    failed when run by node id, which is the form a runbook hands a reader to paste.
     """
-    collected = tuple(
-        item.callspec.id
-        for item in request.session.items
-        if item.originalname == "test_the_bans_catch_what_they_were_written_for"
-    )
-
-    assert collected == FROZEN_BAN_CASES
+    assert BAN_CASES == FROZEN_BAN_CASES
 
 
 def test_the_sonar_split_adds_up() -> None:
