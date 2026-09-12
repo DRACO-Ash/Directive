@@ -22,13 +22,11 @@ code did not deliver, and each claim became the next finding.
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from sweep_rules import keyword_group, load_case_sensitive, load_rules
+from sweep_rules import keyword_group, load_case_sensitive, load_rules, tracked_files
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -79,36 +77,6 @@ EXPECTED_FALSE_POSITIVES = 0
 #: needs.
 
 
-def _tracked() -> list[Path]:
-    """Every file that WOULD be tracked after `git add -A`, or a skip with no repository.
-
-    `--others --exclude-standard` as well as `--cached`, and that is the whole point rather
-    than thoroughness. The verification loop runs before the commit, and every figure in
-    this module describes the committed tree. A new file is untracked while the loop reads
-    it and tracked a second later, so a loop that passed on 159 files failed on 160 at the
-    commit it had just blessed. That has now happened three times, most recently in the
-    commit written to stop it. Counting what `git add -A` would stage makes the measurement
-    the same on both sides of the commit, which removes the trap rather than resetting it.
-
-    `shutil.which`, not a hardcoded path. This module SHIPS, so it runs at the platform's
-    test stage, where a hardcoded `/usr/bin/git` raises `FileNotFoundError` on any image
-    that puts git elsewhere: a red stage 5 and an upload that fails with every later stage
-    skipped. Every other module in this suite resolves a tool this way.
-    """
-    git = shutil.which("git")
-    if git is None:
-        pytest.skip("git is not available, so the tracked set cannot be read")
-    listed = subprocess.run(  # noqa: S603
-        [git, "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if listed.returncode != 0:
-        pytest.skip("not a repository; this is the unpacked package")
-    return [ROOT / name for name in listed.stdout.split() if (ROOT / name).is_file()]
-
-
 def _scan(pattern: str, flags: int, files: list[Path]) -> list[tuple[str, int, str]]:
     """Return one entry per match, carrying the path, the line number and the text."""
     compiled = re.compile(pattern, flags)
@@ -154,7 +122,7 @@ def _widenings() -> dict[str, tuple[str, int]]:
 def test_the_cost_of_each_widening_is_what_the_records_say(experiment: str) -> None:
     """Re-measure, and fail rather than let a shipped figure drift."""
     pattern, flags = _widenings()[experiment]
-    found = _scan(pattern, flags, _tracked())
+    found = _scan(pattern, flags, tracked_files())
     lines = {(path, number) for path, number, _ in found}
 
     assert (len(found), len(lines)) == EXPECTED[experiment], (
@@ -267,8 +235,8 @@ def _normalise(text: str) -> str:
     literal backticks made those four unmatchable, and a false figure of that shape shipped
     green in the accreditation record. Measured: compiling the shapes from the raw template
     instead of the normalised one is red at `test_every_shape_has_a_phrasing_that_exercises_it`,
-    on exactly those four shapes, and in ten other places. That is the check to keep whenever
-    this function changes.
+    on exactly those four shapes, and in other places besides. That is the check to keep
+    whenever this function changes.
     """
     return " ".join(_EMPHASIS.sub("", text).replace("#", " ").split())
 
@@ -453,7 +421,7 @@ def test_no_tracked_file_reports_a_figure_that_was_never_measured() -> None:
     """
     allowed = _allowed()
 
-    for path in _tracked():
+    for path in tracked_files():
         if _is_self(path):
             continue
         for match in _RENDERINGS.finditer(_flowed(path)):
@@ -470,7 +438,7 @@ def test_the_breakdown_clauses_are_what_the_records_say() -> None:
     `7 sonar.projectKey= lines` that decompose it were free to be anything.
     """
     pattern, flags = _widenings()["prose rule folded to ignore case"]
-    found = _scan(pattern, flags, _tracked())
+    found = _scan(pattern, flags, tracked_files())
     sonar = [entry for entry in found if "projectkey" in entry[2].lower()]
     templates = [entry for entry in sonar if "/templates/" in entry[0]]
 
@@ -482,7 +450,7 @@ def test_the_breakdown_clauses_are_what_the_records_say() -> None:
 def test_the_leading_part_breakdown_is_what_the_records_say() -> None:
     """The same, for the other decomposed figure."""
     pattern, flags = _widenings()["unquoted rule with the leading part of the name optional"]
-    found = _scan(pattern, flags, _tracked())
+    found = _scan(pattern, flags, tracked_files())
     in_src = [entry for entry in found if entry[0].startswith("src/")]
     key_id = [entry for entry in in_src if entry[2].startswith("key_id=")]
 
@@ -499,7 +467,7 @@ def test_the_shipped_rules_themselves_cost_what_the_records_say() -> None:
     is `EXPECTED_LIVE_FINDINGS` rather than a literal here, so the documents and this
     assertion move together.
     """
-    files = _tracked()
+    files = tracked_files()
     findings = []
     for label, pattern in load_rules().items():
         flags = re.MULTILINE | (0 if label in load_case_sensitive() else re.IGNORECASE)
@@ -524,7 +492,7 @@ def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None
     """
     sentences = _rendered()
     declared = {path.resolve() for files in REPORTS.values() for path in files}
-    for path in _tracked():
+    for path in tracked_files():
         if path.resolve() in declared or _is_self(path):
             continue
         flowed = _flowed(path)
@@ -561,7 +529,7 @@ def test_the_sonar_split_adds_up() -> None:
     assert EXPECTED_SONAR_IN_TEMPLATES + EXPECTED_SONAR_IN_PROJECT == EXPECTED_SONAR
 
     pattern, flags = _widenings()["prose rule folded to ignore case"]
-    found = _scan(pattern, flags, _tracked())
+    found = _scan(pattern, flags, tracked_files())
     sonar = [entry for entry in found if "projectkey" in entry[2].lower()]
     templates = [entry for entry in sonar if "/templates/" in entry[0]]
 
@@ -716,7 +684,7 @@ def test_only_this_module_is_skipped_by_the_sweep() -> None:
     Widening the skip to every path under `tests/` retired the sweep over every shipped test
     module with the suite green, and `tests/` ships in the package.
     """
-    skipped = [path for path in _tracked() if _is_self(path)]
+    skipped = [path for path in tracked_files() if _is_self(path)]
 
     assert [path.resolve() for path in skipped] == [SELF]
 

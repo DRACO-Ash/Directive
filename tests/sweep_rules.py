@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import ast
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts" / "build-package.sh"
@@ -88,3 +92,32 @@ def load_swept_filenames() -> set[str]:
     # The one name that must ship. It appears in the expression as the `! -name` exemption
     # rather than as a refusal, so it is removed here rather than probed as a refusal.
     return patterns - {".env.example"}
+
+
+def tracked_files() -> list[Path]:
+    """Every file `git add -A` would stage, or a skip where there is no repository.
+
+    `--others` as well as `--cached`, because the verification loop runs BEFORE the commit
+    while every figure describes the committed tree: a new file was untracked when the loop
+    read it and tracked a second later, and a loop that passed on one count failed on the
+    next at the commit it had just blessed.
+
+    NUL-delimited, because splitting on whitespace drops a tracked path containing a space
+    out of the corpus silently, which would quietly narrow every sweep built on this.
+
+    Shared rather than copied: this is the third module to need it, and a copied helper in
+    this suite has drifted from its original twice.
+    """
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is not available, so the tracked set cannot be read")
+    listed = subprocess.run(  # noqa: S603
+        [git, "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listed.returncode != 0:
+        pytest.skip("not a repository; this is the unpacked package")
+    names = [name for name in listed.stdout.split("\0") if name]
+    return [ROOT / name for name in names if (ROOT / name).is_file()]
