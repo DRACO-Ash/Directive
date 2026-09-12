@@ -218,6 +218,9 @@ def _breakdowns() -> dict[str, int]:
 _SWEEP = ROOT / "scripts" / "build-package.sh"
 _RECORDS = ROOT / "docs" / "GATE-RECORDS.md"
 _CHANGELOG = ROOT / "CHANGELOG.md"
+#: A third carrier, found by deriving the map from the tree rather than declaring it: this
+#: module's docstring states the false-positive figure too, and the map did not say so.
+_PACKAGE_BUILD = ROOT / "tests" / "test_package_build.py"
 
 #: WHICH file must carry WHICH clause, one entry each rather than a blanket "both files".
 #: The blanket form was correct only while every clause happened to live in both; the first
@@ -231,7 +234,7 @@ BREAKDOWN_CARRIERS = {
     "is `keys=`": (_SWEEP, _RECORDS),
     "beyond the declared double": (_SWEEP, _RECORDS),
     "finding across every tracked file": (_CHANGELOG,),
-    "false positives": (_SWEEP,),
+    "false positives": (_SWEEP, _PACKAGE_BUILD),
 }
 
 
@@ -587,8 +590,13 @@ def module_names_in(passage: str) -> set[str]:
     A function for the same reason the bans are: the assertion that used it survived
     outright deletion with the suite green, while the attack it stops - a module the scan
     does not give, named in the price passage - was caught only by it.
+
+    The EXTENSION folds case and the result is lower-cased, because `store.PY` evaded a
+    case-sensitive reader while `Store.py` did not. Only the extension folds: a bare-word
+    reader would match every ordinary noun in the passage and be red on arrival, which is
+    the measured lesson of the Roman scan.
     """
-    return set(re.findall(r"\b([A-Za-z0-9_]+\.py)\b", passage))
+    return {name.lower() for name in re.findall(r"\b([A-Za-z0-9_]+\.[Pp][Yy])\b", passage)}
 
 
 def _entitled() -> set[str]:
@@ -1268,7 +1276,8 @@ def test_the_passage_bound_ends_where_the_structure_does(
 #: The ban corpus, written out again on purpose and ABOVE its live twin, so that
 #: `FROZEN_BAN_CASES = BAN_CASES` raises `NameError` at collection rather than quietly
 #: retiring the anchor. The reverse alias compiles, and
-#: `test_every_frozen_pair_is_written_out_twice` is what closes that direction.
+#: `test_every_frozen_pair_is_written_out_twice` is what closes that direction, reading
+#: the elements as well as the node so a starred unpack cannot alias past it.
 #:
 #: CONTENT, not pytest ids. Freezing the ids alone let a case be hollowed out to inert
 #: values with its id kept and the whole suite green, which is an id promising a
@@ -1428,6 +1437,24 @@ FROZEN_BAN_CASES = (
         ["twenty", "fifth"],
         [],
     ),
+    (
+        "a capitalised compound ordinal still names a gate run",
+        "6 beyond the declared double. Twenty-eighth run, and the count stands.",
+        [],
+        [],
+    ),
+    (
+        "a compound ordinal separated by a space still names a gate run",
+        "6 beyond the declared double, asked for at the twenty second run.",
+        [],
+        [],
+    ),
+    (
+        "a tens word outside the first two still names a gate run",
+        "6 beyond the declared double, asked for at the sixty-fifth run.",
+        [],
+        [],
+    ),
 )
 
 #: Every case the ban corpus runs, as (id, passage, expected words, expected digits).
@@ -1585,6 +1612,24 @@ BAN_CASES = (
         ["twenty", "fifth"],
         [],
     ),
+    (
+        "a capitalised compound ordinal still names a gate run",
+        "6 beyond the declared double. Twenty-eighth run, and the count stands.",
+        [],
+        [],
+    ),
+    (
+        "a compound ordinal separated by a space still names a gate run",
+        "6 beyond the declared double, asked for at the twenty second run.",
+        [],
+        [],
+    ),
+    (
+        "a tens word outside the first two still names a gate run",
+        "6 beyond the declared double, asked for at the sixty-fifth run.",
+        [],
+        [],
+    ),
 )
 
 
@@ -1643,6 +1688,11 @@ def test_every_banned_word_is_caught(word: str) -> None:
             "6 beyond the declared double, in `auth.py`. They also appear in `store.py`.",
             {"auth.py", "store.py"},
             id="a module the scan does not give is seen",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. They also appear in `store.PY`.",
+            {"auth.py", "store.py"},
+            id="the extension folds case, so an upper-case one does not evade",
         ),
         pytest.param(
             "6 beyond the declared double, in `auth.py` and `csrf.py`.",
@@ -1711,12 +1761,64 @@ def test_the_ban_corpus_is_the_frozen_one() -> None:
     )
 
 
-#: Every name that exists in a frozen pair, live twin and anchor alike.
-FROZEN_PAIRS = (
+#: Every name that exists in a frozen pair, live twin and anchor alike. NOT called
+#: `FROZEN_PAIRS`: this register is derived from the source below and compared against
+#: itself, and a name beginning `FROZEN_` would then have to be its own twin.
+ANCHORED_PAIRS = (
     ("_SHAPES", "FROZEN_SHAPES"),
     ("_WORD_NUMBERS", "FROZEN_WORD_NUMBERS"),
     ("BAN_CASES", "FROZEN_BAN_CASES"),
 )
+
+
+def _is_written_out(node: ast.expr) -> bool:
+    """Report whether `node` is a literal written out, rather than a reference to one.
+
+    An `isinstance(node, ast.Tuple)` check alone is not enough: `(*FROZEN_SHAPES,)` IS a
+    tuple node, whose one element is a `Starred`, and it aliases by value while passing
+    every linter and type check. Driven end to end at the thirty-eighth run into the
+    accreditation record with the whole suite green, so the ELEMENTS are read too.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_is_written_out(element) for element in node.elts)
+    return False
+
+
+def _module_bindings() -> dict[str, ast.expr]:
+    """Return this module's top-level single-name assignments, by name."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    return {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+
+
+def test_the_anchored_pairs_are_every_frozen_name_in_the_module() -> None:
+    """The register the whole defence iterates, derived rather than declared.
+
+    Setting it to `()` was one edit and the suite stayed green, after which the reverse
+    alias and a deleted shape shipped a retired figure into the accreditation record. A
+    register that lists what it protects protects nothing if the list can be emptied.
+    """
+    bound = _module_bindings()
+    derived = set()
+    for name in bound:
+        if not name.startswith("FROZEN_"):
+            continue
+        stem = name[len("FROZEN_") :]
+        twin = stem if stem in bound else f"_{stem}"
+        assert twin in bound, f"{name} anchors nothing: neither {stem} nor _{stem} is bound"
+        derived.add((twin, name))
+
+    assert derived, "no frozen pair is bound at all, so this defence protects nothing"
+    assert derived == set(ANCHORED_PAIRS), (
+        f"the module binds {sorted(derived)} and the register declares {sorted(ANCHORED_PAIRS)}"
+    )
 
 
 def test_every_frozen_pair_is_written_out_twice() -> None:
@@ -1733,22 +1835,57 @@ def test_every_frozen_pair_is_written_out_twice() -> None:
     `_SHAPES is FROZEN_SHAPES` is already true. The binding itself is what has to be read,
     which is why this parses its own source, the way `sweep_rules.py` parses the sweep's.
     """
-    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
-    bound = {
-        node.targets[0].id: node.value
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-    }
+    bound = _module_bindings()
 
-    for live, frozen in FROZEN_PAIRS:
+    for live, frozen in ANCHORED_PAIRS:
         for name in (live, frozen):
             assert name in bound, f"{name} is no longer a module-level assignment"
-            assert isinstance(bound[name], ast.Tuple), (
-                f"{name} binds a {type(bound[name]).__name__}, not a tuple literal. An alias "
-                "retires the pair it belongs to, whichever way round it is written."
+            assert isinstance(bound[name], ast.Tuple) and _is_written_out(bound[name]), (
+                f"{name} does not bind a tuple written out in full. An alias retires the "
+                "pair it belongs to, whichever way round it is written and whether it is "
+                "spelled as a name or unpacked into a tuple."
             )
+
+
+def _files_stating(rendered: str) -> set[Path]:
+    """Return every tracked file whose flowed text carries `rendered`, this module aside."""
+    return {
+        path.resolve()
+        for path in tracked_files()
+        if not _is_self(path) and _normalise(rendered) in _flowed(path)
+    }
+
+
+def test_every_breakdown_carrier_is_what_the_tree_states() -> None:
+    """The carrier map, derived rather than declared.
+
+    `BREAKDOWN_CARRIERS` is the register the price-passage refusal iterates, and nothing
+    anchored it: narrowing one clause to the sweep alone was a single edit that removed the
+    record's price bullet from the word, digit and module scan outright, after which the
+    thirtieth run's false decomposition went back into a shipped record with the whole suite
+    green. Declaring which files carry a clause is not enough; the tree has to agree.
+    """
+    for clause, declared in BREAKDOWN_CARRIERS.items():
+        stating = _files_stating(f"{_breakdowns()[clause]} {clause}")
+        assert stating == {path.resolve() for path in declared}, (
+            f"{clause!r} is stated by {sorted(p.name for p in stating)} and declared for "
+            f"{sorted(p.name for p in declared)}"
+        )
+
+
+def test_every_reporting_carrier_is_what_the_tree_states() -> None:
+    """The same, for the sentence map, and defeated the same way.
+
+    The negative sweep reads only files absent from the UNION of `REPORTS`, so narrowing one
+    experiment's tuple while another still names the file leaves the narrowing invisible.
+    """
+    sentences = _rendered()
+    for experiment, declared in REPORTS.items():
+        stating = _files_stating(sentences[experiment])
+        assert stating == {path.resolve() for path in declared}, (
+            f"{experiment!r} is stated by {sorted(p.name for p in stating)} and declared "
+            f"for {sorted(p.name for p in declared)}"
+        )
 
 
 def test_the_sonar_split_adds_up() -> None:
