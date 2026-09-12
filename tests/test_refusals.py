@@ -559,8 +559,11 @@ FLOOD_CARRIERS = (
 )
 
 
-#: The window period in words, because both carriers write it that way and a digit-only
-#: check would leave "five-minute" free to disagree with `WINDOW_SECONDS`. Small on purpose:
+#: The window period in words, because the DEPLOYMENT RECORD writes it that way and a
+#: digit-only check would leave "five-minute" free to disagree with `WINDOW_SECONDS`. The
+#: module does not write the period at all; it multiplies the window out across the day's
+#: windows instead, which is why `required` below demands this fragment of one carrier only.
+#: Small on purpose:
 #: a window whose minutes are not spelled here fails the lookup below and reddens, rather
 #: than quietly dropping the phrase from the set of things this test holds.
 SPELLED_MINUTES = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 10: "ten", 15: "fifteen"}
@@ -589,9 +592,10 @@ def test_the_flood_sizing_the_records_state_is_what_the_constants_give() -> None
     the decision to defer an edge rate limiter, resting on a constant nothing held.
 
     Every figure in the chain is asserted separately, per carrier. An earlier version
-    accepted the daily MiB alone as a substitute for the whole sentence, which let one
-    carrier satisfy the test on a single proportional figure: editing `719 KiB`, or the 288
-    windows the day is the sum of, left the suite green in the file that states them.
+    accepted the daily MiB alone as a substitute for the whole sentence, and measured
+    against that version BOTH carriers were free on `719 KiB`, with `refusals.py` free on
+    the 288 windows the day is the sum of as well: the disjunct caught the daily figure in
+    each file and nothing else in either.
     """
     sizing = _flood_sizing()
     minutes = sizing["minutes"]
