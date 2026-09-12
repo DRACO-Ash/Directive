@@ -598,25 +598,64 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: Compared through `_normalise` on both sides, because it strips the backticks a
     #: carrier writes around a module name and the underscore inside one.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        sentence = _quoted_rule_sentence(path)
-        named = set(re.findall(r"\b([A-Za-z0-9_]+\.py)\b", sentence))
+        passage = _quoted_rule_passage(path)
+        named = set(re.findall(r"\b([A-Za-z0-9_]+\.py)\b", passage))
         assert named == {_normalise(name) for name in modules}, (
             f"{path.name} names {sorted(named)} where the scan gives {modules}, compared "
             "with the emphasis markers stripped from both sides"
         )
 
 
-def _quoted_rule_sentence(path: Path) -> str:
-    """Return the clause of `path` that states the quoted rule's price, flowed.
+#: The fragment that locates the price passage. Not the whole clause with its number: the
+#: number is held by `test_every_breakdown_clause_is_still_said_where_it_belongs`, and
+#: locating on it too would make one edit red in two places and say nothing extra.
+_PRICE_CLAUSE = "beyond the declared double"
 
-    Bounded at the pinned clause so the module check reads the sentence that makes the
-    claim rather than the file, which mentions every one of these modules elsewhere.
+
+def _quoted_rule_passage(path: Path) -> str:
+    """Return the passage of `path` that states the quoted rule's price, flowed.
+
+    Bounded at the PASSAGE, which is the contiguous comment block in the script and the
+    bullet in the record, rather than at a character count. A fixed 400-character window
+    was defeated: appending the false sentence "Two of the six sit in `store.py` and
+    `config.py`" to the end of the sweep's comment block landed past the window, so the
+    negative half never saw the false names while the positive half, which searches the
+    whole file, still found the true ones, and the suite stayed green. A window measured in
+    characters is a window an editor can walk out of; a window measured in the structure of
+    the document is not.
+
+    Bounded rather than whole-file because both carriers name every one of these modules
+    elsewhere for unrelated reasons, so a whole-file negative check would be red always.
     """
-    flowed = _flowed(path)
-    clause = _normalise(f"{EXPECTED_BEYOND_THE_DOUBLE} beyond the declared double")
-    start = flowed.find(clause)
-    assert start != -1, f"{path.name} no longer states the price at all"
-    return flowed[start : start + 400]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    hits = [index for index, line in enumerate(lines) if _PRICE_CLAUSE in line]
+
+    assert len(hits) == 1, (
+        f"{path.name} states the price on {len(hits)} lines, not exactly one. If the "
+        "sentence was rewrapped, rewrap it so the clause stays whole on one line; if it "
+        "was copied, one of the copies is the stale one."
+    )
+    index = hits[0]
+    start = end = index
+    if path.suffix == ".sh":
+        #: The contiguous run of comment lines around it. The first line of code below the
+        #: block ends it, which is why the old window spilling into `text = raw.decode(...)`
+        #: was a symptom rather than a curiosity.
+        while start > 0 and lines[start - 1].lstrip().startswith("#"):
+            start -= 1
+        while end + 1 < len(lines) and lines[end + 1].lstrip().startswith("#"):
+            end += 1
+    else:
+        #: The bullet: back to its marker, forward to the next marker or a blank line.
+        while start > 0 and not lines[start].lstrip().startswith("●"):
+            start -= 1
+        while (
+            end + 1 < len(lines)
+            and lines[end + 1].strip()
+            and not lines[end + 1].lstrip().startswith("●")
+        ):
+            end += 1
+    return _normalise("\n".join(lines[start : end + 1]))
 
 
 def test_the_sonar_split_adds_up() -> None:

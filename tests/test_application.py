@@ -123,9 +123,10 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
 
     `HEAD` and `OPTIONS` are not walked, because Werkzeug adds both to every rule that
     declares `GET` and neither reaches a handler the rule does not already declare. A rule
-    that declared `HEAD` ALONE would therefore be walked by nothing; none exists, and `HEAD`
-    on every gated route was probed directly at the twenty-ninth security run and answered
-    401. Recorded rather than closed, because the exclusion is real.
+    that declared `HEAD` ALONE would be walked by nothing, so the sibling below asserts
+    none exists rather than leaving that claim to this docstring: an ungated `HEAD
+    /api/leak` returning its data in a response header left this test and its companion
+    green until that assertion was added.
     """
     adapter = client.application.url_map.bind("localhost")
     walked = []
@@ -156,6 +157,25 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
 
     assert walked, "no rules were walked, so this proves nothing"
     assert not open_to_anyone, f"these answer an anonymous caller: {open_to_anyone}"
+
+
+def test_no_rule_is_served_by_head_alone(app: Flask) -> None:
+    """The exclusion the walk above states, held rather than asserted in prose.
+
+    The walk subtracts `HEAD` and `OPTIONS` from every rule's method set, so a rule whose
+    only other method is neither is walked by nothing: the endpoint assertion never fires
+    and no anonymous probe is made. `OPTIONS` is safe to exclude because Werkzeug answers it
+    itself with an `Allow` header and an empty body. `HEAD` is not: a view can be registered
+    for it alone, and it returns headers a caller reads.
+    """
+    head_only = [
+        rule.rule for rule in app.url_map.iter_rules() if not rule.methods - {"HEAD", "OPTIONS"}
+    ]
+
+    assert not head_only, (
+        f"these are served by HEAD alone and the route walk cannot see them: {head_only}. "
+        "Give the rule a GET, or walk HEAD in the test above."
+    )
 
 
 def test_the_public_set_names_only_routes_the_application_serves(app: Flask) -> None:
