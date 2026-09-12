@@ -175,6 +175,14 @@ that no sweep mistakes them for a live measurement.
   leading part optional gives 14 findings across the tracked tree, 9 of them in `src/`, of
   which 8 are `key_id=` and 1 is `keys=`. Left open at a measured price rather
   than bought.
+● A bare `key` or `keys` in the QUOTED rule's keyword group, so `key = "<value>"` in source
+  is not caught by it. The unquoted rule's group carries both words and the quoted rule's
+  does not, and the difference had no price against it until the twenty-eighth security run
+  asked for one. Measured separately from the 22 above, because it is a different rule and a
+  different widening: adding them gives 7 findings on 7 lines across every tracked file, 6
+  beyond the declared double the shipped rules already report. All six are session or header
+  NAMES rather than values, in `auth.py`, `csrf.py` and `views/auth_routes.py`. The
+  experiment is to add `key|keys` to that rule's group alone and scan every tracked file.
 ● A table row carrying `[REDACTED:` or `TBC` ANYWHERE in it, in EITHER case, is skipped
   whole, because the rule folds case. That is a
   bypass for someone who adds `TBC` to a row on purpose, and it is the right trade: a

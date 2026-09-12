@@ -559,13 +559,26 @@ FLOOD_CARRIERS = (
 )
 
 
-def _flood_sizing() -> tuple[int, int, float]:
-    """Return the window KiB, the daily MiB and the hours to the cap, from the constants."""
+#: The window period in words, because both carriers write it that way and a digit-only
+#: check would leave "five-minute" free to disagree with `WINDOW_SECONDS`. Small on purpose:
+#: a window whose minutes are not spelled here fails the lookup below and reddens, rather
+#: than quietly dropping the phrase from the set of things this test holds.
+SPELLED_MINUTES = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 10: "ten", 15: "fifteen"}
+
+
+def _flood_sizing() -> dict[str, int | float]:
+    """Return every flood figure the carriers state, derived from the pinned constants."""
     per_window = refusals.GLOBAL_ROWS_PER_WINDOW * refusals.ROW_BYTES_AT_FIELD_CAPS
-    windows = 86_400 // refusals.WINDOW_SECONDS
+    windows = int(86_400 // refusals.WINDOW_SECONDS)
     per_day = per_window * windows
-    hours = journal.MAXIMUM_LOG_BYTES / per_day * 24
-    return round(per_window / 1024), round(per_day / 1024 / 1024), round(hours, 1)
+    return {
+        "rows": refusals.GLOBAL_ROWS_PER_WINDOW,
+        "window_kib": round(per_window / 1024),
+        "windows": windows,
+        "day_mib": round(per_day / 1024 / 1024),
+        "hours": round(journal.MAXIMUM_LOG_BYTES / per_day * 24, 1),
+        "minutes": int(refusals.WINDOW_SECONDS // 60),
+    }
 
 
 def test_the_flood_sizing_the_records_state_is_what_the_constants_give() -> None:
@@ -574,19 +587,38 @@ def test_the_flood_sizing_the_records_state_is_what_the_constants_give() -> None
     Derived and asserted verbatim, the way the credential sweep's cost figures are, because
     this is the same class: a figure in a shipped document that justifies a decision, here
     the decision to defer an edge rate limiter, resting on a constant nothing held.
+
+    Every figure in the chain is asserted separately, per carrier. An earlier version
+    accepted the daily MiB alone as a substitute for the whole sentence, which let one
+    carrier satisfy the test on a single proportional figure: editing `719 KiB`, or the 288
+    windows the day is the sum of, left the suite green in the file that states them.
     """
-    window_kib, day_mib, hours = _flood_sizing()
-    sentence = f"about {window_kib} KiB per five-minute window, so about {day_mib} MiB a day"
+    sizing = _flood_sizing()
+    minutes = sizing["minutes"]
+    assert minutes in SPELLED_MINUTES, (
+        f"a {minutes} minute window is not spelled in SPELLED_MINUTES, so the phrase the "
+        "carriers write cannot be derived; add it rather than dropping the check"
+    )
+    shared = (
+        f"{sizing['rows']} rows",
+        f"{sizing['window_kib']} KiB",
+        f"{sizing['day_mib']} MiB a day",
+        f"{sizing['hours']} hours",
+    )
+    #: The two carriers reach the daily figure by different routes and each route is held
+    #: where it is written: the module multiplies the window out across the day's windows,
+    #: the deployment record names the window's period instead.
+    required = {
+        FLOOD_CARRIERS[0]: (*shared, f"{sizing['windows']} windows"),
+        FLOOD_CARRIERS[1]: (*shared, f"{SPELLED_MINUTES[minutes]}-minute window"),
+    }
 
-    for path in FLOOD_CARRIERS:
+    for path, fragments in required.items():
         flowed = " ".join(path.read_text(encoding="utf-8").split())
+        missing = [fragment for fragment in fragments if fragment not in flowed]
 
-        assert sentence in flowed or f"{day_mib} MiB a day" in flowed, (
-            f"{path.name} does not state the sizing the constants give: {sentence!r}. "
-            "Re-measure and correct both carriers, or correct the constant."
-        )
-        assert f"{hours} hours" in flowed, (
-            f"{path.name} does not state {hours} hours to the cap, which is what "
+        assert not missing, (
+            f"{path.name} does not state {missing}, which is what "
             f"{refusals.GLOBAL_ROWS_PER_WINDOW} rows of {refusals.ROW_BYTES_AT_FIELD_CAPS} "
-            "bytes produce"
+            "bytes produce. Re-measure and correct the carrier, or correct the constant."
         )

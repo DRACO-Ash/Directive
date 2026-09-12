@@ -35,6 +35,7 @@ EXPECTED = {
     "prose rule folded to ignore case": (26, 18),
     "unquoted rule with spaces around the equals": (22, 22),
     "unquoted rule with the leading part of the name optional": (14, 14),
+    "quoted rule with bare key and keys in its keyword group": (7, 7),
 }
 
 #: The part of the third figure that names WHICH findings, because "9 in `src/`" was once
@@ -56,6 +57,12 @@ EXPECTED_SONAR_IN_TEMPLATES = 6
 #: set it to 4, which made the sentence contradict itself (6 and 4 against a total of 7)
 #: with nothing red. A figure decomposed into parts needs every part held, not all but one.
 EXPECTED_SONAR_IN_PROJECT = 1
+
+#: The part of the fourth figure that is the PRICE. Seven is what the widened quoted rule
+#: finds; one of those is the declared test double the shipped rules already report, so six
+#: is what adding the keywords would cost that is not already paid. The two numbers say
+#: different things and recording only the total would read as six new findings too many.
+EXPECTED_BEYOND_THE_DOUBLE = 6
 
 #: What the rules as they SHIP cost on this tree. One, and it is the declared test double
 #: the exemption ledger pins by path, digest and match count. It was written as the word
@@ -100,6 +107,7 @@ def _widenings() -> dict[str, tuple[str, int]]:
     group = keyword_group()
     prose = rules["Credential written into prose"]
     unquoted = rules["Unquoted environment-file credential"]
+    quoted = rules["Generic API key assignment"]
     return {
         # Exactly the shipped rule, compiled with IGNORECASE, which is the one flag it does
         # not carry. Nothing else about it changes.
@@ -113,6 +121,13 @@ def _widenings() -> dict[str, tuple[str, int]]:
         # would be needed to catch a name that BEGINS with one of the keywords.
         "unquoted rule with the leading part of the name optional": (
             unquoted.replace("[A-Z][A-Z0-9_]*" + group, "(?:[A-Z][A-Z0-9_]*)?" + group, 1),
+            re.MULTILINE | re.IGNORECASE,
+        ),
+        # The quoted rule with bare `key` and `keys` added to its keyword group. The
+        # unquoted rule's group carries both; the quoted rule's does not, so the two rules
+        # do not cover the same names and the difference had no price recorded against it.
+        "quoted rule with bare key and keys in its keyword group": (
+            quoted.replace("api[_-]?key|", "api[_-]?key|key|keys|", 1),
             re.MULTILINE | re.IGNORECASE,
         ),
     }
@@ -152,6 +167,7 @@ REPORTS = {
     "unquoted rule with spaces around the equals": REPORTING_FILES,
     "prose rule folded to ignore case": REPORTING_FILES[:2],
     "unquoted rule with the leading part of the name optional": REPORTING_FILES[:2],
+    "quoted rule with bare key and keys in its keyword group": REPORTING_FILES[:2],
 }
 
 #: This module writes the figures it asserts, so it would match its own renderings.
@@ -163,6 +179,7 @@ def _rendered() -> dict[str, str]:
     spaces, spaces_lines = EXPECTED["unquoted rule with spaces around the equals"]
     prose, prose_lines = EXPECTED["prose rule folded to ignore case"]
     leading, _ = EXPECTED["unquoted rule with the leading part of the name optional"]
+    quoted, quoted_lines = EXPECTED["quoted rule with bare key and keys in its keyword group"]
     across = "across every tracked file"
     return {
         "unquoted rule with spaces around the equals": (
@@ -171,6 +188,9 @@ def _rendered() -> dict[str, str]:
         "prose rule folded to ignore case": (f"{prose} matches on {prose_lines} lines {across}"),
         "unquoted rule with the leading part of the name optional": (
             f"{leading} findings across the tracked tree, {EXPECTED_IN_SRC} of them in `src/`"
+        ),
+        "quoted rule with bare key and keys in its keyword group": (
+            f"{quoted} findings on {quoted_lines} lines {across}"
         ),
     }
 
@@ -186,6 +206,7 @@ def _breakdowns() -> dict[str, int]:
         "false positives": EXPECTED_FALSE_POSITIVES,
         "are `key_id=`": EXPECTED_KEY_ID_IN_SRC,
         "is `keys=`": EXPECTED_KEYS_IN_SRC,
+        "beyond the declared double": EXPECTED_BEYOND_THE_DOUBLE,
     }
 
 
@@ -207,6 +228,7 @@ BREAKDOWN_CARRIERS = {
     "in this project's own": (_SWEEP, _RECORDS),
     "are `key_id=`": (_SWEEP, _RECORDS),
     "is `keys=`": (_SWEEP, _RECORDS),
+    "beyond the declared double": (_SWEEP, _RECORDS),
     "finding across every tracked file": (_CHANGELOG,),
     "false positives": (_SWEEP,),
 }
@@ -273,6 +295,7 @@ _SHAPES = (
     "{n} in this project's own",
     "{n} are `key_id=`",
     "{n} is `keys=`",
+    "{n} beyond the declared double",
     "{n} findings across every tracked file",
     "{n} finding across every tracked file",
     "{n} false positives",
@@ -303,6 +326,7 @@ FROZEN_SHAPES = (
     "{n} in this project's own",
     "{n} are `key_id=`",
     "{n} is `keys=`",
+    "{n} beyond the declared double",
     "{n} findings across every tracked file",
     "{n} finding across every tracked file",
     "{n} false positives",
@@ -331,6 +355,7 @@ PHRASINGS = {
     "{n} in this project's own": "4 in this project's own",
     "{n} are `key_id=`": "12 are `key_id=`",
     "{n} is `keys=`": "3 is `keys=`",
+    "{n} beyond the declared double": "13 beyond the declared double",
     "{n} findings across every tracked file": "9 findings across every tracked file",
     "{n} finding across every tracked file": "9 finding across every tracked file",
     "{n} false positives": "9 false positives",
