@@ -419,6 +419,20 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
         )
 
 
+def _entitled() -> set[str]:
+    """Return the renderings the PRICE PASSAGE may carry a digit for, and no others.
+
+    The whole allowed set is every figure this module measured, across four experiments and
+    eight breakdown clauses. Clearing all of it from this passage before looking for a loose
+    digit let a clause borrow another experiment's number and say something false about this
+    one: `There are 0 false positives among them in auth.py.` is the prose rule's figure
+    used as a claim about the quoted rule's split, and it was green.
+    """
+    quoted = _rendered()["quoted rule with bare key and keys in its keyword group"]
+    clause = f"{EXPECTED_BEYOND_THE_DOUBLE} beyond the declared double"
+    return {_normalise(quoted), _normalise(clause)}
+
+
 def _allowed() -> set[str]:
     """Every rendering this module has measured, normalised, as the sweep compares them."""
     allowed = {_normalise(value) for value in _rendered().values()}
@@ -573,12 +587,17 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     module names` went in behind it, both free because no scanner reads a word. The digits
     in the passage that are written in one of the pinned SHAPES are held by the shape sweep
     and the breakdown clauses. A free-form digit clause is held by neither, so every digit
-    here must belong to a measured rendering, clause and all: `5 of these sit in auth.py.`
-    was green, and so was `7 modules carry them.`, which uses a pinned VALUE in an unpinned
-    clause and is false. Saying the digits were already held was the premise that justified
-    banning only words, and it was false. A word count is banned too,
-    case-folded, with the ordinals that name a gate run removed first: banning it is the
-    only way to hold a figure no scanner can read.
+    here, A COMMIT HASH EXCEPTED, must belong to a rendering this passage is entitled to,
+    clause and all. Each narrowing of that sentence was bought with a green mutation:
+    `5 of these sit in auth.py.` was free while nothing held a free-form clause,
+    `7 modules carry them.` while the check read values rather than renderings, a
+    backticked decomposition while every code span was exempt, and a clause built from
+    another experiment's figure while the whole allowed set was cleared.
+
+    A word count is banned too, case-folded, with the compound ordinals that name a gate run
+    removed first. That ban is the words on its LIST and is not a closure over counts
+    written as words; the open end is recorded in `docs/GATE-RECORDS.md` under accepted
+    residual rather than implied closed.
     """
     beyond = _beyond_the_double()
 
@@ -607,15 +626,18 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
             "can read it. Write the figure as a digit and pin it, or delete the clause."
         )
 
-    #: Every DIGIT in the passage belongs to a rendering this module measured, CLAUSE and
-    #: all. Requiring only that the value was pinned somewhere is not enough: `7` is the
-    #: widened rule's finding count, so `7 modules carry them.` - false, there are three -
-    #: passed a value-level check and was green on the whole suite. The renderings are
-    #: removed longest first so a short one cannot consume part of a longer one, and code
-    #: spans go first because a commit hash is a span full of digits that is not a figure.
+    #: Every DIGIT in the passage, a commit hash excepted, belongs to a rendering this
+    #: passage is ENTITLED to, CLAUSE and all. Requiring only that the value was pinned
+    #: somewhere is not enough: `7` is the widened rule's finding count, so `7 modules carry
+    #: them.` - false, there are three - passed a value-level check and was green. Nor is
+    #: every rendering the module measured enough: clearing the whole allowed set let a
+    #: figure belonging to ANOTHER experiment stand here, and `The split is 19 Python
+    #: keyword arguments in auth.py.` was green on a figure that is the prose rule's. The
+    #: renderings are removed longest first so a short one cannot consume part of a longer
+    #: one, and the hash goes first because it is the one run of digits that is no figure.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        residue = _normalise(_CODE_SPAN.sub(" ", _quoted_rule_passage_raw(path)))
-        for rendering in sorted(_allowed(), key=len, reverse=True):
+        residue = _normalise(_COMMIT_HASH_SPAN.sub(" ", _quoted_rule_passage_raw(path)))
+        for rendering in sorted(_entitled(), key=len, reverse=True):
             residue = residue.replace(rendering, " ")
         loose = sorted(set(re.findall(r"[0-9]+", residue)))
         assert not loose, (
@@ -655,10 +677,17 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
 #: locating on it too would make one edit red in two places and say nothing extra.
 _PRICE_CLAUSE = "beyond the declared double"
 
-#: A Markdown or shell code span. Removed before the digit ban reads the passage: a commit
-#: hash is a span full of digits that are not a figure, and `9b3bba3` alone would otherwise
-#: have to be pinned as though someone had measured nine of something.
-_CODE_SPAN = re.compile(r"`[^`]*`")
+#: A backticked COMMIT HASH, and nothing else. Removed before the digit ban reads the
+#: passage, because a hash is a span full of digits that are not a figure and `9b3bba3`
+#: would otherwise have to be pinned as though someone had measured nine of something.
+#:
+#: Narrow on purpose, and the width is the whole point. Exempting every code span exempted
+#: every backticked DIGIT, so a false decomposition written with each part in backticks was
+#: green on the whole suite in both carriers, summing to the right total with the wrong
+#: parts. A backticked number renders to a reader as an ordinary number, which is the same
+#: reason `_EMPHASIS` strips backticks before anything compares text, and this project has
+#: now been bitten by backtick blindness three times.
+_COMMIT_HASH_SPAN = re.compile(r"`[0-9a-f]{7,40}`")
 
 #: The ordinals the passage legitimately writes, removed before the ban reads it. They name
 #: the gate runs that asked for the figure; `twenty-eighth` is a run's number, not a
@@ -668,16 +697,18 @@ _CODE_SPAN = re.compile(r"`[^`]*`")
 #: ban a passage the count had already been removed from, which was green. A standalone
 #: ordinal such as `twentieth` is matched by the second alternation instead.
 #:
-#: `third` is deliberately NOT in that alternation, because it is a fraction as well as an
-#: ordinal: stripping it handed the ban a passage `A third of these sit in auth.py` had
-#: already been removed from, which was green. A compound `twenty-third` is still stripped,
-#: by the first alternation, which is where an ordinal naming a gate run actually appears.
+#: The COMPOUND form only. A standalone alternation once carried `fourth` through
+#: `thirtieth` as well, and every one of those words is a fraction as much as an ordinal:
+#: `A fifth of these sit in auth.py` was green, stripped before the ban could read it.
+#: `third` was diagnosed and fixed one round earlier and the other twelve were left, which
+#: is the same walk-around one word over. A gate run is named in these two passages only as
+#: a compound (`twenty-eighth`, `thirty-first`), so the compound is all that is needed, and
+#: a standalone ordinal in the passage should be written as a digit or rephrased. `first`
+#: and `second` survive the ban without an exemption, because neither is a count and
+#: neither is on the word list.
 _ORDINALS = re.compile(
     r"\b(?:twen|thir|for|fif|six|seven|eigh|nine)ty[- ]"
-    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b"
-    r"|\b(?:first|second|fourth|fifth|sixth|seventh|eighth|ninth|tenth"
-    r"|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth"
-    r"|eighteenth|nineteenth|twentieth|thirtieth)\b",
+    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b",
     re.IGNORECASE,
 )
 
@@ -694,7 +725,10 @@ _ORDINALS = re.compile(
 #: Two exclusions, each because the passage uses the word for something else and banning it
 #: would buy a worse sentence rather than a held figure. `one` is a pronoun there ("every
 #: one a session key NAME"), and `both` counts the keyword group's two words ("the unquoted
-#: rule's group carries both words"), not the price.
+#: rule's group carries both words"), not the price. `all`, `any`, `each` and `every` are
+#: left out for a related reason: each is ordinary connective English the passage already
+#: uses, and banning them would rewrite the passage to satisfy a test rather than hold a
+#: figure. Those four are recorded in the residual table with the rest of the open end.
 _WORD_NUMBERS = (
     "two",
     "three",
@@ -747,6 +781,34 @@ _WORD_NUMBERS = (
     "fives",
     "sixes",
     "sevens",
+    "zero",
+    "none",
+    "single",
+    "brace",
+    "treble",
+    "twofold",
+    "threefold",
+    "thousand",
+    "million",
+    "fourth",
+    "fourths",
+    "fifth",
+    "fifths",
+    "sixth",
+    "sixths",
+    "seventh",
+    "sevenths",
+    "eighth",
+    "eighths",
+    "ninth",
+    "ninths",
+    "tenth",
+    "tenths",
+    "eleventh",
+    "twelfth",
+    "thirteenth",
+    "twentieth",
+    "thirtieth",
 )
 
 
@@ -798,6 +860,14 @@ def _quoted_rule_passage_raw(path: Path) -> str:
             start -= 1
         while end + 1 < len(lines) and _is_prose_comment(lines[end + 1]):
             end += 1
+        #: Plus any comment trailing the line of code that ends the paragraph. That line is
+        #: not a comment line, so the walk stops above it, and `examined += 1  # 9 of these
+        #: sit in auth.py.` sat one character outside the bound and was green. Appending to
+        #: an existing line is not the structural edit the residual accepts, so it is taken
+        #: in rather than recorded.
+        if end + 1 < len(lines) and "#" in lines[end + 1]:
+            trailing = lines[end + 1][lines[end + 1].index("#") :]
+            return "\n".join([*lines[start : end + 1], trailing])
     else:
         #: The bullet: back to its marker, forward to the next marker or the next heading.
         #: NOT to the next blank line: a continuation indented under the bullet, one blank
