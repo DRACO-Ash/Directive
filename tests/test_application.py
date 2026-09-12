@@ -80,6 +80,70 @@ def test_every_console_path_refuses_an_unauthenticated_caller(
     assert client.get(path).status_code in {302, 401}
 
 
+#: Every path that is MEANT to answer an anonymous caller, frozen. The health paths are a
+#: hard rule and the platform restarts the container without them; `/` must not redirect;
+#: the sign-in flow cannot require a session to start one; `/api/diagnostics` is the
+#: recovery channel for a bad configuration value and returns booleans and a version only.
+#:
+#: Frozen, because the list above was a HAND-WRITTEN four. Deleting a decorator was caught;
+#: ADDING a route without one was caught by nothing. A seven-line `@api_bp.get("/backup")`
+#: with no decorator served every register to an anonymous caller and the suite stayed at
+#: the same count, byte for byte.
+PUBLIC_PATHS = frozenset(
+    {
+        "/",
+        "/healthz",
+        "/health",
+        "/livez",
+        "/ping",
+        "/readyz",
+        "/api/diagnostics",
+        "/sign-in",
+        "/sign-out",
+        "/auth/callback",
+        "/static/<path:filename>",
+    }
+)
+
+
+def test_every_route_the_application_serves_is_gated_or_declared_public(
+    client: FlaskClient,
+) -> None:
+    """The map itself, not a list someone remembered to update.
+
+    Walks every rule Flask actually serves and asserts each one either sits in the frozen
+    public set or refuses an anonymous caller. A new route is then gated or it is a
+    deliberate one-line addition to that set, reviewable in the diff, rather than an
+    unauthenticated hole nobody notices.
+    """
+    served = []
+    for rule in client.application.url_map.iter_rules():
+        if rule.rule in PUBLIC_PATHS:
+            continue
+        for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+            path = rule.rule.replace("<register>", "tasks").replace("<path:filename>", "x")
+            response = client.open(path, method=method)
+            served.append((method, rule.rule, response.status_code))
+
+    open_to_anyone = [entry for entry in served if entry[2] not in {302, 401, 403, 405}]
+
+    assert served, "no rules were walked, so this proves nothing"
+    assert not open_to_anyone, f"these answer an anonymous caller: {open_to_anyone}"
+
+
+def test_the_public_set_names_only_paths_the_application_serves(app: Flask) -> None:
+    """A renamed or removed public path must not sit in that set unnoticed.
+
+    Without this, the frozen set decays into a list of paths that no longer exist, and the
+    test above silently stops covering whatever replaced them.
+    """
+    served = {rule.rule for rule in app.url_map.iter_rules()}
+
+    assert served >= PUBLIC_PATHS, (
+        f"declared public but not served: {sorted(PUBLIC_PATHS - served)}"
+    )
+
+
 def test_a_mutation_refuses_an_unauthenticated_caller(client: FlaskClient) -> None:
     assert client.post("/api/registers/tasks", json={"title": "x"}).status_code == 401
 

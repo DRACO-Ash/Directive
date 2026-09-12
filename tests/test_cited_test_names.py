@@ -55,6 +55,20 @@ NOT_A_TEST = {
 }
 
 
+#: This module's own path. The span scan below writes an unreadable node-id shape as a
+#: LITERAL in its own pattern, so it self-matches and must skip itself. Extracted to a
+#: named predicate rather than left inline, because the sibling module already records what
+#: an inline skip costs: widening it to every path under `tests/` retired that sweep over
+#: every shipped test module with the suite green, and `tests/` ships in the package. The
+#: same widening here was measured green, with the pass count unchanged byte for byte.
+SELF = str(Path(__file__).resolve().relative_to(ROOT))
+
+
+def _is_this_module(where: str) -> bool:
+    """Report whether this is the module itself, which self-matches its own span pattern."""
+    return where == SELF
+
+
 def _exempt(name: str, where: str) -> bool:
     """Report whether this name is a declared exception FOR THIS PATH."""
     return any(where.startswith(prefix) and name in names for prefix, names in NOT_A_TEST.items())
@@ -147,9 +161,11 @@ def test_every_node_id_span_is_read_by_the_pattern() -> None:
 
     The first version of this guard could read only a bare name, so the node-id form the
     deployment runbook uses went unchecked and renaming the test it cites was green. The
-    same gap would reopen for a parametrised id or a class-scoped one, neither of which the
-    pattern reads today. This asserts the corpus contains no such span: a third form entering
-    the tree is red here, rather than silently unread.
+    same gap would reopen for a parametrised id, a class-scoped one, or a whole pytest
+    invocation written inside one span, none of which the pattern reads today. This asserts
+    the corpus contains no such span: a form entering the tree is red here rather than
+    silently unread. A legitimate command in a runbook trips it too, which is fail-closed
+    and deliberate; the message says what to do about it.
     """
     unread = []
     for path in tracked_files():
@@ -158,15 +174,18 @@ def test_every_node_id_span_is_read_by_the_pattern() -> None:
         except (OSError, UnicodeDecodeError):
             continue
         where = str(path.relative_to(ROOT))
-        if where == str(Path(__file__).relative_to(ROOT)):
+        if _is_this_module(where):
             continue
         for span in re.findall(r"`[^`\n]*::test_[^`\n]*`", text):
             if not _CITATION.fullmatch(span):
                 unread.append(f"{span} in {where}")
 
     assert not unread, (
-        "these citations carry a node id the pattern cannot read, so they are unchecked:\n  "
+        "these carry a node id the pattern cannot read, so they are unchecked:\n  "
         + "\n  ".join(sorted(set(unread)))
+        + "\n\nTwo ways out: reword it as a bare backticked name or a plain node id, which "
+        "is what a citation should be, or widen `_CITATION` to read the new form and prove "
+        "the widening with a mutant."
     )
 
 
@@ -180,6 +199,10 @@ def test_the_tracked_reader_survives_a_path_with_a_space(monkeypatch: pytest.Mon
     this; the listing is faked instead, which is the honest way to hold a property the tree
     cannot currently exhibit.
     """
+    # The patches reach the real `shutil`, `subprocess` and `Path` objects rather than a
+    # narrow seam, because `sweep_rules` holds the modules themselves. `monkeypatch` undoes
+    # all three, and the suite runs serially, so the breadth is bounded to this call; it is
+    # noted so nobody widens it further.
     listing = "docs/a file with spaces.md\0docs/plain.md\0"
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=listing, stderr="")
     monkeypatch.setattr(sweep_rules.shutil, "which", lambda _name: "/usr/bin/git")
@@ -189,3 +212,19 @@ def test_the_tracked_reader_survives_a_path_with_a_space(monkeypatch: pytest.Mon
     names = [path.name for path in tracked_files()]
 
     assert names == ["a file with spaces.md", "plain.md"]
+
+
+def test_only_this_module_is_skipped_by_the_span_scan() -> None:
+    """The scan's one exemption, asserted rather than inlined.
+
+    Widening it to every path under `tests/` excludes every shipped test module from the
+    scan, and an unreadable node id planted in one of them then passes: measured green with
+    the suite count unchanged. The sibling module carries the same test for the same reason.
+    """
+    skipped = [
+        str(path.relative_to(ROOT))
+        for path in tracked_files()
+        if _is_this_module(str(path.relative_to(ROOT)))
+    ]
+
+    assert skipped == [SELF]

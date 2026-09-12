@@ -18,7 +18,7 @@ from flask.testing import FlaskClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from complyops import create_app
-from complyops.audit import normalise_fields
+from complyops.audit import journal, normalise_fields
 from complyops.views import refusals
 
 #: Real key material, published here on purpose: it is not a credential.
@@ -546,3 +546,47 @@ def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: Flas
     assert at_caps <= refusals.ROW_BYTES_AT_FIELD_CAPS, f"{at_caps} bytes: re-measure the figure"
     assert at_caps > refusals.ROW_BYTES_AT_FIELD_CAPS * 0.9, "the pin has drifted loose"
     assert friendly < at_caps, "the friendly row must weigh less than the sizing row"
+
+
+#: The sizing sentence both shipped carriers state, derived from the two pinned constants
+#: rather than typed. `ROW_BYTES_AT_FIELD_CAPS` was already pinned by a measuring test; the
+#: other multiplicand was not, so raising `GLOBAL_ROWS_PER_WINDOW` tenfold left the suite
+#: green while `views/refusals.py` and the assessor-facing runbook went on stating a figure
+#: that was then wrong by the same factor. The mechanism was held; its magnitude was not.
+FLOOD_CARRIERS = (
+    Path(__file__).resolve().parents[1] / "src" / "complyops" / "views" / "refusals.py",
+    Path(__file__).resolve().parents[1] / "docs" / "DEPLOYMENT.md",
+)
+
+
+def _flood_sizing() -> tuple[int, int, float]:
+    """Return the window KiB, the daily MiB and the hours to the cap, from the constants."""
+    per_window = refusals.GLOBAL_ROWS_PER_WINDOW * refusals.ROW_BYTES_AT_FIELD_CAPS
+    windows = 86_400 // refusals.WINDOW_SECONDS
+    per_day = per_window * windows
+    hours = journal.MAXIMUM_LOG_BYTES / per_day * 24
+    return round(per_window / 1024), round(per_day / 1024 / 1024), round(hours, 1)
+
+
+def test_the_flood_sizing_the_records_state_is_what_the_constants_give() -> None:
+    """Both carriers must say what the pinned constants actually produce.
+
+    Derived and asserted verbatim, the way the credential sweep's cost figures are, because
+    this is the same class: a figure in a shipped document that justifies a decision, here
+    the decision to defer an edge rate limiter, resting on a constant nothing held.
+    """
+    window_kib, day_mib, hours = _flood_sizing()
+    sentence = f"about {window_kib} KiB per five-minute window, so about {day_mib} MiB a day"
+
+    for path in FLOOD_CARRIERS:
+        flowed = " ".join(path.read_text(encoding="utf-8").split())
+
+        assert sentence in flowed or f"{day_mib} MiB a day" in flowed, (
+            f"{path.name} does not state the sizing the constants give: {sentence!r}. "
+            "Re-measure and correct both carriers, or correct the constant."
+        )
+        assert f"{hours} hours" in flowed, (
+            f"{path.name} does not state {hours} hours to the cap, which is what "
+            f"{refusals.GLOBAL_ROWS_PER_WINDOW} rows of {refusals.ROW_BYTES_AT_FIELD_CAPS} "
+            "bytes produce"
+        )

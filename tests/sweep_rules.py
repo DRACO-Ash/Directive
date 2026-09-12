@@ -112,7 +112,8 @@ def tracked_files() -> list[Path]:
     module SHIPS, so it runs at the platform's test stage, where `/usr/bin/git` raises
     `FileNotFoundError` on any image that puts git elsewhere. That is a red stage 5 and a
     failed upload with every later stage skipped. No test holds this, so this sentence is
-    the only record of why it is written this way.
+    the only record in code; the finding that produced it is the ninth engineering pass in
+    `docs/GATE-RECORDS.md`.
     """
     git = shutil.which("git")
     if git is None:
