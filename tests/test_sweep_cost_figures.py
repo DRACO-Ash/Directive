@@ -218,8 +218,9 @@ def _breakdowns() -> dict[str, int]:
 _SWEEP = ROOT / "scripts" / "build-package.sh"
 _RECORDS = ROOT / "docs" / "GATE-RECORDS.md"
 _CHANGELOG = ROOT / "CHANGELOG.md"
-#: A third carrier, found by deriving the map from the tree rather than declaring it: this
-#: module's docstring states the false-positive figure too, and the map did not say so.
+#: A third carrier, found by deriving the map from the tree rather than declaring it:
+#: `test_package_build.py` states the false-positive figure too, and the map did not say so.
+#: This module can never be a carrier, because `_files_stating` excludes itself.
 _PACKAGE_BUILD = ROOT / "tests" / "test_package_build.py"
 
 #: WHICH file must carry WHICH clause, one entry each rather than a blanket "both files".
@@ -1790,15 +1791,27 @@ def _is_written_out(node: ast.expr) -> bool:
 
 
 def _module_bindings() -> dict[str, ast.expr]:
-    """Return this module's top-level single-name assignments, by name."""
+    """Return this module's top-level single-name assignments, by name.
+
+    ANNOTATED assignments included. Reading `ast.Assign` alone made `X: T = (...)` invisible
+    while the docstring said single-name assignments, and three controls build on this
+    helper: annotating an anchor, striking its register line and aliasing its twin was three
+    edits with the anchoring test left in place, and the whole suite stayed green while a
+    figure nobody measured shipped into this project's own gate record.
+    """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
-    return {
-        node.targets[0].id: node.value
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-    }
+    bound: dict[str, ast.expr] = {}
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                bound[node.target.id] = node.value
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            bound[node.targets[0].id] = node.value
+    return bound
 
 
 def _anchoring_comparisons() -> set[tuple[str, str]]:
@@ -1835,7 +1848,11 @@ def test_the_anchored_pairs_are_every_pair_this_module_anchors() -> None:
     leaving the PREFIX, which the prefix derivation cannot see. What neither closes is a
     committer deleting the anchoring test, the register line and the twin together: that is
     three coordinated edits by an adversary who can edit this file, which CLAUDE.md puts out
-    of the threat model, and it is recorded as residual rather than claimed closed.
+    of the threat model, and it is recorded as residual rather than claimed closed. Be exact
+    about that, because the first version of this sentence named ONE three-edit route as
+    though it were the only one: annotating an anchor so the source reader could not see it
+    was a second, and it left the anchoring test in place. That route is closed at the
+    reader; the coordinated deletion is not, and it is what the residual covers.
     """
     assert _anchoring_comparisons() == set(ANCHORED_PAIRS), (
         f"this module anchors {sorted(_anchoring_comparisons())} and the register declares "
@@ -1944,9 +1961,9 @@ def test_every_reporting_carrier_is_what_the_tree_states() -> None:
         )
 
 
-#: How a tuple can be written so it LOOKS written out and is not. Every one of these was
-#: tried against the binding check by a gate; the first two are what shipped a retired
-#: figure into the accreditation record before the elements were read.
+#: How a tuple can be written so it LOOKS written out and is not. The first two are what a
+#: gate drove end to end, shipping a retired figure into the accreditation record before the
+#: elements were read; the rest are the same class, constructed here.
 ALIAS_SHAPES = (
     ("OTHER", False),
     ("(*OTHER,)", False),
