@@ -8,101 +8,117 @@ and the accreditation record that sends an assessor to that module. The property
 held elsewhere; the signposts were not corrected.
 
 So the class is closed here rather than audited by eye each round. A cited name is now a
-machine-checkable reference: if it does not resolve to a collected test, this is red.
+machine-checkable reference: if it does not resolve to a test this suite defines, this
+is red.
 """
 
 from __future__ import annotations
 
 import ast
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
-import pytest
+from sweep_rules import tracked_files
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: A backticked `test_…` name, which is how this project cites one in prose, in a comment
-#: and in a document. Anything not in backticks is narrative rather than a reference.
-_CITATION = re.compile(r"`(test_[a-z0-9_]+)`")
+#: A backticked test name, in either form this project writes. The bare name is the common
+#: one; the node id, a module path and a name joined by a double colon, is what the runbook
+#: gives a reader to paste into pytest, and the first guard could not see it. Renaming the
+#: test that document cites left the whole suite green, with an assessor-facing runbook
+#: pointing at a control that was not there, which is the exact defect this module exists
+#: for. The file part is captured too, so a node id is resolved in the file it names.
+_CITATION = re.compile(r"`(?:(?P<file>[\w./-]+)::)?(?P<name>test_[a-z0-9_]+)`")
 
-#: Names cited in this tree that are deliberately NOT tests of this suite. A declared list,
-#: reviewable line by line, so an exception is a decision rather than a loosened check.
+#: Citations that are deliberately NOT of a test in this suite, keyed by the path they are
+#: allowed to appear in as well as the name. Keyed by name alone, the exemption applied
+#: everywhere: citing one of these from `docs/GATE-RECORDS.md`, which ships, passed green,
+#: while the comment justifying it appealed to the path.
 #:
-#: The four below are in `.claude/skills/appstore-python-gate/references/`, which is a
-#: recipe for a project adopting this baseline. It PRESCRIBES tests a consuming project
-#: should write; it does not describe this suite. That directory does not ship in the
-#: package and is not assessor-facing, which is the whole difference: the defect this module
-#: exists for is a SHIPPED file pointing a reader at a control that is not there.
-NOT_A_TEST = frozenset(
-    {
-        "test_the_environment_check_is_the_first_leg_of_the_loop",
-        "test_the_loop_never_invokes_a_tool_by_bare_name",
-        "test_the_loop_routes_every_tool_through_one_resolved_interpreter",
-        "test_no_verification_script_pipes_a_gating_command_into_another",
-    }
-)
-
-
-def _tracked() -> list[Path]:
-    """Every file `git add -A` would stage, or a skip where there is no repository."""
-    git = shutil.which("git")
-    if git is None:
-        pytest.skip("git is not available, so the tracked set cannot be read")
-    listed = subprocess.run(  # noqa: S603
-        [git, "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-        check=False,
+#: These four are in a recipe for a project adopting this baseline. It PRESCRIBES tests a
+#: consuming project should write; it does not describe this suite. That directory does not
+#: ship in the package and is not assessor-facing, which is the whole difference: the defect
+#: this module exists for is a SHIPPED file pointing a reader at a control that is not there.
+NOT_A_TEST = {
+    ".claude/skills/appstore-python-gate/references/": frozenset(
+        {
+            "test_the_environment_check_is_the_first_leg_of_the_loop",
+            "test_the_loop_never_invokes_a_tool_by_bare_name",
+            "test_the_loop_routes_every_tool_through_one_resolved_interpreter",
+            "test_no_verification_script_pipes_a_gating_command_into_another",
+        }
     )
-    if listed.returncode != 0:
-        pytest.skip("not a repository; this is the unpacked package")
-    return [ROOT / name for name in listed.stdout.split() if (ROOT / name).is_file()]
+}
 
 
-def _defined_tests() -> set[str]:
-    """Every test function the suite defines, read from the source rather than collected.
+def _exempt(name: str, where: str) -> bool:
+    """Report whether this name is a declared exception FOR THIS PATH."""
+    return any(where.startswith(prefix) and name in names for prefix, names in NOT_A_TEST.items())
 
-    Parsing beats importing here: a module that skips at import time, as two in this suite
-    do outside the repository, would otherwise contribute nothing and every name it defines
-    would read as dangling.
+
+def _defined_tests() -> dict[str, set[str]]:
+    """Every test function the suite DEFINES, by file, read from source.
+
+    Defined rather than collected, and the wording matters: this parses, so a `def test_…`
+    nested inside a class or another function counts here where pytest would not collect it.
+    The two sets coincide today, measured. Parsing is still the right call, because
+    collecting would mean running pytest inside a test. The earlier reason given here, that
+    modules skip at import time, was simply false: the two that skip do so at call time,
+    which does not remove a name from collection.
+
+    `rglob`, so a future `tests/<subdir>/` is not invisible, and `AsyncFunctionDef` as well
+    as `FunctionDef`, because an async test would otherwise read as undefined and every
+    citation of it as dangling.
     """
-    names = set()
-    for path in sorted((ROOT / "tests").glob("test_*.py")):
+    names: dict[str, set[str]] = {}
+    for path in sorted((ROOT / "tests").rglob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        names |= {
+        names[str(path.relative_to(ROOT))] = {
             node.name
             for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name.startswith("test_")
         }
     return names
 
 
-def _citations() -> dict[str, list[str]]:
-    """Every backticked test name cited in a tracked file, and where it is cited."""
-    found: dict[str, list[str]] = {}
-    for path in _tracked():
+def _citations() -> list[tuple[str, str, str]]:
+    """Every backticked test citation: the name, the module it names if any, and the citer."""
+    found = []
+    for path in tracked_files():
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for name in _CITATION.findall(text):
-            found.setdefault(name, []).append(str(path.relative_to(ROOT)))
+        where = str(path.relative_to(ROOT))
+        found += [
+            (match.group("name"), match.group("file") or "", where)
+            for match in _CITATION.finditer(text)
+        ]
     return found
 
 
 def test_every_cited_test_name_resolves() -> None:
-    """A citation that resolves to nothing is a signpost to a control that is not there."""
+    """A citation that resolves to nothing is a signpost to a control that is not there.
+
+    A citation naming a module must resolve IN THAT MODULE. The deployment runbook gives a
+    reader a node id to paste into pytest, and one naming the wrong module sends them
+    nowhere even when the test exists elsewhere.
+    """
     defined = _defined_tests()
-    dangling = {
-        name: sorted(set(where))
-        for name, where in _citations().items()
-        if name not in defined and name not in NOT_A_TEST
-    }
+    everywhere: set[str] = set().union(*defined.values())
+    dangling = []
+    for name, in_file, where in _citations():
+        if _exempt(name, where):
+            continue
+        if in_file:
+            if name not in defined.get(in_file, set()):
+                dangling.append(f"{in_file}::{name} cited in {where}")
+        elif name not in everywhere:
+            dangling.append(f"{name} cited in {where}")
 
     assert not dangling, "these files cite a test that does not exist:\n  " + "\n  ".join(
-        f"{name} in {', '.join(where)}" for name, where in sorted(dangling.items())
+        sorted(set(dangling))
     )
 
 
@@ -112,5 +128,11 @@ def test_the_citation_check_reads_this_repository() -> None:
     A citation pattern that stopped matching, or a tracked set that came back empty, would
     make the test green and meaningless.
     """
-    assert _defined_tests(), "no test functions were parsed out of tests/"
-    assert _citations(), "no test citations were found, so the pattern no longer matches"
+    defined = _defined_tests()
+    citations = _citations()
+
+    assert set().union(*defined.values()), "no test functions were parsed out of tests/"
+    assert citations, "no test citations were found, so the pattern no longer matches"
+    # And a node-id citation specifically. The first guard could not read that form at all,
+    # so without one in the corpus the widening would itself be untested.
+    assert any(in_file for _, in_file, _ in citations), "no node-id citation was read"
