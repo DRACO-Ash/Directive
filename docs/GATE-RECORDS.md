@@ -49,6 +49,8 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `engineering-reviewer`, twelfth pass | `d2293e6` | **FAIL** | Three MAJORs. The live-cost figure was turned from a word into a digit and wired to nothing, so rewriting 1 to 0 was green while the bullet beside it claimed every figure was asserted. Emphasis was stripped only where it touched a digit, so `**47 findings**` stayed invisible. And the module written to stop stale counts carried two in its own docstring. |
 | 2026-09-11 | `security-reviewer`, twentieth run | `5f3c4cf` | **FAIL** | Two MAJORs, one of them a REGRESSION against the previous commit. Widening the emphasis stripper to remove backticks made four of the eleven shapes unmatchable, because those four still carried backticks themselves, so the sweep went silently blind to a whole canonical sentence and three clauses and a false figure shipped green in the accreditation record. Underscore emphasis was invisible too, one character beyond the class the same commit had closed. |
 | 2026-09-11 | `engineering-reviewer`, thirteenth pass | `5f3c4cf` | **FAIL** | Three MAJORs, the regression shared. Also: the release note's claim that every figure in it is read back was false for six of them, in the fourth wrong version of that sentence and the second where the fix broadened what it was fixing; and two documents stated that the wider stripper closed the gap when for four shapes it opened one. |
+| 2026-09-11 | `engineering-reviewer`, fourteenth pass | `84e80ed` | **PASS** | Five MINORs, no MAJOR. The first engineering PASS of this release. It verified the claim that had been false at four consecutive passes, by scripting a check that every test name cited in a shipped document resolves to a real test, and searched all 81 commits to confirm no false figure was ever committed. Its MINORs: a per-shape assertion weakened by a shorter sibling matching first, and four shapes backing no declared figure and held by nothing. |
+| 2026-09-12 | `security-reviewer`, twenty-first run | `84e80ed` | **FAIL** | One MAJOR, the same one the pass above raised as a MINOR and scored harder here. Deleting three entries from the shape set left all 1009 tests green while a false figure sailed into the accreditation record: the set is parametrised over, so a deleted entry is simply not tested, and four of the shapes exist only to ban a wording this project has retired, so nothing else misses them. Twenty-three injection probes, including fullwidth digits and a line-broken number, were all caught. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -88,7 +90,8 @@ credential-shaped token in any cell of a document table row whose name cell carr
 these names. The keyword may be followed by more of the name, so `CLIENT_SECRET_V2=` is
 caught. Case is folded everywhere except the prose rule.
 
-Every figure below is pinned by `tests/test_sweep_cost_figures.py`, which re-runs each
+Every figure in the list of open limits below is pinned by
+`tests/test_sweep_cost_figures.py`, which re-runs each
 experiment against the live rules and the live tree, asserts that each sentence and each
 clause inside it is still SAID where it belongs, and sweeps EVERY tracked file for anything
 written in the same shapes. Three parts, and each was added only after the previous two were
@@ -104,7 +107,7 @@ those four unmatchable, and a false figure of that shape shipped green in the ac
 record. The shapes are written once as templates and compiled through the same normalisation
 the text goes through, so the two agree by construction, and a test asserts that every shape
 still matches its own rendering. That assertion is the one to keep whenever the stripper
-changes; it is what nothing checked. All three parts, because each of the first five attempts closed one and left the next
+changes; it is what nothing checked. All three parts, because every earlier attempt closed one and left the next
 open: pinning the measurement left the prose free, and a reviewer rewrote 22 to 47 and 26 to
 99 in three documents with the suite green; pinning three named files left every other
 shipped document free, and a reviewer put false figures in `README.md` and in the

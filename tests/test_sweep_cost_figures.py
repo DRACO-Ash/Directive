@@ -244,19 +244,6 @@ BREAKDOWN_CARRIERS = {
 }
 
 
-#: Every shape a figure of this kind is written in. The sweep reads each occurrence in every
-#: tracked file and asserts the number; the carrier maps assert that each figure is still
-#: SAID where it should be. Both halves are needed and the reasons are not theoretical: a
-#: clause with a wrong number was caught and a clause reworded away was not, until the
-#: carrier map existed.
-#:
-#: The residual, named rather than waved at: a figure written in a shape not listed below is
-#: unread. That is a narrower gap than it was, since emphasis no longer hides a digit and
-#: every declared clause must be present, but adding a new phrasing to a document without
-#: adding it here still drifts silently. There is no way to close that with a regular
-#: expression, so it is written down instead.
-
-
 #: Markdown emphasis. `` `97` ``, `**44**`, `~~22~~` and `_88_` all render to a reader as
 #: ordinary numbers, and a scanner that does not strip them reads something else. Stripping
 #: only where the markup ABUTS a digit was the first attempt and it was half a fix: `**47
@@ -288,6 +275,21 @@ def _normalise(text: str) -> str:
 #: goes. Written once, normalised through `_normalise`, then compiled: pattern and haystack
 #: therefore agree by construction, which is the thing that broke when the stripper was
 #: widened and four hand-written alternatives kept their backticks.
+#:
+#: The sweep reads each occurrence of each shape in every tracked file and asserts the
+#: number; the carrier maps assert that each figure is still SAID where it belongs. Both
+#: halves are needed and neither reason is theoretical: a clause with a wrong number was
+#: caught and a clause reworded away was not, until the carrier map existed.
+#:
+#: THE RESIDUAL, stated in both directions because only one of them was stated before.
+#: Adding a new phrasing to a document without adding it here drifts silently, and there is
+#: no way to close that with a regular expression. REMOVING a phrasing from here drifts
+#: silently too, and that one IS closable: four of these shapes back no declared figure and
+#: exist only to ban a wording this project has retired or could regress to, so nothing
+#: else would miss them. Deleting three of them left the whole suite green while a false
+#: figure sailed into the accreditation record. `FROZEN_SHAPES` below is the anchor, and
+#: the duplication is the control rather than an oversight: changing the set is meant to be
+#: a deliberate two-place edit.
 _SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -305,6 +307,56 @@ _SHAPES = (
     "{n} finding across every tracked file",
     "{n} false positives",
 )
+
+
+#: The same set, written out again on purpose. `_SHAPES` is parametrised over, so a deleted
+#: entry is simply not tested, and the four entries that back no declared figure are held by
+#: nothing at all. This is the anchor that makes a deletion red.
+FROZEN_SHAPES = (
+    "{n} findings on {n} lines across every tracked file",
+    "{n} matches on {n} lines across every tracked file",
+    "{n} findings on {n} lines",
+    "{n} matches on {n} lines",
+    "{n} findings across the tracked tree, {n} of them in `src/`",
+    "{n} tracked files",
+    "{n} Python keyword arguments",
+    "{n} `sonar.projectKey=` lines",
+    "{n} of them in the skill templates",
+    "{n} in this project's own",
+    "{n} are `key_id=`",
+    "{n} is `keys=`",
+    "{n} findings across every tracked file",
+    "{n} finding across every tracked file",
+    "{n} false positives",
+)
+
+#: One concrete phrasing per shape, with a number that is NOT the measured one, so each
+#: shape is exercised against its own pattern rather than against whichever sibling happens
+#: to match first. The two suffix-free forms and the tree-size form are here because they
+#: are the only guards against a wording this project has actually written and retired.
+PHRASINGS = {
+    "{n} findings on {n} lines across every tracked file": (
+        "47 findings on 47 lines across every tracked file"
+    ),
+    "{n} matches on {n} lines across every tracked file": (
+        "99 matches on 88 lines across every tracked file"
+    ),
+    "{n} findings on {n} lines": "47 findings on 47 lines",
+    "{n} matches on {n} lines": "99 matches on 88 lines",
+    "{n} findings across the tracked tree, {n} of them in `src/`": (
+        "88 findings across the tracked tree, 77 of them in `src/`"
+    ),
+    "{n} tracked files": "160 tracked files",
+    "{n} Python keyword arguments": "31 Python keyword arguments",
+    "{n} `sonar.projectKey=` lines": "98 `sonar.projectKey=` lines",
+    "{n} of them in the skill templates": "40 of them in the skill templates",
+    "{n} in this project's own": "4 in this project's own",
+    "{n} are `key_id=`": "12 are `key_id=`",
+    "{n} is `keys=`": "3 is `keys=`",
+    "{n} findings across every tracked file": "9 findings across every tracked file",
+    "{n} finding across every tracked file": "9 finding across every tracked file",
+    "{n} false positives": "9 false positives",
+}
 
 
 def _shape_pattern(template: str) -> str:
@@ -475,7 +527,7 @@ def test_every_shape_matches_its_own_rendering(shape: str) -> None:
     Widening `_EMPHASIS` to strip backticks made four hand-written alternatives unmatchable,
     because they still carried backticks themselves, and the sweep went silently blind to a
     whole canonical sentence and three clauses. Nothing failed. A false figure of that shape
-    then shipped in the accreditation record, which is the document the sweep's own comment
+    then passed green in the accreditation record, which is the document the sweep's own comment
     sends an assessor to.
 
     This asserts the property that was violated: each shape, rendered with a number and put
@@ -484,7 +536,9 @@ def test_every_shape_matches_its_own_rendering(shape: str) -> None:
     """
     rendered = _normalise(shape.replace("{n}", "42"))
 
-    assert _RENDERINGS.search(rendered), (
+    # Its OWN pattern, not the whole alternation: a shape subsumed by a shorter sibling
+    # would otherwise pass while being individually broken, which was measured.
+    assert re.compile(_shape_pattern(shape)).search(rendered), (
         f"the scanner cannot read its own shape {shape!r}, which renders as {rendered!r}. "
         "Something normalised on one side of the comparison and not the other."
     )
@@ -506,4 +560,46 @@ def test_every_declared_figure_is_a_shape_the_scanner_reads() -> None:
         assert _RENDERINGS.search(normalised), (
             f"{sentence!r} is asserted but matches no shape, so a wrong copy of it "
             "elsewhere in the tree would not be read back"
+        )
+
+
+def test_the_shape_set_is_the_frozen_one() -> None:
+    """Deleting a shape made the sweep blind with 1009 tests green.
+
+    `_SHAPES` is parametrised over, so a deleted entry is not tested, and four of these
+    shapes back no declared figure: they exist only to ban a wording this project has
+    retired, so nothing else notices their absence. Removing `{n} tracked files` reopens the
+    tree-size figure that was deliberately taken out of every document; removing the two
+    suffix-free forms lets the canonical sentence be reworded away from `across every
+    tracked file`. A reviewer deleted all three and shipped a false figure into the
+    accreditation record with the suite green.
+
+    The duplication below is the control, not an oversight. Changing the set is meant to
+    cost a deliberate edit in two places.
+    """
+    assert _SHAPES == FROZEN_SHAPES
+
+
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_every_shape_has_a_phrasing_that_exercises_it(shape: str) -> None:
+    """And the corpus is total, so a shape added without one is not quietly unexercised."""
+    assert shape in PHRASINGS, f"{shape!r} has no phrasing in PHRASINGS"
+
+    pattern = re.compile(_shape_pattern(shape))
+
+    assert pattern.search(_normalise(PHRASINGS[shape])), (
+        f"{PHRASINGS[shape]!r} does not exercise {shape!r}"
+    )
+
+
+def test_every_phrasing_is_banned_by_the_compiled_scanner() -> None:
+    """The corpus, end to end.
+
+    Each phrasing carries a number nothing measured, so the sweep must refuse every one of
+    them wherever it appears in the tree.
+    """
+    for shape, phrasing in PHRASINGS.items():
+        assert _RENDERINGS.search(_normalise(phrasing)), (
+            f"{phrasing!r} would not be read back, so a figure in the shape {shape!r} could "
+            "be written into a shipped document unnoticed"
         )

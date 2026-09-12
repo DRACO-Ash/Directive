@@ -47,7 +47,7 @@ one.
 ● The credential sweep over the staged package, and the matching pre-write hook, catch an
   UNQUOTED assignment. Every secret this application consumes is written without quotes, so
   the previous rule covered none of them: an unquoted client secret in `.env.example` built
-  clean and shipped at the package root. Three gate rounds went into the pattern set, each
+  clean and shipped at the package root. Several gate rounds went into the pattern set, each
   of them demonstrating a shape that still shipped. It now matches an assignment at the
   start of a line behind any `ENV`, `ARG`, `export`, `-e`, `--env` or list-marker prefix at
   any indent and behind an optional quote or backtick; the same assignment anywhere in a
@@ -61,7 +61,7 @@ one.
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
   closed, and the largest item is `NAME = value` with spaces: closing it gives 22 findings
   on 22 lines across every tracked file, the experiment being to replace `=` with
-  `[ \t]*=[ \t]*` in that rule alone. Every figure in this bullet is asserted by
+  `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by
   `tests/test_secret_rule_parity.py`, patterns and flags compared character for character,
@@ -80,7 +80,7 @@ one.
   defeating the tests written for the one before it.
 ● `tests/test_sweep_cost_figures.py` re-measures the three costs that justify the three
   open gaps, asserts the sentences that report them, and sweeps every tracked file for
-  anything written in the same shapes. All three parts, because six attempts at this class
+  anything written in the same shapes. All three parts, because every earlier attempt at it
   each closed one and left the next open: the measurement, then the prose reporting it, then
   the files outside the declared three, then the clauses inside a pinned sentence. Every
   figure is a digit now, because a figure written as a word is invisible to any scanner.
