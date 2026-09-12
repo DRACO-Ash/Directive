@@ -310,7 +310,7 @@ _SHAPES = (
 #: `{n} findings on {n} lines` and `{n} matches on {n} lines`, this anchor is the only test
 #: that sees a coordinated deletion from `_SHAPES` and `PHRASINGS` together. Those two are
 #: substrings of a canonical sentence, so neither the declared-figure direction nor
-#: `UNBACKED_SHAPES` covers them. For the other thirteen shapes another test is red as well,
+#: `UNBACKED_SHAPES` covers them. For every OTHER shape another test is red as well,
 #: and the sweep catches a harmful reorder on its own. That narrow case is the whole reason
 #: this stays, and an earlier version of this comment claimed a general one.
 FROZEN_SHAPES = (
@@ -422,11 +422,13 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
 def _entitled() -> set[str]:
     """Return the renderings the PRICE PASSAGE may carry a digit for, and no others.
 
-    The whole allowed set is every figure this module measured, across four experiments and
-    eight breakdown clauses. Clearing all of it from this passage before looking for a loose
-    digit let a clause borrow another experiment's number and say something false about this
-    one: `There are 0 false positives among them in auth.py.` is the prose rule's figure
-    used as a claim about the quoted rule's split, and it was green.
+    The whole allowed set is every figure this module measured, across every experiment and
+    every breakdown clause. No count is given for either: the first version of this
+    docstring wrote two, and both were wrong, in the module whose whole purpose is to stop
+    exactly that. Clearing all of it from this passage before looking for a loose digit let
+    a clause borrow another figure and say something false about this one: `There are 0
+    false positives among them in auth.py.` is the SHIPPED RULES' false-positive count used
+    as a claim about the quoted rule's split, and it was green.
     """
     quoted = _rendered()["quoted rule with bare key and keys in its keyword group"]
     clause = f"{EXPECTED_BEYOND_THE_DOUBLE} beyond the declared double"
@@ -637,8 +639,14 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: one, and the hash goes first because it is the one run of digits that is no figure.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
         residue = _normalise(_COMMIT_HASH_SPAN.sub(" ", _quoted_rule_passage_raw(path)))
+        #: ONCE each. `replace` with no count removes every occurrence, so a second copy of
+        #: an entitled rendering on the same line was cleared with the first and carried a
+        #: false claim out with it: `6 beyond the declared double are in auth.py.` asserts
+        #: six findings in a module that holds two, and was green in both carriers. The
+        #: module-name check cannot see it, because the true sentence already names all
+        #: three modules.
         for rendering in sorted(_entitled(), key=len, reverse=True):
-            residue = residue.replace(rendering, " ")
+            residue = residue.replace(rendering, " ", 1)
         loose = sorted(set(re.findall(r"[0-9]+", residue)))
         assert not loose, (
             f"{path.name} states {loose} in the price passage outside any rendering this "
@@ -687,7 +695,12 @@ _PRICE_CLAUSE = "beyond the declared double"
 #: parts. A backticked number renders to a reader as an ordinary number, which is the same
 #: reason `_EMPHASIS` strips backticks before anything compares text, and this project has
 #: now been bitten by backtick blindness three times.
-_COMMIT_HASH_SPAN = re.compile(r"`[0-9a-f]{7,40}`")
+#:
+#: At least one `a` to `f`, because every decimal digit is also a hex digit: the first
+#: version matched `1000000` as readily as `9b3bba3`, so `` `1000000` lines were swept ``
+#: stood unmeasured in the price passage. A hash of digits alone is possible and would be
+#: refused here; the answer to that is to write it outside the passage, not to widen this.
+_COMMIT_HASH_SPAN = re.compile(r"`(?=[0-9a-f]{7,40}`)[0-9a-f]*[a-f][0-9a-f]*`")
 
 #: The ordinals the passage legitimately writes, removed before the ban reads it. They name
 #: the gate runs that asked for the figure; `twenty-eighth` is a run's number, not a
@@ -838,10 +851,13 @@ def _quoted_rule_passage_raw(path: Path) -> str:
     elsewhere for unrelated reasons, so a whole-file negative check would be red always.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
+    #: OCCURRENCES, not lines carrying one. Counting lines let a second copy share a line
+    #: with the first and pass, which is what a repeated entitled rendering needs.
+    occurrences = sum(line.count(_PRICE_CLAUSE) for line in lines)
     hits = [index for index, line in enumerate(lines) if _PRICE_CLAUSE in line]
 
-    assert len(hits) == 1, (
-        f"{path.name} states the price on {len(hits)} lines, not exactly one. If the "
+    assert occurrences == 1, (
+        f"{path.name} states the price {occurrences} times, not exactly once. If the "
         "sentence was rewrapped, rewrap it so the clause stays whole on one line; if it "
         "was copied, one of the copies is the stale one."
     )
@@ -860,14 +876,24 @@ def _quoted_rule_passage_raw(path: Path) -> str:
             start -= 1
         while end + 1 < len(lines) and _is_prose_comment(lines[end + 1]):
             end += 1
-        #: Plus any comment trailing the line of code that ends the paragraph. That line is
-        #: not a comment line, so the walk stops above it, and `examined += 1  # 9 of these
-        #: sit in auth.py.` sat one character outside the bound and was green. Appending to
-        #: an existing line is not the structural edit the residual accepts, so it is taken
-        #: in rather than recorded.
-        if end + 1 < len(lines) and "#" in lines[end + 1]:
-            trailing = lines[end + 1][lines[end + 1].index("#") :]
-            return "\n".join([*lines[start : end + 1], trailing])
+        #: Plus every comment trailing the RUN of code lines below the paragraph, down to
+        #: the next comment paragraph. Those lines are not comment lines, so the walk stops
+        #: above them and a claim appended to one sat outside the bound. The first version
+        #: of this reached exactly one line and the sentence describing it said "appending
+        #: to an existing line", which was three lines short: the example the comment itself
+        #: named, `examined += 1  # 9 of these sit in auth.py.`, is the THIRD code line and
+        #: was still green. Reach the whole run, or say the bound is one line; claiming the
+        #: general case while implementing the specific one is how the last four rounds went.
+        trailing = []
+        cursor = end + 1
+        while (
+            cursor < len(lines) and lines[cursor].strip() and not _is_prose_comment(lines[cursor])
+        ):
+            if "#" in lines[cursor]:
+                trailing.append(lines[cursor][lines[cursor].index("#") :])
+            cursor += 1
+        if trailing:
+            return "\n".join([*lines[start : end + 1], *trailing])
     else:
         #: The bullet: back to its marker, forward to the next marker or the next heading.
         #: NOT to the next blank line: a continuation indented under the bullet, one blank
@@ -875,13 +901,26 @@ def _quoted_rule_passage_raw(path: Path) -> str:
         #: stopped at the blank.
         while start > 0 and not lines[start].lstrip().startswith("●"):
             start -= 1
-        while end + 1 < len(lines) and not (
-            lines[end + 1].lstrip().startswith("●")
-            or lines[end + 1].lstrip().startswith("#")
-            or lines[end + 1].lstrip().startswith("|")
-        ):
+        while end + 1 < len(lines) and not _ends_the_bullet(lines[end + 1]):
             end += 1
     return "\n".join(lines[start : end + 1])
+
+
+def _ends_the_bullet(line: str) -> bool:
+    """Report whether this line ends a bullet: the next bullet, a heading, or a table row.
+
+    Each terminator has to LOOK like itself, not merely start with its character. A bare
+    `startswith("|")` fired on a continuation line that a rewrap had begun with the tail of
+    a code span inside the same bullet: the bound stopped there and three banned
+    words and a loose digit sat below it, unread, with no structural edit made at all. A
+    heading needs its space, and a table row needs a second pipe.
+    """
+    stripped = line.lstrip()
+    if stripped.startswith("●"):
+        return True
+    if re.match(r"#{1,6}\s", stripped):
+        return True
+    return bool(re.match(r"\|.*\|", stripped))
 
 
 def _is_prose_comment(line: str) -> bool:
@@ -937,6 +976,56 @@ def _is_prose_comment(line: str) -> bool:
             "codeline",
             id="the script paragraph ends at a line of code",
         ),
+        pytest.param(
+            ".sh",
+            "    # A paragraph. 6 beyond the declared double, in `auth.py`.\n"
+            "    first_line=1  # a claim on the first code line\n",
+            "a claim on the first code line",
+            "firstline",
+            id="a comment trailing the first code line is taken in",
+        ),
+        pytest.param(
+            ".sh",
+            "    # A paragraph. 6 beyond the declared double, in `auth.py`.\n"
+            "    first_line=1\n"
+            "    second_line=2\n"
+            "    third_line=3  # a claim three lines down\n",
+            "a claim three lines down",
+            "thirdline",
+            id="a comment trailing the third code line is taken in too",
+        ),
+        pytest.param(
+            ".sh",
+            "    # A paragraph. 6 beyond the declared double, in `auth.py`.\n"
+            "    first_line=1\n"
+            "    # The next paragraph.\n"
+            "    later_line=2  # a claim past the next paragraph\n",
+            "A paragraph",
+            "a claim past the next paragraph",
+            id="the take stops at the next comment paragraph",
+        ),
+        pytest.param(
+            ".md",
+            "● A bullet. 6 beyond the declared double, in `auth.py`.\n"
+            "  is to add `key\n"
+            "  |keys` to that rule.\n"
+            "  A claim below the rewrapped span.\n"
+            "● The next bullet.\n",
+            "A claim below the rewrapped span",
+            "The next bullet",
+            id="a rewrapped code span beginning with a pipe does not end the bullet",
+        ),
+        pytest.param(
+            ".md",
+            "● A bullet. 6 beyond the declared double, in `auth.py`.\n"
+            "  the shell comment marker\n"
+            "  #comment, which is no heading without its space.\n"
+            "  A claim below the rewrapped marker.\n"
+            "## A heading\n",
+            "A claim below the rewrapped marker",
+            "A heading",
+            id="a line beginning with a hash and no space does not end the bullet",
+        ),
     ],
 )
 def test_the_passage_bound_ends_where_the_structure_does(
@@ -948,6 +1037,12 @@ def test_the_passage_bound_ends_where_the_structure_does(
     held by nothing: deleting either left the suite green, because the price bullet happens
     to be followed by another bullet today. A control is unfinished until a mutation shows
     it can fail, and a terminator no document reaches cannot fail.
+
+    The trailing-comment take arrived the same way and for the same reason: no live carrier
+    reaches it, because the line below the sweep's paragraph carries no `#`, so deleting the
+    branch outright left the suite green. The cases below reach the first code line, the
+    third, the paragraph that stops the take, and the rewrapped code span that must NOT stop
+    the bullet.
     """
     document = tmp_path / f"carrier{suffix}"
     document.write_text(body, encoding="utf-8")
@@ -1037,7 +1132,7 @@ def test_the_shape_set_is_the_frozen_one() -> None:
 
     Deleting a shape from `_SHAPES` alone is red at the phrasing corpus. For the two shapes
     subsumed by a longer sibling, deleting from `_SHAPES` and `PHRASINGS` together is red
-    here and nowhere else, measured across all fifteen; that narrow case is why this stays.
+    here and nowhere else, measured across every shape; that narrow case is why this stays.
     """
     assert _SHAPES == FROZEN_SHAPES
 
