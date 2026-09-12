@@ -1761,7 +1761,10 @@ def test_the_ban_corpus_is_the_frozen_one() -> None:
     )
 
 
-#: Every name that exists in a frozen pair, live twin and anchor alike. NOT called
+#: Every name that exists in a frozen pair, live twin and anchor alike. Derived twice and
+#: compared against both: once from the `FROZEN_` prefix, which closes a pair leaving the
+#: register, and once from the assertions that do the anchoring, which closes a pair leaving
+#: the PREFIX. NOT called
 #: `FROZEN_PAIRS`: this register is derived from the source below and compared against
 #: itself, and a name beginning `FROZEN_` would then have to be its own twin.
 ANCHORED_PAIRS = (
@@ -1796,6 +1799,48 @@ def _module_bindings() -> dict[str, ast.expr]:
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
     }
+
+
+def _anchoring_comparisons() -> set[tuple[str, str]]:
+    """Return every `assert <name> == <name>` this module makes between two bindings.
+
+    The pairing comes from the ASSERTION rather than the spelling. Deriving it from the
+    `FROZEN_` prefix keyed the whole defence to a naming convention nothing held: renaming
+    the anchor, striking its line from the register and aliasing the live name was three
+    edits, green at format, lint, types and suite, and shipped a retired figure into the
+    accreditation record. A rename cannot escape this, because the test that anchors the
+    pair still names both halves.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    bound = _module_bindings()
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assert) or not isinstance(node.test, ast.Compare):
+            continue
+        compare = node.test
+        if len(compare.ops) != 1 or not isinstance(compare.ops[0], ast.Eq):
+            continue
+        left, right = compare.left, compare.comparators[0]
+        if not isinstance(left, ast.Name) or not isinstance(right, ast.Name):
+            continue
+        if left.id in bound and right.id in bound:
+            found.add((left.id, right.id))
+    return found
+
+
+def test_the_anchored_pairs_are_every_pair_this_module_anchors() -> None:
+    """The register, derived from the assertions that do the anchoring.
+
+    The prefix derivation below closes a pair leaving the register. This closes a pair
+    leaving the PREFIX, which the prefix derivation cannot see. What neither closes is a
+    committer deleting the anchoring test, the register line and the twin together: that is
+    three coordinated edits by an adversary who can edit this file, which CLAUDE.md puts out
+    of the threat model, and it is recorded as residual rather than claimed closed.
+    """
+    assert _anchoring_comparisons() == set(ANCHORED_PAIRS), (
+        f"this module anchors {sorted(_anchoring_comparisons())} and the register declares "
+        f"{sorted(ANCHORED_PAIRS)}"
+    )
 
 
 def test_the_anchored_pairs_are_every_frozen_name_in_the_module() -> None:
@@ -1866,6 +1911,16 @@ def test_every_breakdown_carrier_is_what_the_tree_states() -> None:
     green. Declaring which files carry a clause is not enough; the tree has to agree.
     """
     for clause, declared in BREAKDOWN_CARRIERS.items():
+        #: NON-EMPTY first. An equality against an empty declaration holds trivially when the
+        #: clause is stated nowhere, and that is the honest committer's path: reword the
+        #: bullet, watch the positive check redden, "fix" the map by emptying the tuple,
+        #: green. Emptying this one entry retires the positive check AND the whole
+        #: price-passage refusal, which iterates it, so the word ban, the digit ban and the
+        #: module scan then run over no passage at all.
+        assert declared, (
+            f"{clause!r} is declared for no file, so its carrier check and anything that "
+            "iterates it are vacuous"
+        )
         stating = _files_stating(f"{_breakdowns()[clause]} {clause}")
         assert stating == {path.resolve() for path in declared}, (
             f"{clause!r} is stated by {sorted(p.name for p in stating)} and declared for "
@@ -1881,11 +1936,46 @@ def test_every_reporting_carrier_is_what_the_tree_states() -> None:
     """
     sentences = _rendered()
     for experiment, declared in REPORTS.items():
+        assert declared, f"{experiment!r} is declared for no file, so its carrier check is vacuous"
         stating = _files_stating(sentences[experiment])
         assert stating == {path.resolve() for path in declared}, (
             f"{experiment!r} is stated by {sorted(p.name for p in stating)} and declared "
             f"for {sorted(p.name for p in declared)}"
         )
+
+
+#: How a tuple can be written so it LOOKS written out and is not. Every one of these was
+#: tried against the binding check by a gate; the first two are what shipped a retired
+#: figure into the accreditation record before the elements were read.
+ALIAS_SHAPES = (
+    ("OTHER", False),
+    ("(*OTHER,)", False),
+    ("('a', *OTHER)", False),
+    ("tuple(OTHER)", False),
+    ("OTHER[:]", False),
+    ("OTHER[:1] + OTHER[1:]", False),
+    ("(('a', *OTHER),)", False),
+    ("tuple([*OTHER])", False),
+    ("(x for x in OTHER)", False),
+    ("('a', 'b')", True),
+    ("(('a',), ['b'])", True),
+    ("('a', 1, None, True)", True),
+    ("()", True),
+)
+
+
+@pytest.mark.parametrize(("source", "written_out"), ALIAS_SHAPES)
+def test_the_element_reader_tells_a_literal_from_an_alias(source: str, written_out: bool) -> None:
+    """The helper the whole freeze rests on, reached by a case at last.
+
+    It was reached by nothing: widening its constant test to `ast.expr` was one edit, green
+    across the suite, and the star-unpack then aliased past it and shipped the retired
+    tree-size figure into the accreditation record. The comment above the corpus claimed a
+    starred unpack could not alias past it, and that claim rested on an unheld helper.
+    """
+    node = ast.parse(source, mode="eval").body
+
+    assert _is_written_out(node) is written_out
 
 
 def test_the_sonar_split_adds_up() -> None:
