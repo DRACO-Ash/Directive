@@ -473,15 +473,19 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # file, 6 beyond the declared double the shipped rules already report, every one a
     # session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`.
     # That module list is derived from the scan and asserted, positively and against naming
-    # a module the scan does not give. No count is restated anywhere in this paragraph: a
-    # decomposed figure needs every part held, and a count written as a word is invisible to
-    # any scanner, so a word restating it is free by construction. Nothing in this PARAGRAPH
-    # restates the count; the comment run around it is not in scope and does carry one. The test bans a count
-    # written as a word in this paragraph, in either case, with the ordinals that name a
-    # gate run removed first, and bans any digit here that it did not itself measure. Not
-    # every way English says a number is on that list; the far end of the class is recorded
-    # as accepted residual rather than implied closed. Left open at a measured price, not
-    # bought.
+    # a module the scan does not give. Nothing in this PARAGRAPH restates the count: a
+    # decomposed figure needs every part held, and a count written as a word is invisible
+    # to any scanner, so a word restating it is free by construction. The comment run
+    # around this paragraph is not in scope and does carry one. What the test enforces is
+    # written INSIDE this paragraph deliberately: a bare hash ends the paragraph, so a
+    # sentence about the bound placed below one sits outside the region it describes, and
+    # every attack on the bound was then green in this carrier while red in the other. It
+    # bans the words on its list, in either case, with the compound ordinals that name a
+    # gate run removed first. That list is not every way English says a number, and the
+    # open end is recorded as accepted residual rather than implied closed. It also bans
+    # any digit in this paragraph outside a rendering this passage is entitled to,
+    # exempting only a commit hash: a backticked digit is not exempt, and neither is
+    # another experiment's figure. Left open at a measured price, not bought.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
