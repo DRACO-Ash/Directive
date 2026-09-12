@@ -475,8 +475,9 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # That module list is derived from the scan and asserted, positively and against naming
     # a module the scan does not give. No count is restated anywhere in this block: a
     # decomposed figure needs every part held, and a count written as a word is invisible to
-    # any scanner, so a word restating it is free by construction. Left open at a measured
-    # price, not bought.
+    # any scanner, so a word restating it is free by construction. The test bans a count
+    # written as a word in this paragraph, in either case, with the ordinals that name a
+    # gate run removed first. Left open at a measured price, not bought.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1

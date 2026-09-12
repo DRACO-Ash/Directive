@@ -571,8 +571,9 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     The passage states no count as a WORD, and that is asserted rather than claimed. Saying
     it in a docstring was not enough twice: `All six` went in, was removed, and `Those three
     module names` went in behind it, both free because no scanner reads a word. The digits
-    in the passage are held by the shape sweep and the breakdown clauses; the words are
-    banned outright, which is the only way to hold a figure a scanner cannot read.
+    in the passage are held by the shape sweep and the breakdown clauses; a word count is
+    banned, case-folded, with the ordinals that name a gate run removed first. Banning it
+    is the only way to hold a figure no scanner can read.
     """
     beyond = _beyond_the_double()
 
@@ -584,15 +585,18 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
         "the price and the double no longer add up to the widened rule's total"
     )
 
-    #: No count written as a word, in either carrier. `one` is not banned: the passage uses
-    #: it as a pronoun ("every one a session key NAME") and banning it would force a worse
-    #: sentence to satisfy a test. Two upwards is the range a restated count of these
-    #: modules or findings could take, and `three` to `seven` is the mutation that was green.
-    #: A hyphenated ordinal is not a count: the passage names the gate runs that asked for
-    #: the figure, and `twenty-eighth` is their number, not a quantity of anything.
+    #: No count written as a word, in either carrier, in EITHER case. Case-folded because
+    #: the first word of a sentence is the most natural place in English for a count to
+    #: appear, and `Three of these sit in auth.py` walked through the case-sensitive
+    #: version with the whole suite green. The ordinals are removed from the passage first
+    #: rather than excepted by a lookahead: `(?!-)` excepted every hyphenated compound, so
+    #: it licensed `the three-module list`, which is exactly the figure the ban is for.
+    #: `one` is not banned: the passage uses it as a pronoun ("every one a session key
+    #: NAME") and banning it would force a worse sentence to satisfy a test.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
         passage = _quoted_rule_passage(path)
-        spelled = [word for word in _WORD_NUMBERS if re.search(rf"\b{word}\b(?!-)", passage)]
+        readable = _ORDINALS.sub(" ", passage)
+        spelled = [word for word in _WORD_NUMBERS if re.search(rf"(?i)\b{word}\b", readable)]
         assert not spelled, (
             f"{path.name} states {spelled} as a word in the price passage, where no scanner "
             "can read it. Write the figure as a digit and pin it, or delete the clause."
@@ -629,9 +633,27 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
 #: locating on it too would make one edit red in two places and say nothing extra.
 _PRICE_CLAUSE = "beyond the declared double"
 
-#: The counts a restatement in the price passage could take, banned there outright. From two
-#: upwards, because `one` appears as a pronoun in that passage and banning it would buy
-#: nothing but a worse sentence.
+#: The ordinals the passage legitimately writes, removed before the ban reads it. They name
+#: the gate runs that asked for the figure; `twenty-eighth` is a run's number, not a
+#: quantity of anything. Named explicitly rather than matched as "anything hyphenated",
+#: which is what let a compound COUNT through. The tens word and its suffix are BOTH
+#: required: with the suffix optional this pattern stripped a bare `Thirty` and handed the
+#: ban a passage the count had already been removed from, which was green. A standalone
+#: ordinal such as `twentieth` is matched by the second alternation instead.
+_ORDINALS = re.compile(
+    r"\b(?:twen|thir|for|fif|six|seven|eigh|nine)ty[- ]"
+    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b"
+    r"|\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth"
+    r"|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth"
+    r"|eighteenth|nineteenth|twentieth|thirtieth)\b",
+    re.IGNORECASE,
+)
+
+#: The counts a restatement in the price passage could take, banned there in either case.
+#: From two upwards, because `one` appears as a pronoun in that passage and banning it would
+#: buy nothing but a worse sentence. Carried past twenty because the ban is declared as a
+#: class closure and a class that stops at twenty is not closed; `hundred` and `dozen` are
+#: here for the same reason, though no figure in this project has reached either.
 _WORD_NUMBERS = (
     "two",
     "three",
@@ -652,6 +674,15 @@ _WORD_NUMBERS = (
     "eighteen",
     "nineteen",
     "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+    "hundred",
+    "dozen",
 )
 
 
@@ -664,8 +695,13 @@ def _quoted_rule_passage(path: Path) -> str:
     `config.py`" to the end of the sweep's comment block landed past the window, so the
     negative half never saw the false names while the positive half, which searches the
     whole file, still found the true ones, and the suite stayed green. A window measured in
-    characters is a window an editor can walk out of; a window measured in the structure of
-    the document is not.
+    characters is a window an editor can walk out of. A window measured in the structure of
+    the document is harder to walk out of, and be exact about which structure: the comment
+    PARAGRAPH here, bounded by a bare `#`, not the comment run, which is 3865 characters
+    over nine paragraphs about unrelated parts of this sweep; and the bullet up to the next
+    bullet or heading, not up to the next blank line, because a continuation indented one
+    blank line below the bullet reads as part of the same claim and was green when the
+    bound stopped at the blank.
 
     Bounded rather than whole-file because both carriers name every one of these modules
     elsewhere for unrelated reasons, so a whole-file negative check would be red always.
@@ -681,24 +717,39 @@ def _quoted_rule_passage(path: Path) -> str:
     index = hits[0]
     start = end = index
     if path.suffix == ".sh":
-        #: The contiguous run of comment lines around it. The first line of code below the
-        #: block ends it, which is why the old window spilling into `text = raw.decode(...)`
-        #: was a symptom rather than a curiosity.
-        while start > 0 and lines[start - 1].lstrip().startswith("#"):
+        #: The comment PARAGRAPH, not the whole comment run. The run around this clause is
+        #: 3865 characters over nine paragraphs about unrelated parts of the sweep, and it
+        #: already contains the word `Two`, so a run-wide ban would have been red on arrival
+        #: and a run-wide module check reads claims that are not this one's. A bare `#` line
+        #: separates paragraphs in this script, which is the structure the bound uses.
+        while start > 0 and _is_prose_comment(lines[start - 1]):
             start -= 1
-        while end + 1 < len(lines) and lines[end + 1].lstrip().startswith("#"):
+        while end + 1 < len(lines) and _is_prose_comment(lines[end + 1]):
             end += 1
     else:
-        #: The bullet: back to its marker, forward to the next marker or a blank line.
+        #: The bullet: back to its marker, forward to the next marker or the next heading.
+        #: NOT to the next blank line: a continuation indented under the bullet, one blank
+        #: line below it, reads as part of the same claim and was green when the bound
+        #: stopped at the blank.
         while start > 0 and not lines[start].lstrip().startswith("●"):
             start -= 1
-        while (
-            end + 1 < len(lines)
-            and lines[end + 1].strip()
-            and not lines[end + 1].lstrip().startswith("●")
+        while end + 1 < len(lines) and not (
+            lines[end + 1].lstrip().startswith("●")
+            or lines[end + 1].lstrip().startswith("#")
+            or lines[end + 1].lstrip().startswith("|")
         ):
             end += 1
     return _normalise("\n".join(lines[start : end + 1]))
+
+
+def _is_prose_comment(line: str) -> bool:
+    """Report whether this line continues a comment PARAGRAPH: a `#` with words after it.
+
+    A bare `#` ends the paragraph, which is how this script separates one argument from the
+    next, and a line of code ends it too.
+    """
+    stripped = line.strip()
+    return stripped.startswith("#") and stripped != "#"
 
 
 def test_the_sonar_split_adds_up() -> None:
