@@ -318,8 +318,8 @@ RULES = [
     # The same assignment anywhere in a LINE OF PROSE, which is how a runbook writes it:
     # "Set NAME=value in the console", or a `docker run -e NAME=value` that does not begin
     # its line. Case-SENSITIVE, and that is the whole reason this is a separate rule rather
-    # than a relaxed anchor on the one above. Folding case here gives 26 matches on 18 lines
-    # across every tracked file: 19 Python keyword arguments (`outgoing_key=`,
+    # than a relaxed anchor on the one above. Folding case here gives 27 matches on 19 lines
+    # across every tracked file: 20 Python keyword arguments (`outgoing_key=`,
     # `sort_keys=`) and 7 `sonar.projectKey=` lines, 6 of them in the skill templates and 1
     # in this project's own `sonar-project.properties`, all admitted by the
     # preceding-character widening. Requiring the upper case name that every environment

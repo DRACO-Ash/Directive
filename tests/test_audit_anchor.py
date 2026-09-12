@@ -1076,3 +1076,64 @@ def test_an_access_fault_with_no_marker_stays_a_fault(
     with pytest.raises(AnchorError, match="could not be read") as raised:
         read_anchor(str(tmp_path), key)
     assert not isinstance(raised.value, AnchorTamperError)
+
+
+def test_an_oversized_anchor_file_is_refused_before_it_is_parsed(tmp_path: Path) -> None:
+    """The size guard, held by nothing: widening it to four megabytes was green.
+
+    It is the volume writer's cheapest attack on the reader. Nothing upstream bounds the
+    file, because the adversary this guard exists for is the one writing it, so a guard
+    held by no test is one edit from being a parser fed an arbitrary payload.
+    """
+    key = bytes(range(32))
+    write_anchor(str(tmp_path), Anchor(head="a" * 64, length=1, key_id="k1", total_length=1), key)
+    target = Path(tmp_path) / "audit-anchor.json"
+    target.write_text(" " * (anchor_module.MAXIMUM_ANCHOR_BYTES + 1), encoding="utf-8")
+
+    with pytest.raises(AnchorTamperError):
+        read_anchor(str(tmp_path), key)
+
+
+def test_the_anchor_size_guard_is_the_one_that_shipped() -> None:
+    """Pinned, because a cap read from the value under test moves with it."""
+    assert anchor_module.MAXIMUM_ANCHOR_BYTES == 4096
+
+
+@pytest.mark.parametrize("count", [-1, -1000])
+def test_a_negative_count_in_the_anchor_is_refused(tmp_path: Path, count: int) -> None:
+    """The non-negativity half of the count guard, held by nothing until now.
+
+    A negative length would make the reader's comparison against the log meaningless, and
+    dropping `>= 0` from the guard was green across the whole suite.
+    """
+    key = bytes(range(32))
+    write_anchor(str(tmp_path), Anchor(head="a" * 64, length=1, key_id="k1", total_length=1), key)
+    target = Path(tmp_path) / "audit-anchor.json"
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    payload["length"] = count
+    #: Signed the way the anchor signs itself, so the MAC is VALID and the read reaches the
+    #: count guard. A hand-rolled tag fails the comparison first and the test then passes
+    #: for the wrong reason, which is what the first version of this did: the mutation
+    #: dropping `>= 0` stayed green underneath it.
+    signed = {name: value for name, value in payload.items() if name != "mac"}
+    payload["mac"] = hmac.new(
+        key, json.dumps(signed, sort_keys=True).encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AnchorTamperError):
+        read_anchor(str(tmp_path), key)
+
+
+def test_an_empty_key_cannot_authenticate_an_anchor(tmp_path: Path) -> None:
+    """The empty-key guard on the tag comparison, held by nothing until now.
+
+    `keys.py` refuses short or printable material, so this is not reachable through the
+    configured path; it is the guard that keeps the comparison meaningful if that ever
+    changes, and dropping it was green.
+    """
+    key = bytes(range(32))
+    write_anchor(str(tmp_path), Anchor(head="a" * 64, length=1, key_id="k1", total_length=1), key)
+
+    with pytest.raises(AnchorTamperError):
+        read_anchor(str(tmp_path), b"")
