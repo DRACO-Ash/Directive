@@ -566,9 +566,13 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     A figure decomposed into parts needs EVERY part held. The count was pinned and the
     sentence around it was not, so `All six ... in `store.py` and `config.py`` - a count
     contradicting itself inside one sentence, naming two modules that carry none of the
-    findings - passed the whole suite. The module names are derived from the scan here, and
-    the prose states no second count at all, because a count written as a word is invisible
-    to any scanner and was free for exactly that reason.
+    findings - passed the whole suite. The module names are derived from the scan here.
+
+    The passage states no count as a WORD, and that is asserted rather than claimed. Saying
+    it in a docstring was not enough twice: `All six` went in, was removed, and `Those three
+    module names` went in behind it, both free because no scanner reads a word. The digits
+    in the passage are held by the shape sweep and the breakdown clauses; the words are
+    banned outright, which is the only way to hold a figure a scanner cannot read.
     """
     beyond = _beyond_the_double()
 
@@ -579,6 +583,20 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     assert widened == EXPECTED_BEYOND_THE_DOUBLE + 1, (
         "the price and the double no longer add up to the widened rule's total"
     )
+
+    #: No count written as a word, in either carrier. `one` is not banned: the passage uses
+    #: it as a pronoun ("every one a session key NAME") and banning it would force a worse
+    #: sentence to satisfy a test. Two upwards is the range a restated count of these
+    #: modules or findings could take, and `three` to `seven` is the mutation that was green.
+    #: A hyphenated ordinal is not a count: the passage names the gate runs that asked for
+    #: the figure, and `twenty-eighth` is their number, not a quantity of anything.
+    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
+        passage = _quoted_rule_passage(path)
+        spelled = [word for word in _WORD_NUMBERS if re.search(rf"\b{word}\b(?!-)", passage)]
+        assert not spelled, (
+            f"{path.name} states {spelled} as a word in the price passage, where no scanner "
+            "can read it. Write the figure as a digit and pin it, or delete the clause."
+        )
 
     #: The module basenames the carriers name. Basenames rather than paths, because both
     #: carriers write them that way and a path would put `src/complyops/` into a sentence
@@ -610,6 +628,31 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
 #: number is held by `test_every_breakdown_clause_is_still_said_where_it_belongs`, and
 #: locating on it too would make one edit red in two places and say nothing extra.
 _PRICE_CLAUSE = "beyond the declared double"
+
+#: The counts a restatement in the price passage could take, banned there outright. From two
+#: upwards, because `one` appears as a pronoun in that passage and banning it would buy
+#: nothing but a worse sentence.
+_WORD_NUMBERS = (
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+)
 
 
 def _quoted_rule_passage(path: Path) -> str:

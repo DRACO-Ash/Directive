@@ -121,12 +121,15 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
     deliberate one-line addition to that set, reviewable in the diff, rather than an
     unauthenticated hole nobody notices.
 
-    `HEAD` and `OPTIONS` are not walked, because Werkzeug adds both to every rule that
-    declares `GET` and neither reaches a handler the rule does not already declare. A rule
-    that declared `HEAD` ALONE would be walked by nothing, so the sibling below asserts
-    none exists rather than leaving that claim to this docstring: an ungated `HEAD
-    /api/leak` returning its data in a response header left this test and its companion
-    green until that assertion was added.
+    `HEAD` and `OPTIONS` are not walked, and the reason differs for each. Werkzeug adds
+    `OPTIONS` to EVERY rule, measured at 20 of 20 here including the `POST`-only and
+    `PATCH`-only ones, and answers it itself with an `Allow` header and an empty body, so it
+    reaches no handler. It adds `HEAD` to a rule that declares `GET`, where it reaches that
+    rule's own handler and is covered by walking the `GET`. A rule that declared `HEAD`
+    ALONE would therefore be walked by nothing, so the sibling below asserts none exists
+    rather than leaving that claim to this docstring: an ungated `HEAD /api/leak` returning
+    its data in a response header left this test and its companion green until that
+    assertion was added.
     """
     adapter = client.application.url_map.bind("localhost")
     walked = []
