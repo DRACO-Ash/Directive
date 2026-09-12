@@ -419,6 +419,127 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
         )
 
 
+#: The ban list, written out again on purpose, for the reason `FROZEN_SHAPES` exists and
+#: with the same measured justification: the list is PARAMETRISED over, so a deleted entry
+#: is not tested. Four of its entries were reached by a carrier and every other one was
+#: silently removable, and dropping `zero` alone put `Zero of these sit in csrf.py` back in
+#: green - the exact defect the twenty-seventh pass recorded, reopened by one line.
+FROZEN_WORD_NUMBERS = (
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+    "hundred",
+    "dozen",
+    "dozens",
+    "score",
+    "couple",
+    "pair",
+    "pairs",
+    "trio",
+    "quartet",
+    "handful",
+    "several",
+    "twice",
+    "thrice",
+    "third",
+    "thirds",
+    "quarter",
+    "quarters",
+    "half",
+    "halves",
+    "twos",
+    "threes",
+    "fours",
+    "fives",
+    "sixes",
+    "sevens",
+    "zero",
+    "none",
+    "single",
+    "brace",
+    "treble",
+    "twofold",
+    "threefold",
+    "thousand",
+    "million",
+    "fourth",
+    "fourths",
+    "fifth",
+    "fifths",
+    "sixth",
+    "sixths",
+    "seventh",
+    "sevenths",
+    "eighth",
+    "eighths",
+    "ninth",
+    "ninths",
+    "tenth",
+    "tenths",
+    "eleventh",
+    "twelfth",
+    "thirteenth",
+    "twentieth",
+    "thirtieth",
+)
+
+
+def test_the_ban_list_is_the_frozen_one() -> None:
+    """Deleting a banned word must be an edit in two places, not one."""
+    assert _WORD_NUMBERS == FROZEN_WORD_NUMBERS
+
+
+#: A Roman numeral. Closed rather than recorded: the residual row that carried it gave a
+#: reason the tree does not support, claiming a pattern for these would be red on arrival,
+#: and measurement says neither price passage carries one. Upper case only, so the ordinary
+#: words `i`, `c` and `d` are not swept up.
+_ROMAN = re.compile(r"\b[IVXLCDM]{1,7}\b")
+
+
+def roman_numerals_in(passage: str) -> list[str]:
+    """Return the Roman numerals in `passage`, which are counts no digit scan reads."""
+    return _ROMAN.findall(_normalise(passage))
+
+
+def price_passage_findings(raw_passage: str) -> dict[str, list[str]]:
+    """Return everything the price passage would be refused for, as one verdict.
+
+    One function rather than three checks written out in the live loop. The loop iterates
+    the two real carriers, which are correct, so no mutation of it reaches anything: a line
+    per check is a line per check that can be deleted with the suite green, demonstrated on
+    the Roman-numeral check the round it was added. Everything the loop refuses is decided
+    here, where `test_the_bans_catch_what_they_were_written_for` reaches it.
+    """
+    return {
+        "roman": roman_numerals_in(raw_passage),
+        "words": word_counts_in(raw_passage),
+        "digits": loose_digits_in(raw_passage),
+    }
+
+
 def word_counts_in(passage: str) -> list[str]:
     """Return the counts written as WORDS in `passage`, in either case.
 
@@ -426,9 +547,15 @@ def word_counts_in(passage: str) -> list[str]:
     the only thing that reached it and they are correct: dropping the case fold, or making
     the ordinal suffix optional again, left the whole suite green. A control no carrier
     reaches is one edit from being wrong, which this project has now proved three rounds
-    running. `test_the_bans_catch_what_they_were_written_for` reaches every refinement.
+    running. `test_the_bans_catch_what_they_were_written_for` reaches the refinements its
+    cases name, and `test_the_ban_list_is_the_frozen_one` anchors the list itself.
+
+    Normalises INSIDE the function. It was normalised at the call site, where nothing held
+    it: handing the raw passage instead was one edit, green across the whole suite, and it
+    reopened the markup evasion, a count word split by bold or backticks. A refinement that
+    lives at a call site is a refinement no carrier reaches.
     """
-    readable = _ORDINALS.sub(" ", passage)
+    readable = _ORDINALS.sub(" ", _normalise(passage))
     return [word for word in _WORD_NUMBERS if re.search(rf"(?i)\b{word}\b", readable)]
 
 
@@ -441,13 +568,22 @@ def loose_digits_in(raw_passage: str) -> list[str]:
     Each entitled rendering is removed ONCE. `replace` with no count removes every
     occurrence, so a second copy of a rendering sharing a line was cleared with the first
     and carried a false claim out with it. A Unicode-aware digit class rather than an ASCII
-    one, because an Arabic-Indic
-    digit renders to a reader as a number and was invisible to an ASCII class.
+    one, because an Arabic-Indic digit renders to a reader as a number.
     """
     residue = _normalise(_COMMIT_HASH_SPAN.sub(" ", raw_passage))
     for rendering in sorted(_entitled(), key=len, reverse=True):
         residue = residue.replace(rendering, " ", 1)
     return sorted(set(re.findall(r"\d+", residue)))
+
+
+def module_names_in(passage: str) -> set[str]:
+    """Return the Python module basenames `passage` names, as `_normalise` renders them.
+
+    A function for the same reason the bans are: the assertion that used it survived
+    outright deletion with the suite green, while the attack it stops - a module the scan
+    does not give, named in the price passage - was caught only by it.
+    """
+    return set(re.findall(r"\b([A-Za-z0-9_]+\.py)\b", passage))
 
 
 def _entitled() -> set[str]:
@@ -650,11 +786,17 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: it licensed `the three-module list`, which is exactly the figure the ban is for.
     #: `one` is not banned: the passage uses it as a pronoun ("every one a session key
     #: NAME") and banning it would force a worse sentence to satisfy a test.
+    #: ONE assertion over the whole verdict, not one per check. A live loop with a line per
+    #: check has a line per check to delete, and deleting the Roman-numeral line was green
+    #: because no carrier reaches this loop - it iterates the two real carriers, which are
+    #: correct. Every check now lives inside `price_passage_findings`, which a carrier does
+    #: reach, so removing one is red at the carrier rather than silent here.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        spelled = word_counts_in(_quoted_rule_passage(path))
-        assert not spelled, (
-            f"{path.name} states {spelled} as a word in the price passage, where no scanner "
-            "can read it. Write the figure as a digit and pin it, or delete the clause."
+        findings = price_passage_findings(_quoted_rule_passage_raw(path))
+        assert not any(findings.values()), (
+            f"{path.name} states {findings} in the price passage. A word or a Roman numeral "
+            "is a count no scanner can read; a loose digit belongs to no rendering this "
+            "module measured. Write the figure in a pinned shape, or delete the clause."
         )
 
     #: Every DIGIT in the passage, a commit hash excepted, belongs to a rendering this
@@ -664,23 +806,16 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: every rendering the module measured enough: clearing the whole allowed set let a
     #: figure belonging to ANOTHER experiment stand here, and `The split is 19 Python
     #: keyword arguments in auth.py.` was green on a figure that is the prose rule's. The
-    #: renderings are removed longest first so a short one cannot consume part of a longer
+    #: renderings are removed longest first, which is SHADOWED today and recorded as
+    #: residual rather than claimed as held: the two entitled renderings are disjoint, so no
+    #: short one can consume part of a longer
     #: one, and the hash goes first because it is the one run of digits that is no figure.
-    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        loose = loose_digits_in(_quoted_rule_passage_raw(path))
-        assert not loose, (
-            f"{path.name} states {loose} in the price passage outside any rendering this "
-            "module measured. Pin the measurement and write the figure in its shape, or "
-            "delete the clause."
-        )
-
     #: The module basenames the carriers name. Basenames rather than paths, because both
     #: carriers write them that way and a path would put `src/complyops/` into a sentence
     #: that is about which modules hold the names, not where the tree puts them.
     modules = sorted({Path(entry[0]).name for entry in beyond})
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        flowed = _flowed(path)
-        missing = [name for name in modules if _normalise(f"`{name}`") not in flowed]
+        missing = [name for name in modules if _normalise(f"`{name}`") not in _flowed(path)]
         assert not missing, (
             f"{path.name} does not name {missing}, which is where the findings beyond the "
             "declared double actually are"
@@ -692,8 +827,7 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: Compared through `_normalise` on both sides, because it strips the backticks a
     #: carrier writes around a module name and the underscore inside one.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        passage = _quoted_rule_passage(path)
-        named = set(re.findall(r"\b([A-Za-z0-9_]+\.py)\b", passage))
+        named = module_names_in(_quoted_rule_passage(path))
         assert named == {_normalise(name) for name in modules}, (
             f"{path.name} names {sorted(named)} where the scan gives {modules}, compared "
             "with the emphasis markers stripped from both sides"
@@ -730,7 +864,16 @@ _COMMIT_HASH_SPAN = re.compile(r"`(?=[0-9a-f]{7,40}`)[0-9a-f]*[a-f][0-9a-f]*`")
 #: ban a passage the count had already been removed from, which was green. A standalone
 #: ordinal such as `twentieth` is matched by the second alternation instead.
 #:
-#: The COMPOUND form only. A standalone alternation once carried `fourth` through
+#: The compound form, AND ONLY WHERE IT NAMES A GATE RUN. The compound alone was the
+#: previous version, and a compound fraction is a compound: `A twenty-fifth of them sit in
+#: auth.py` was stripped before the ban could read it and was green, which is the same
+#: walk-around one word over for the third time on this construct. `A fifth` was caught and
+#: `A twenty-fifth` was not. The lookahead requires the noun these passages actually use,
+#: within two words, so `twenty-eighth security run` and `twenty-second engineering pass`
+#: are stripped and no fraction is.
+#:
+#: The rest of this note is why the compound form is the only shape here at all. A
+#: standalone alternation once carried `fourth` through
 #: `thirtieth` as well, and every one of those words is a fraction as much as an ordinal:
 #: `A fifth of these sit in auth.py` was green, stripped before the ban could read it.
 #: `third` was diagnosed and fixed one round earlier and the other twelve were left, which
@@ -741,7 +884,8 @@ _COMMIT_HASH_SPAN = re.compile(r"`(?=[0-9a-f]{7,40}`)[0-9a-f]*[a-f][0-9a-f]*`")
 #: neither is on the word list.
 _ORDINALS = re.compile(
     r"\b(?:twen|thir|for|fif|six|seven|eigh|nine)ty[- ]"
-    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b",
+    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b"
+    r"(?=(?:\s+\w+){0,2}\s+(?:run|pass|gate|round)\b)",
     re.IGNORECASE,
 )
 
@@ -1092,9 +1236,9 @@ def test_the_passage_bound_ends_where_the_structure_does(
 
     The trailing-comment take arrived the same way and for the same reason: no live carrier
     reaches it, because the line below the sweep's paragraph carries no `#`, so deleting the
-    branch outright left the suite green. The cases below reach the first code line, the
-    third, the paragraph that stops the take, and the rewrapped code span that must NOT stop
-    the bullet.
+    branch outright left the suite green. The cases below reach every terminator and every
+    walk of both bounds, upward and downward, including the two rewraps that must NOT stop
+    the bullet and the blank line the take has to cross.
     """
     document = tmp_path / f"carrier{suffix}"
     document.write_text(body, encoding="utf-8")
@@ -1175,21 +1319,117 @@ def test_the_passage_bound_ends_where_the_structure_does(
             ["123"],
             id="a backticked hex run shorter than a hash is not exempt",
         ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
+            ["three"],
+            [],
+            id="a count split by markup is still a count",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
+            [],
+            ["1000000"],
+            id="an unbackticked hex run is not exempt",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
+            ["twenty", "fifth"],
+            [],
+            id="a compound fraction is a count, not a gate run",
+        ),
+        pytest.param(
+            "6 beyond the declared double, asked for at the twenty-second engineering pass.",
+            [],
+            [],
+            id="a compound ordinal two words from its noun still names a gate run",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. The three-module split covers them.",
+            ["three"],
+            [],
+            id="a hyphenated compound is not an ordinal just for being hyphenated",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. VI of them sit in `csrf.py`.",
+            [],
+            [],
+            id="a Roman numeral is a count no digit scan reads",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. "
+            "`1234567890123456789012345678901234567890a` sit there.",
+            [],
+            ["1234567890123456789012345678901234567890"],
+            id="a backticked hex run longer than a hash is not exempt",
+        ),
     ],
 )
 def test_the_bans_catch_what_they_were_written_for(
     passage: str, expected_words: list[str], expected_digits: list[str]
 ) -> None:
-    """Every refinement of both bans, against a passage written to need it.
+    """The refinements these cases NAME, each against a passage written to need it.
+
+    Not every refinement of both bans, and the claim is narrowed rather than the corpus
+    called complete: saying "every" here was false three times over, and this is the module
+    whose stated purpose is that prose cannot hold a claim. What is NOT carried is recorded
+    as residual, not implied closed.
 
     The live carriers are correct, so they reach no refinement: dropping the case fold,
     making the ordinal suffix optional, exempting every code span, or replacing an entitled
     rendering everywhere rather than once all left the whole suite green. That is the same
     defect the terminator carriers were added for, one layer along, and it has now produced
-    a MAJOR three rounds running. These cases fail when any one refinement is undone.
+    a MAJOR three rounds running. Each case below fails when the refinement it names is
+    undone; the ones no case names are in the residual table.
     """
-    assert word_counts_in(_normalise(passage)) == expected_words
-    assert loose_digits_in(passage) == expected_digits
+    findings = price_passage_findings(passage)
+
+    assert findings["words"] == expected_words
+    assert findings["digits"] == expected_digits
+    assert findings["roman"] == _ROMAN.findall(_normalise(passage))
+
+
+@pytest.mark.parametrize("word", _WORD_NUMBERS)
+def test_every_banned_word_is_caught(word: str) -> None:
+    """The whole list, one case each, because four of its entries held all of it.
+
+    Deleting `zero` and planting `Zero of them sit in auth.py` in both carriers was green,
+    which is the exact defect the twenty-seventh engineering pass recorded, reopened by one
+    line. Dropping eighteen of the nineteen fraction words forced in two rounds later was
+    green too. `_SHAPES` carries `FROZEN_SHAPES` and `PHRASINGS` for precisely this class;
+    the ban list had neither, and parametrising over the list itself is the cheaper answer:
+    it anchors the set and exercises every entry in one test.
+    """
+    assert word_counts_in(f"6 beyond the declared double. {word.capitalize()} sit here.") == [word]
+
+
+@pytest.mark.parametrize(
+    ("passage", "expected"),
+    [
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`, `csrf.py` and `auth_routes.py`.",
+            {"auth.py", "authroutes.py", "csrf.py"},
+            id="the modules the scan gives",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py`. They also appear in `store.py`.",
+            {"auth.py", "store.py"},
+            id="a module the scan does not give is seen",
+        ),
+        pytest.param(
+            "6 beyond the declared double, in `auth.py` and `csrf.py`.",
+            {"auth.py", "csrf.py"},
+            id="a module the scan does give, omitted, is seen missing",
+        ),
+    ],
+)
+def test_the_module_names_a_passage_states_are_read(passage: str, expected: set[str]) -> None:
+    """The reader behind both module assertions, which survived deletion with the suite green.
+
+    Both shipped carriers assert the property in prose - "asserted, positively and against
+    naming a module the scan does not give" - so a shipped claim rested on a control no
+    mutation could fail.
+    """
+    assert module_names_in(_normalise(passage)) == expected
 
 
 def test_a_repeated_price_clause_is_refused(tmp_path: Path) -> None:
@@ -1209,6 +1449,46 @@ def test_a_repeated_price_clause_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(AssertionError, match="states the price 2 times"):
         _quoted_rule_passage_raw(document)
+
+
+#: The ban corpus, written out again on purpose, for the reason `FROZEN_SHAPES` exists: the
+#: corpus is the sole holder of seven refinements, and a case can be deleted singly with the
+#: whole suite green. Demonstrated on two of them.
+FROZEN_BAN_CASES = (
+    "a commit hash is exempt and the true clause is clean",
+    "a backticked run of decimal digits is not a hash",
+    "a repeated entitled rendering is removed once, not twice",
+    "a bare ordinal is a fraction and is banned",
+    "a count at the start of a sentence is banned, case folded",
+    "a compound ordinal names a gate run and is not a count",
+    "a bare tens word is a count, not half an ordinal",
+    "an Arabic-Indic digit is a digit",
+    "a vague count on the list is banned",
+    "another experiment's figure is not this passage's to state",
+    "a backticked hex run shorter than a hash is not exempt",
+    "a count split by markup is still a count",
+    "an unbackticked hex run is not exempt",
+    "a compound fraction is a count, not a gate run",
+    "a compound ordinal two words from its noun still names a gate run",
+    "a hyphenated compound is not an ordinal just for being hyphenated",
+    "a Roman numeral is a count no digit scan reads",
+    "a backticked hex run longer than a hash is not exempt",
+)
+
+
+def test_the_ban_corpus_is_the_frozen_one(request: pytest.FixtureRequest) -> None:
+    """Deleting a case must be an edit in two places, not one.
+
+    The corpus holds refinements nothing else holds, so a case quietly removed takes a
+    control with it and the suite stays green.
+    """
+    collected = tuple(
+        item.callspec.id
+        for item in request.session.items
+        if item.originalname == "test_the_bans_catch_what_they_were_written_for"
+    )
+
+    assert collected == FROZEN_BAN_CASES
 
 
 def test_the_sonar_split_adds_up() -> None:
