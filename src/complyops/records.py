@@ -126,14 +126,19 @@ def check_fields(
 def check_state(value: object, *, register: str) -> str:
     """Validate a workflow state against the register's closed vocabulary.
 
-    A closed set, not a character rule. This is the structural control the audit module
-    could not define on its own, and it is bounded: no route in this application reaches
-    `old_state` or `new_state` without passing through here, so a value outside this list
-    cannot ride in by that path. The audit boundary ITSELF still accepts any token
-    satisfying its character rule, so a caller that bypassed this function would not be
-    stopped there. That is the wording `docs/DEPLOYMENT.md` uses, and the stronger form -
-    that record content cannot reach the log whatever a caller intends - is the claim
-    CLAUDE.md forbids by name for this rule.
+    A closed set, not a character rule, and bounded to the REGISTER routes. State the reach
+    rather than the totality, because the previous two versions of this docstring each
+    over-claimed in a different direction: first that record content was structurally
+    impossible, which CLAUDE.md forbids by name, then that no route reaches `old_state` or
+    `new_state` without passing through here, which a shipped route falsifies.
+
+    Every register mutation reaches those fields through this function. The authentication
+    and refusal path does not: `views/auth_routes.py` writes a collapsed-count marker
+    (`REPEATED_<n>`) straight into `new_state`, under the audit boundary's character rule
+    only, and that is deliberate because the marker is an event count rather than a
+    register state. It is the one declared exception, and `test_audit_state_coverage.py`
+    holds both halves. The audit boundary ITSELF still accepts any token satisfying its
+    character rule, so a caller that bypassed this function would not be stopped there.
     """
     states = REGISTERS[register]["states"]
     if value not in states:

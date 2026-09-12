@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: What each widening costs, measured at `1bdbdb8`. Each entry is (findings, lines).
 EXPECTED = {
-    "prose rule folded to ignore case": (26, 18),
+    "prose rule folded to ignore case": (27, 19),
     "unquoted rule with spaces around the equals": (22, 22),
     "unquoted rule with the leading part of the name optional": (14, 14),
     "quoted rule with bare key and keys in its keyword group": (7, 7),
@@ -51,7 +51,7 @@ EXPECTED_KEYS_IN_SRC = 1
 #: security gate. Every one of them is a digit in the documents now, so the sweep can read
 #: it back; a figure written as a word is invisible to any scanner and is a defect on its
 #: own.
-EXPECTED_PYTHON_KEYWORD_ARGUMENTS = 19
+EXPECTED_PYTHON_KEYWORD_ARGUMENTS = 20
 EXPECTED_SONAR = 7
 EXPECTED_SONAR_IN_TEMPLATES = 6
 #: The remainder of the sonar split. Pinning 7 and 6 and leaving this free let a reviewer
@@ -1841,24 +1841,36 @@ def _anchoring_comparisons() -> set[tuple[str, str]]:
     return found
 
 
-@pytest.mark.parametrize(
-    ("source", "seen"),
-    [
-        pytest.param("X = (1,)", {"X"}, id="a plain assignment is seen"),
-        pytest.param("X: tuple[int, ...] = (1,)", {"X"}, id="an annotated assignment is seen"),
-        pytest.param("X: tuple[int, ...]", set(), id="an annotation with no value binds nothing"),
-        pytest.param("X = Y = (1,)", set(), id="a chained assignment binds no single name"),
-        pytest.param("X, Y = (1,), (2,)", set(), id="a tuple target binds no single name"),
-    ],
+#: Every shape of top-level binding the source reader must tell apart. A REGISTER, named
+#: rather than inlined, because the commit that added it claimed it "costs a parameter
+#: rather than a register" and that was false: emptying the inline list left the suite at
+#: 1185 passed, 3 skipped, measured, which is the silent-skip retirement closed for
+#: `ALIAS_SHAPES` in the same commit. The discriminator applies to the fix as much as to
+#: the thing it fixes.
+BINDING_SHAPES = (
+    pytest.param("X = (1,)", {"X"}, id="a plain assignment is seen"),
+    pytest.param("X: tuple[int, ...] = (1,)", {"X"}, id="an annotated assignment is seen"),
+    pytest.param("X: tuple[int, ...]", set(), id="an annotation with no value binds nothing"),
+    pytest.param("X = Y = (1,)", set(), id="a chained assignment binds no single name"),
+    pytest.param("X, Y = (1,), (2,)", set(), id="a tuple target binds no single name"),
 )
+
+
+def test_the_binding_corpus_is_not_empty() -> None:
+    """An empty corpus is a SKIP, not a red, here as much as for `ALIAS_SHAPES`."""
+    assert BINDING_SHAPES
+
+
+@pytest.mark.parametrize(("source", "seen"), BINDING_SHAPES)
 def test_the_source_reader_sees_every_shape_of_binding(source: str, seen: set[str]) -> None:
     """The reader, fed source directly, because this module has no shape to feed it.
 
     Its annotated branch was reached by zero inputs: the module parses only its own source
     and carries no top-level annotated assignment, so reverting the branch in one edit left
     the whole suite green. That is the identical property that graded `_is_written_out`
-    MAJOR one run earlier, and taking a source argument costs a parameter rather than a
-    register, so it terminates here too.
+    MAJOR one run earlier. Taking a source argument costs a parameter, but the carriers that
+    feed it are a register like any other, which the first version of this sentence denied
+    and a measurement disproved; it is named and guarded above.
     """
     assert set(_module_bindings(source)) == seen
 
@@ -2008,7 +2020,7 @@ def test_the_alias_corpus_is_not_empty() -> None:
 
     That is what puts this guard on a different footing from the residuals recorded beside
     it. Every other one needs a coordinated multi-edit; this needed ONE. `ALIAS_SHAPES = ()`
-    left the suite at `1178 passed, 3 skipped` with `LOOP: PASS`, after which the element
+    left the suite at `1166 passed, 3 skipped` with `LOOP: PASS`, after which the element
     reader the whole freeze rests on was held by nothing and could be widened back in a
     second edit. Both gates measured it and both put the line here.
 
@@ -2016,7 +2028,8 @@ def test_the_alias_corpus_is_not_empty() -> None:
     regress rather than extending it, which is the discriminator that matters: not how many
     layers up a control sits, but whether the guard ADDS a register or asserts on one that
     already exists. It sits at module scope rather than inside the parametrised test,
-    because an empty corpus means that body never runs.
+    because an empty corpus means that body never runs: the identical assertion placed
+    inside the body is green on an empty corpus, measured.
     """
     assert ALIAS_SHAPES
 

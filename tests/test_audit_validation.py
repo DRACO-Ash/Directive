@@ -74,6 +74,31 @@ def test_a_non_string_field_is_rejected() -> None:
         validation.normalise_fields(fields)
 
 
+#: The caps as SHIPPED, written out rather than read from the table under test. Reading
+#: `FIELD_LIMITS` moves the expectation with the value, so widening `actor` from 320 to 3200
+#: was green across the whole suite and so were five others. `fields_changed` and `source_ip`
+#: were already pinned, one by a literal and one by the longest real IPv6 form, and they are
+#: the pattern the rest now follow.
+PINNED_LIMITS = {
+    "timestamp": 32,
+    "actor": 320,
+    "action": 64,
+    "resource": 128,
+    "resource_id": 128,
+    "outcome": 16,
+    "source_ip": 45,
+    "user_agent": 512,
+    "fields_changed": 128,
+    "old_state": 32,
+    "new_state": 32,
+}
+
+
+def test_every_cap_is_the_one_that_shipped() -> None:
+    """A cap widened in the table alone must be red, not silently accepted."""
+    assert validation.FIELD_LIMITS == PINNED_LIMITS
+
+
 @pytest.mark.parametrize("field", ["actor", "resource", "resource_id"])
 def test_the_cap_is_enforced_at_the_boundary_in_both_directions(field: str) -> None:
     """A cap of N must accept N and reject N plus one, or it asserts nothing."""
@@ -162,6 +187,11 @@ def test_the_field_list_and_the_digest_field_order_agree() -> None:
         # A homoglyph, which no Unicode category can exclude: the first character is
         # Cyrillic small a, not Latin.
         ("cyrillic homoglyph", "\u0430sh@bluestaq.uk"),
+        #: Category Cc, and inside the ASCII range rather than outside it, which is why no
+        #: case here reached it: admitting `\x09` to the allowlist was green across the whole
+        #: suite while `docs/OWASP-TOP-10-TEST.md` ships "no control or format characters in
+        #: any stored field".
+        ("tab", "ash\tadmin"),
     ],
 )
 def test_anything_outside_printable_ascii_is_rejected(label: str, hostile: str) -> None:
@@ -209,7 +239,19 @@ def test_a_valid_utc_timestamp_is_accepted(good: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "bad_action", ["task complete", "TaskComplete", "task_complete", "T", "1TASK"]
+    "bad_action",
+    [
+        "task complete",
+        "TaskComplete",
+        "task_complete",
+        "T",
+        "1TASK",
+        #: A space ALONE, in an otherwise conforming action. Every other case here is also
+        #: wrong in its case or its leading character, so nothing isolated the space:
+        #: widening the class by one character was green across the whole suite. The
+        #: leading-character component IS held, by `1TASK`, which is the asymmetry closed.
+        "TASK COMPLETE",
+    ],
 )
 def test_an_action_outside_the_naming_shape_is_rejected(bad_action: str) -> None:
     fields = fixed_entry()
@@ -276,6 +318,15 @@ def test_an_enumerated_workflow_state_is_accepted(state: str) -> None:
         #: produced the over-claim one round earlier, and correcting the wording did not
         #: widen the corpus that caused it.
         ("a lower-case single token", "closed"),
+        #: The LEADING character and the separators, each held by nothing until now. A state
+        #: opening with a digit or an underscore, and one carrying a dot or a hyphen, were
+        #: each accepted under a one-character widening with the suite green. Not reachable
+        #: today, since every register route composes its state from a closed vocabulary, so
+        #: this is regression cover rather than a live hole.
+        ("a leading digit", "0OPEN"),
+        ("a leading underscore", "_OPEN"),
+        ("a dotted token", "OPEN.NOW"),
+        ("a hyphenated token", "OPEN-NOW"),
     ],
 )
 def test_a_state_field_rejects_the_common_shapes_of_record_content(label: str, value: str) -> None:
@@ -297,15 +348,19 @@ def test_a_state_field_rejects_the_common_shapes_of_record_content(label: str, v
     assert label
 
 
+@pytest.mark.parametrize("field", ["new_state", "old_state"])
 @pytest.mark.parametrize("value", ["REPORTER CHANGED TO A NAMED INDIVIDUAL", "S" * 33])
-def test_a_state_field_longer_than_a_state_is_rejected_by_the_cap(value: str) -> None:
+def test_a_state_field_longer_than_a_state_is_rejected_by_the_cap(field: str, value: str) -> None:
     """Anything long enough to be a sentence is refused before the pattern is reached.
 
     Two independent rules, so a value that slipped past the character set would still
-    have to fit in 32 bytes.
+    have to fit in 32 bytes. BOTH fields, because only `new_state` was asserted and
+    `old_state`'s cap was held in neither direction: widening that cap and the pattern
+    together admitted a 56-character sentence into `old_state` while `new_state` still
+    refused it, which falsified this docstring for one of the two fields it covers.
     """
     with pytest.raises(validation.AuditFieldError, match="over its cap"):
-        validation.normalise_fields(fixed_entry(new_state=value))
+        validation.normalise_fields(fixed_entry(**{field: value}))
 
 
 @pytest.mark.parametrize(
@@ -320,6 +375,13 @@ def test_a_list_of_changed_field_names_is_accepted(names: str) -> None:
     ("label", "value"),
     [
         ("a value rather than a name", "reporter=Ash Higgins"),
+        #: The SAME attack in lower snake case. The case above stays red on its space and
+        #: its upper case, so nothing isolated the `=`: widening the character class by that
+        #: one character was green across the whole suite, after which `reporter=jane` and
+        #: `home_address=12_example_street` land in an immutable log. Identical defect to the
+        #: state rule's case component one round earlier, in the rule `DEPLOYMENT.md` ships
+        #: as "Field NAMES only".
+        ("a value in lower snake case", "reporter=jane"),
         ("an email address", "ash.higgins@bluestaq.uk"),
         ("upper case", "STATUS"),
         ("a space", "status, phase"),
@@ -402,9 +464,15 @@ def test_a_single_upper_case_token_is_accepted_and_that_is_the_documented_limit(
 
     A surname, a full name in upper snake case, and a postcode without its space all
     satisfy the state rule. The rule rejects the common shapes of record content, which is
-    a large reduction in surface and not a guarantee. Making it a guarantee needs a closed
-    state vocabulary, which is not definable until the real state set is knowable. If this
-    test starts failing because a closed vocabulary landed, delete it and say so.
+    a large reduction in surface and not a guarantee.
+
+    A closed vocabulary DID land: `records.REGISTERS` defines one per register and
+    `check_state` enforces it on every register route. This test stays, because the
+    weakness it pins is at the AUDIT boundary, which the vocabulary does not reach: the
+    sign-in refusal path writes `REPEATED_<n>` into `new_state` under the character rule
+    alone, so the boundary still accepts a single upper-case token whatever the register
+    routes do. An earlier version of this docstring said the vocabulary was not definable
+    and told a reader to delete this test if one landed; both halves were wrong.
     """
     assert validation.normalise_fields(fixed_entry(new_state=token))["new_state"] == token
 

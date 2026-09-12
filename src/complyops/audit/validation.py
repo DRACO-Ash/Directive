@@ -92,9 +92,12 @@ OUTCOMES = frozenset({"SUCCESS", "FAILURE"})
 #: way `OUTCOMES` is closed. It is not defined here because the real state set is not yet
 #: knowable: the v1 prototype yields `open`, `pending`, `closed`, `done`, `On Track`,
 #: `At Risk` and `Planned`, and inventing the rest would breach the no-invention rule.
-#: Define it with the records module, which is when the vocabulary becomes real, and note
-#: that a cap or a closed set is cheaper before the first entry is written than after.
-#: TBC, re-verify the state vocabulary with the ISM.
+#: The records module shipped, and it defines one: `records.REGISTERS` carries
+#: `TASK_STATES`, `INCIDENT_STATES` and `RISK_STATES`, and `records.check_state` enforces
+#: them on every REGISTER route. It is not enforced HERE, and that is the distinction this
+#: comment exists to keep: the boundary holds the character rule only, so the sign-in
+#: refusal path, which composes `REPEATED_<n>` server-side and reaches no register, passes
+#: this rule without passing that vocabulary. TBC, re-verify the vocabulary with the ISM.
 _STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
 
 #: A comma-separated list of field names. Names only, for the reason above. Capped at 128
