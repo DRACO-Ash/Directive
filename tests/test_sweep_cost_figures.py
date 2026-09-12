@@ -21,6 +21,7 @@ code did not deliver, and each claim became the next finding.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -278,7 +279,9 @@ def _normalise(text: str) -> str:
 #: and retires the anchor in one edit, which was green; above it, the same alias raises
 #: `NameError` at collection. `FROZEN_WORD_NUMBERS` had that protection by accident, and
 #: it is deliberate for both now. A committer removing what looks like duplication is the
-#: honest mistake this pair exists to survive.
+#: honest mistake this pair exists to survive. Ordering closes `FROZEN_X = X` only;
+#: `X = FROZEN_X` compiles, and `test_every_frozen_pair_is_written_out_twice` is what closes
+#: that direction.
 #: The same set, written out again on purpose, and be exact about what this holds, because
 #: a reader who thinks it is a redundant copy will update it reflexively and it will hold
 #: nothing.
@@ -517,18 +520,28 @@ def test_the_ban_list_is_the_frozen_one() -> None:
     assert _WORD_NUMBERS == FROZEN_WORD_NUMBERS
 
 
-def price_passage_findings(raw_passage: str) -> dict[str, list[str]]:
+def price_passage_findings(raw_passage: str, modules: tuple[str, ...] = ()) -> dict[str, list[str]]:
     """Return everything the price passage would be refused for, as one verdict.
 
     One function rather than three checks written out in the live loop. The loop iterates
     the two real carriers, which are correct, so no mutation of it reaches anything: a line
     per check is a line per check that can be deleted with the suite green, demonstrated on
     the Roman-numeral check the round it was added. Everything the loop refuses is decided
-    here, where `test_the_bans_catch_what_they_were_written_for` reaches both keys.
+    here, where a carrier reaches every key.
+
+    The module names came in last, for the same reason the others did: both halves of that
+    refusal were written out in the live loop and both were deletable with the suite green,
+    while the reader behind them was carried. The round that extracted the reader protected
+    the reader and not the refusal, and this docstring claimed otherwise. `modules` is empty
+    by default so a carrier can exercise the counts alone; the live loop passes the scan.
     """
+    named = module_names_in(_normalise(raw_passage))
+    expected = {_normalise(name) for name in modules}
     return {
         "words": word_counts_in(raw_passage),
         "digits": loose_digits_in(raw_passage),
+        "modules it does not name": sorted(expected - named),
+        "modules the scan does not give": sorted(named - expected),
     }
 
 
@@ -678,7 +691,10 @@ def test_the_shipped_rules_themselves_cost_what_the_records_say() -> None:
     assert findings[0][1] == "tests/test_entra_sign_in.py", findings
 
     # And separately: nothing the rules were not meant to match. The two figures are written
-    # in different documents and mean different things, so both are held.
+    # in different documents and mean different things. Be exact about what this second
+    # assertion buys, because the comment over-stated it: it PINS `EXPECTED_FALSE_POSITIVES`,
+    # and setting that to 1 is red, but given the two assertions above it cannot itself fail.
+    # A pin, not an independent check.
     false_positives = [entry for entry in findings if entry[1] != "tests/test_entra_sign_in.py"]
     assert len(false_positives) == EXPECTED_FALSE_POSITIVES, false_positives
 
@@ -770,6 +786,11 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
         "the price and the double no longer add up to the widened rule's total"
     )
 
+    #: The module basenames the scan gives. Basenames rather than paths, because both
+    #: carriers write them that way and a path would put `src/complyops/` into a sentence
+    #: that is about which modules hold the names, not where the tree puts them.
+    modules = sorted({Path(entry[0]).name for entry in beyond})
+
     #: No count written as a word, in either carrier, in EITHER case. Case-folded because
     #: the first word of a sentence is the most natural place in English for a count to
     #: appear, and `Three of these sit in auth.py` walked through the case-sensitive
@@ -796,34 +817,12 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     #: correct. Every check now lives inside `price_passage_findings`, which a carrier does
     #: reach, so removing one is red at the carrier rather than silent here.
     for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        findings = price_passage_findings(_quoted_rule_passage_raw(path))
+        findings = price_passage_findings(_quoted_rule_passage_raw(path), tuple(modules))
         assert not any(findings.values()), (
             f"{path.name} states {findings} in the price passage. A count written as a word "
             "is one no scanner can read; a loose digit belongs to no rendering this module "
-            "measured. Write the figure in a pinned shape, or delete the clause."
-        )
-
-    #: The module basenames the carriers name. Basenames rather than paths, because both
-    #: carriers write them that way and a path would put `src/complyops/` into a sentence
-    #: that is about which modules hold the names, not where the tree puts them.
-    modules = sorted({Path(entry[0]).name for entry in beyond})
-    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        missing = [name for name in modules if _normalise(f"`{name}`") not in _flowed(path)]
-        assert not missing, (
-            f"{path.name} does not name {missing}, which is where the findings beyond the "
-            "declared double actually are"
-        )
-
-    #: And nothing else: naming a module that carries none of them is the half of the defect
-    #: a positive check alone would miss. Read from the sentence itself rather than the whole
-    #: file, because these basenames appear all over both carriers for unrelated reasons.
-    #: Compared through `_normalise` on both sides, because it strips the backticks a
-    #: carrier writes around a module name and the underscore inside one.
-    for path in BREAKDOWN_CARRIERS["beyond the declared double"]:
-        named = module_names_in(_quoted_rule_passage(path))
-        assert named == {_normalise(name) for name in modules}, (
-            f"{path.name} names {sorted(named)} where the scan gives {modules}, compared "
-            "with the emphasis markers stripped from both sides"
+            "measured; a module named here is one the scan does not give, and one missing "
+            "is where the findings are. Write the figure in a pinned shape, or correct it."
         )
 
 
@@ -863,15 +862,18 @@ _COMMIT_HASH_SPAN = re.compile(r"`(?=[0-9a-f]{7,40}`)[0-9a-f]*[a-f][0-9a-f]*`")
 #: walk-around one word over for the third time on this construct. `A fifth` was caught and
 #: `A twenty-fifth` was not. The lookahead requires the noun these passages actually use,
 #: with AT MOST ONE word between, and only the two nouns these documents actually use. Each
-#: of those three numbers was bought with a measured walk-around, so none is arbitrary.
+#: of those three numbers was measured rather than chosen: the slack bound was bought with
+#: a walk-around, and the noun set by an inertness measurement.
 #:
 #: Two words of slack let a fraction through: `A twenty-fifth OF EACH run` reached the noun
 #: and was stripped. One word does not, because a fraction puts its preposition in that slot
 #: and the noun then lands a word too far. `gate` and `round` were in the set and were
 #: inert, measured: dropping both left every case green, and `round` in particular reads as
-#: an ordinary noun anywhere near a figure. `pass` stays because the record writes
+#: an ordinary noun anywhere near a figure, which is why `a fraction one word from round`
+#: and `a fraction one word from gate` are in the corpus: ADDING either noun back is red.
+#: `pass` stays because the record writes
 #: `engineering pass`, and it is the reason the bound matters: `A twenty-fifth of these PASS
-#: the gate` was stripped while three words of slack were allowed.
+#: the gate` was stripped while two words of slack were allowed.
 #:
 #: So `twenty-eighth security run`, `twenty-eighth run` and `twenty-second engineering pass`
 #: are stripped, and a compound fraction is not.
@@ -1265,11 +1267,13 @@ def test_the_passage_bound_ends_where_the_structure_does(
 
 #: The ban corpus, written out again on purpose and ABOVE its live twin, so that
 #: `FROZEN_BAN_CASES = BAN_CASES` raises `NameError` at collection rather than quietly
-#: retiring the anchor. Same reason and same placement as `FROZEN_SHAPES`.
+#: retiring the anchor. The reverse alias compiles, and
+#: `test_every_frozen_pair_is_written_out_twice` is what closes that direction.
 #:
 #: CONTENT, not pytest ids. Freezing the ids alone let a case be hollowed out to inert
 #: values with its id kept and the whole suite green, which is an id promising a
-#: refinement over a body asserting none.
+#: refinement over a body asserting none. Every body is distinct, asserted below: two
+#: ids over one body is the same defect wearing the freeze.
 FROZEN_BAN_CASES = (
     (
         "a commit hash is exempt and the true clause is clean",
@@ -1395,12 +1399,6 @@ FROZEN_BAN_CASES = (
         ["1234567890123456789012345678901234567890"],
     ),
     (
-        "a compound ordinal beside its noun names a gate run",
-        "6 beyond the declared double, asked for at the twenty-eighth run.",
-        [],
-        [],
-    ),
-    (
         "a compound ordinal two words from its noun is a count again",
         "6 beyond the declared double, asked for at the twenty-eighth big security run.",
         ["twenty", "eighth"],
@@ -1410,6 +1408,24 @@ FROZEN_BAN_CASES = (
         "a tens word one word from a run noun is still a count",
         "6 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
         ["thirty"],
+        [],
+    ),
+    (
+        "a hyphenated non-tens word before an ordinal suffix is a count",
+        "6 beyond the declared double, in `auth.py`. A three-fifth per run sit here.",
+        ["three", "fifth"],
+        [],
+    ),
+    (
+        "a fraction one word from round, which is not a gate noun",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth per round sit here.",
+        ["twenty", "fifth"],
+        [],
+    ),
+    (
+        "a fraction one word from gate, which is not a gate noun",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth per gate sit here.",
+        ["twenty", "fifth"],
         [],
     ),
 )
@@ -1540,12 +1556,6 @@ BAN_CASES = (
         ["1234567890123456789012345678901234567890"],
     ),
     (
-        "a compound ordinal beside its noun names a gate run",
-        "6 beyond the declared double, asked for at the twenty-eighth run.",
-        [],
-        [],
-    ),
-    (
         "a compound ordinal two words from its noun is a count again",
         "6 beyond the declared double, asked for at the twenty-eighth big security run.",
         ["twenty", "eighth"],
@@ -1555,6 +1565,24 @@ BAN_CASES = (
         "a tens word one word from a run noun is still a count",
         "6 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
         ["thirty"],
+        [],
+    ),
+    (
+        "a hyphenated non-tens word before an ordinal suffix is a count",
+        "6 beyond the declared double, in `auth.py`. A three-fifth per run sit here.",
+        ["three", "fifth"],
+        [],
+    ),
+    (
+        "a fraction one word from round, which is not a gate noun",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth per round sit here.",
+        ["twenty", "fifth"],
+        [],
+    ),
+    (
+        "a fraction one word from gate, which is not a gate noun",
+        "6 beyond the declared double, in `auth.py`. A twenty-fifth per gate sit here.",
+        ["twenty", "fifth"],
         [],
     ),
 )
@@ -1632,6 +1660,18 @@ def test_the_module_names_a_passage_states_are_read(passage: str, expected: set[
     """
     assert module_names_in(_normalise(passage)) == expected
 
+    #: And the REFUSAL, not only the reader. Both halves of the module check were written
+    #: out in the live loop and both were deletable with the suite green while the reader
+    #: stayed carried, so the round that extracted the reader protected the wrong thing.
+    scan = ("auth.py", "csrf.py", "auth_routes.py")
+    findings = price_passage_findings(passage, scan)
+    assert findings["modules the scan does not give"] == sorted(
+        expected - {_normalise(name) for name in scan}
+    )
+    assert findings["modules it does not name"] == sorted(
+        {_normalise(name) for name in scan} - expected
+    )
+
 
 def test_a_repeated_price_clause_is_refused(tmp_path: Path) -> None:
     """Two copies of the clause on ONE line must not read as one.
@@ -1661,6 +1701,54 @@ def test_the_ban_corpus_is_the_frozen_one() -> None:
     failed when run by node id, which is the form a runbook hands a reader to paste.
     """
     assert BAN_CASES == FROZEN_BAN_CASES
+
+    #: And no two ids over one body. A duplicate reads as coverage the corpus does not have,
+    #: and it is the freeze's own defect wearing the freeze: an id promising a refinement
+    #: over a body that another id already asserts.
+    bodies = [case[1:] for case in BAN_CASES]
+    assert len(bodies) == len({repr(body) for body in bodies}), "two cases share a body: " + repr(
+        [b for b in bodies if bodies.count(b) > 1]
+    )
+
+
+#: Every name that exists in a frozen pair, live twin and anchor alike.
+FROZEN_PAIRS = (
+    ("_SHAPES", "FROZEN_SHAPES"),
+    ("_WORD_NUMBERS", "FROZEN_WORD_NUMBERS"),
+    ("BAN_CASES", "FROZEN_BAN_CASES"),
+)
+
+
+def test_every_frozen_pair_is_written_out_twice() -> None:
+    """Both halves of each pair must be a literal, in BOTH directions.
+
+    Ordering closes one direction only. `FROZEN_X = X` raises `NameError` at collection when
+    the anchor is defined first, which is why the anchors sit above their twins, but `X =
+    FROZEN_X` compiles and was green for all three pairs. Two-step, measured: alias
+    `_WORD_NUMBERS` and then delete `zero` from the frozen list, green, which is the defect
+    the twenty-seventh pass recorded; alias `BAN_CASES` and hollow a case with its id kept,
+    green, which is the defect the thirty-first pass recorded. Both reopened by one edit.
+
+    An identity guard is not the answer: CPython folds the equal literals, so
+    `_SHAPES is FROZEN_SHAPES` is already true. The binding itself is what has to be read,
+    which is why this parses its own source, the way `sweep_rules.py` parses the sweep's.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    bound = {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+
+    for live, frozen in FROZEN_PAIRS:
+        for name in (live, frozen):
+            assert name in bound, f"{name} is no longer a module-level assignment"
+            assert isinstance(bound[name], ast.Tuple), (
+                f"{name} binds a {type(bound[name]).__name__}, not a tuple literal. An alias "
+                "retires the pair it belongs to, whichever way round it is written."
+            )
 
 
 def test_the_sonar_split_adds_up() -> None:
