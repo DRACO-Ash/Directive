@@ -55,6 +55,8 @@ row says so rather than reconstructing it.
 | 2026-09-12 | `engineering-reviewer`, fifteenth pass | `e787043` | **FAIL** | Two MAJORs. The test named for banning a phrasing asserted only that the scanner could READ it, so a phrasing carrying a measured number would be read and then allowed, and the property survived its own falsification. And the figure for the previous round's deletion was the UNMUTATED pass count attached to a mutated run. It also measured that the frozen shape copy holds ORDER rather than membership, which the comment beside it got wrong. |
 | 2026-09-12 | `security-reviewer`, twenty-third run | `e07434d` | **FAIL** | Two MAJORs. The ban assertion compared the WHOLE phrasing while the sweep judges the matched substring, so a phrasing whose match was an allowed figure passed the test named for banning it. And this sweep's own comment claimed every figure in the file was re-measured, in a file the accreditation record sends an assessor to, while a line count in a note four lines below it was free to be anything. |
 | 2026-09-12 | `engineering-reviewer`, sixteenth pass | `e07434d` | **FAIL** | Two MAJORs. The asymmetric leg added to hold the emphasis stripper was retired by one invisible line: neutering the fixture left it asserting what every other test already asserted. And a comment counted four unbacked shapes five lines from an assertion deriving two, in the module whose purpose is that prose cannot hold a number. It judged the module past the point where its own complexity is the risk, on the evidence that both MAJORs were false sentences rather than wrong code. |
+| 2026-09-12 | `security-reviewer`, twenty-fourth run | `3b4fb54` | **FAIL** | Two MAJORs. The guard added the round before closed the INSTANCE and not the class: a fixture returning the marker prepended to the phrasing satisfied a presence check while leaving every digit bare, and with the stripper then disabled a false figure shipped green. And the ban assertion read the alternation's leftmost match, so a decoy clause earlier in a phrasing became the match and the shape under test was never judged. Fifteen injection probes against the live sweep were refused, one being the recorded open limit. |
+| 2026-09-12 | `engineering-reviewer`, seventeenth pass | `3b4fb54` | **FAIL** | One MAJOR, shared: two experiment figures written as WORDS sat outside the carve-out of a sentence claiming every experiment figure in the block was re-measured, in a file the accreditation record sends an assessor to. Both gates were asked for a deletion plan rather than more findings, and both gave one. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -77,6 +79,18 @@ in `SECURITY.md` and carried as an accreditation condition.
 | Test probes in git history, including a Privacy Enhanced Mail (PEM) private-key opening line at `330fb36` and a file whose NAME carried the Amazon Web Services access-key-identifier shape at `24d93cc` | Tenth run, re-swept at the nineteenth | None carries key material. A sweep of every blob in history surfaces more than the two named here, all of them earlier spellings of this suite's own probes before they were assembled from parts; the row named two because two is what the gate that wrote it had found, which is why it now says what the sweep finds rather than a count. No history rewrite warranted. Written by description rather than by literal: writing either out in full makes this document refuse its own build. |
 | The `find -type l` staged-symlink refusal and the `examined == 0` guard both survive deletion | Eleventh run | Each is shadowed by a control that fires first: the manifest's mode-120000 refusal catches a committed symlink, and the `git archive produced nothing` check catches an empty stage. Benign, and recorded rather than given a test that could not fail. |
 | A volume writer can delete the anchor and its first-use marker together | Recorded since V2.1 | Stated openly in `SECURITY.md` and carried as an accreditation condition. |
+
+## A disagreement between the gates, recorded rather than resolved silently
+
+The twenty-fourth security run recommended deleting `FROZEN_SHAPES` on the ground that
+membership is held twice without it. The seventeenth engineering pass measured the case that
+recommendation does not cover: deleting a shape from `_SHAPES` and `PHRASINGS` TOGETHER is
+red at that anchor and nowhere else. The anchor is kept on the engineering gate's
+measurement, and its docstring now states that narrower reason rather than the order claim
+it carried before. Both gates agreed on everything else they proposed cutting, and that was
+done: a self-consistency test measured redundant under the exact defeat it was written for,
+and the layer of prose that described what OTHER parts of the module hold, which is where
+every finding of the last four rounds landed.
 
 ## Open in scope
 
@@ -117,7 +131,7 @@ open: pinning the measurement left the prose free, and a reviewer rewrote 22 to 
 shipped document free, and a reviewer put false figures in `README.md` and in the
 accreditation record; and pinning whole sentences left the clauses inside them free, so 19
 became 31 and a figure written as the word "eight" became "twelve", which is the exact
-defect this table records at the thirteenth run. Every figure is a digit now, so the sweep
+defect this table records at the thirteenth run. Every figure the module reads back is a digit, so the sweep
 can read it.
 
 Prose cannot hold a number on its own. Six went stale before this, one written stale in the

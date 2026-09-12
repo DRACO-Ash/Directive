@@ -292,15 +292,13 @@ RULES = [
     # around it, which flags 22 findings on 22 lines across every tracked file. Python
     # writes `SUITE_KEY = bytes(...)` with spaces around the equals; dotenv never does.
     #
-    # Every EXPERIMENT figure in this rules block is re-measured by
-    # `tests/test_sweep_cost_figures.py`, which runs the experiment against the live rules
-    # and the live tree AND asserts the sentence you are reading. Not every number in this
-    # file: the line counts and dates in the notes below narrate what went wrong and are
-    # history, not measurement, and saying otherwise here was an over-claim in a file an
-    # assessor is sent to. No commit hash is cited because none is needed: a figure that drifts
-    # from the tree is a red test, not a stale sentence. That is the fifth attempt at this
-    # class, after a number written three ways, a file contradicting itself 154 lines apart,
-    # and a count written stale in the commit that changed what it counted.
+    # The figures named in `tests/test_sweep_cost_figures.py` are re-measured by it against
+    # the live rules and the live tree, and the sentences reporting them are asserted there
+    # too. That module is the list of what is held; this comment does not restate it,
+    # because every previous version of this sentence claimed a class it did not cover and
+    # each one became the next gate finding. No commit hash is cited with a figure: a
+    # figure that drifts from the tree is a red test, and a hash is one more thing to go
+    # stale. `docs/GATE-RECORDS.md` carries the history of how this was got wrong.
     #
     # The trailing `[A-Z0-9_]*` is there because the keyword need not END the name:
     # `CLIENT_SECRET_V2=` walked past without it. The name must still CONTAIN one of these
@@ -325,14 +323,16 @@ RULES = [
     # `sort_keys=`) and 7 `sonar.projectKey=` lines, 6 of them in the skill templates and 1
     # in this project's own `sonar-project.properties`, all admitted by the
     # preceding-character widening. Requiring the upper case name that every environment
-    # variable actually has leaves zero. The one carve-out
+    # variable actually has costs nothing on this tree, which is what
+    # `test_the_shipped_rules_themselves_cost_what_the_records_say` holds: the only finding
+    # the live rules produce anywhere is the declared double. The one carve-out
     # is the diagnostics read-out shape `NAME=MISSING(n)`, which is a value-ABSENT marker
     # this application prints on purpose and which appears in a document and a test.
     #
     # "Anywhere in a line" means it: the character before the name need only be a non-word
-    # one. A narrower list of separators was written first and ten shapes walked past it,
-    # the plausible ones being a query string (`?NAME=`, `&NAME=`) and a bullet written with
-    # no space after it. The widening costs 0 false positives here, so the narrower list
+    # one. A narrower list of separators was written first and several shapes walked past
+    # it, the plausible ones being a query string (`?NAME=`, `&NAME=`) and a bullet written
+    # with no space after it. The widening costs 0 false positives here, so the narrower list
     # bought nothing.
     ("Credential written into prose",
      r"(?:^|[^A-Za-z0-9_])['\"`]?[A-Z][A-Z0-9_]*"
