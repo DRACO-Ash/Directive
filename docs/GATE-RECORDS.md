@@ -49,8 +49,10 @@ row says so rather than reconstructing it.
 | 2026-09-11 | `engineering-reviewer`, twelfth pass | `d2293e6` | **FAIL** | Three MAJORs. The live-cost figure was turned from a word into a digit and wired to nothing, so rewriting 1 to 0 was green while the bullet beside it claimed every figure was asserted. Emphasis was stripped only where it touched a digit, so `**47 findings**` stayed invisible. And the module written to stop stale counts carried two in its own docstring. |
 | 2026-09-11 | `security-reviewer`, twentieth run | `5f3c4cf` | **FAIL** | Two MAJORs, one of them a REGRESSION against the previous commit. Widening the emphasis stripper to remove backticks made four of the eleven shapes unmatchable, because those four still carried backticks themselves, so the sweep went silently blind to a whole canonical sentence and three clauses and a false figure shipped green in the accreditation record. Underscore emphasis was invisible too, one character beyond the class the same commit had closed. |
 | 2026-09-11 | `engineering-reviewer`, thirteenth pass | `5f3c4cf` | **FAIL** | Three MAJORs, the regression shared. Also: the release note's claim that every figure in it is read back was false for six of them, in the fourth wrong version of that sentence and the second where the fix broadened what it was fixing; and two documents stated that the wider stripper closed the gap when for four shapes it opened one. |
-| 2026-09-11 | `engineering-reviewer`, fourteenth pass | `84e80ed` | **PASS** | Five MINORs, no MAJOR. The first engineering PASS of this release. It verified the claim that had been false at four consecutive passes, by scripting a check that every test name cited in a shipped document resolves to a real test, and searched all 81 commits to confirm no false figure was ever committed. Its MINORs: a per-shape assertion weakened by a shorter sibling matching first, and four shapes backing no declared figure and held by nothing. |
-| 2026-09-12 | `security-reviewer`, twenty-first run | `84e80ed` | **FAIL** | One MAJOR, the same one the pass above raised as a MINOR and scored harder here. Deleting three entries from the shape set left all 1009 tests green while a false figure sailed into the accreditation record: the set is parametrised over, so a deleted entry is simply not tested, and four of the shapes exist only to ban a wording this project has retired, so nothing else misses them. Twenty-three injection probes, including fullwidth digits and a line-broken number, were all caught. |
+| 2026-09-11 | `engineering-reviewer`, fourteenth pass | `84e80ed` | **PASS** | Five MINORs, including the two below, and no MAJOR. The first engineering PASS of this release. It verified the claim that had been false at four consecutive passes, by scripting a check that every test name cited in a shipped document resolves to a real test, and searched all 81 commits to confirm no false figure was ever committed. Two of them: a per-shape assertion weakened by a shorter sibling matching first, and four shapes backing no declared figure and held by nothing. |
+| 2026-09-12 | `security-reviewer`, twenty-first run | `84e80ed` | **FAIL** | One MAJOR, the same one the pass above raised as a MINOR and scored harder here. Deleting three entries from the shape set left the suite green while a false figure sailed into the accreditation record: the set is parametrised over, so a deleted entry is simply not tested, and four of the shapes exist only to ban a wording this project has retired, so nothing else misses them. Twenty-three injection probes, including fullwidth digits and a line-broken number, were all caught. |
+| 2026-09-12 | `security-reviewer`, twenty-second run | `e787043` | **FAIL** | One MAJOR. The scanner was blinded through the stage ABOVE the shape set: every assertion in the module normalises both sides of its comparison, so all of them are symmetric and none can see the normaliser itself weaken. With the emphasis stripper disabled and nothing else changed, four false figures shipped into the accreditation record and the release note with the whole suite green. Thirteen injection probes against the intact scanner were all caught, including fullwidth digits and a line-broken number. |
+| 2026-09-12 | `engineering-reviewer`, fifteenth pass | `e787043` | **FAIL** | Two MAJORs. The test named for banning a phrasing asserted only that the scanner could READ it, so a phrasing carrying a measured number would be read and then allowed, and the property survived its own falsification. And the figure for the previous round's deletion was the UNMUTATED pass count attached to a mutated run. It also measured that the frozen shape copy holds ORDER rather than membership, which the comment beside it got wrong. |
 | 2026-09-11 | both gates, re-run | `TBC, re-verify` | `TBC, re-verify` | After the fixes above. |
 
 ## Accepted residual
@@ -90,7 +92,7 @@ credential-shaped token in any cell of a document table row whose name cell carr
 these names. The keyword may be followed by more of the name, so `CLIENT_SECRET_V2=` is
 caught. Case is folded everywhere except the prose rule.
 
-Every figure in the list of open limits below is pinned by
+Every LIVE figure in the list of open limits below is pinned by
 `tests/test_sweep_cost_figures.py`, which re-runs each
 experiment against the live rules and the live tree, asserts that each sentence and each
 clause inside it is still SAID where it belongs, and sweeps EVERY tracked file for anything
@@ -137,9 +139,10 @@ that no sweep mistakes them for a live measurement.
   and 7 `sonar.projectKey=` lines, 6 of them in the skill templates and 1 in this project's
   own `sonar-project.properties`, all admitted by the preceding-character widening. The
   anchored rule and the table rule both fold, so a lower-case name is caught in those two
-  shapes and not in this one. This figure has been written three times and measured three
-  ways, reading 23 and then 19 at earlier commits, each correct for an experiment nobody
-  recorded. State the experiment and the scope with the number, and let the test hold both.
+  shapes and not in this one. This figure has been written several times and measured
+  several ways, each correct for an experiment nobody recorded, and the earlier values are
+  narrated in the table above rather than repeated here, where a sweep would read them as
+  live. State the experiment and the scope with the number, and let the test hold both.
 ● A name that BEGINS with one of the keywords, such as `SECRET_FOR_ENTRA=<value>`. The name
   must contain one of these words and have at least one character before it. Making that
   leading part optional gives 14 findings across the tracked tree, 9 of them in `src/`, of
