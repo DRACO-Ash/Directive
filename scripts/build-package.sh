@@ -449,8 +449,8 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # And the largest limit of all, which was recorded nowhere until a gate demonstrated it:
     # this sweep reads the STAGED PACKAGE. A credential in a file that is tracked but not
     # shipped, `.github/workflows/verify.yml` for instance, is invisible to it, and the
-    # pre-write hook sees only this assistant's own edits. The hard rule covers source, not
-    # just shippable files, so that gap is covered elsewhere rather than left open:
+    # pre-write hook sees only this assistant's own edits. This project treats a tracked
+    # file as source whether or not it ships, so that gap is covered elsewhere than here:
     # `test_the_shipped_rules_themselves_cost_what_the_records_say` runs these same rules
     # over every tracked file and asserts the only finding anywhere is the declared double.
     # Measured: planting a credential in that workflow file builds clean here and turns that

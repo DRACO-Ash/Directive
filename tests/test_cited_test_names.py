@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 from pathlib import Path
 
+import pytest
+
+import sweep_rules
 from sweep_rules import tracked_files
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,3 +140,52 @@ def test_the_citation_check_reads_this_repository() -> None:
     # And a node-id citation specifically. The first guard could not read that form at all,
     # so without one in the corpus the widening would itself be untested.
     assert any(in_file for _, in_file, _ in citations), "no node-id citation was read"
+
+
+def test_every_node_id_span_is_read_by_the_pattern() -> None:
+    """A citation form the pattern cannot read is unchecked rather than red.
+
+    The first version of this guard could read only a bare name, so the node-id form the
+    deployment runbook uses went unchecked and renaming the test it cites was green. The
+    same gap would reopen for a parametrised id or a class-scoped one, neither of which the
+    pattern reads today. This asserts the corpus contains no such span: a third form entering
+    the tree is red here, rather than silently unread.
+    """
+    unread = []
+    for path in tracked_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        where = str(path.relative_to(ROOT))
+        if where == str(Path(__file__).relative_to(ROOT)):
+            continue
+        for span in re.findall(r"`[^`\n]*::test_[^`\n]*`", text):
+            if not _CITATION.fullmatch(span):
+                unread.append(f"{span} in {where}")
+
+    assert not unread, (
+        "these citations carry a node id the pattern cannot read, so they are unchecked:\n  "
+        + "\n  ".join(sorted(set(unread)))
+    )
+
+
+def test_the_tracked_reader_survives_a_path_with_a_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The NUL-delimited read, which nothing else holds.
+
+    Splitting the listing on whitespace drops a tracked path containing a space out of every
+    corpus built on it: the citation scan, the figure sweep, and the credential sweep over
+    the tracked tree that `scripts/build-package.sh` now names as the control covering files
+    that do not ship. No such path exists today, so no mutation of the real tree can redden
+    this; the listing is faked instead, which is the honest way to hold a property the tree
+    cannot currently exhibit.
+    """
+    listing = "docs/a file with spaces.md\0docs/plain.md\0"
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=listing, stderr="")
+    monkeypatch.setattr(sweep_rules.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(sweep_rules.subprocess, "run", lambda *_a, **_k: completed)
+    monkeypatch.setattr(Path, "is_file", lambda _self: True)
+
+    names = [path.name for path in tracked_files()]
+
+    assert names == ["a file with spaces.md", "plain.md"]

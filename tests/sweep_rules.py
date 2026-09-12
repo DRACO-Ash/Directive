@@ -105,8 +105,14 @@ def tracked_files() -> list[Path]:
     NUL-delimited, because splitting on whitespace drops a tracked path containing a space
     out of the corpus silently, which would quietly narrow every sweep built on this.
 
-    Shared rather than copied: this is the third module to need it, and a copied helper in
-    this suite has drifted from its original twice.
+    Shared rather than copied: two modules need it, and this suite has twice had a copied
+    helper drift from its original.
+
+    `shutil.which` rather than a hardcoded path, and that matters beyond tidiness: this
+    module SHIPS, so it runs at the platform's test stage, where `/usr/bin/git` raises
+    `FileNotFoundError` on any image that puts git elsewhere. That is a red stage 5 and a
+    failed upload with every later stage skipped. No test holds this, so this sentence is
+    the only record of why it is written this way.
     """
     git = shutil.which("git")
     if git is None:
