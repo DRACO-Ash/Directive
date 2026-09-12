@@ -89,19 +89,24 @@ def test_every_console_path_refuses_an_unauthenticated_caller(
 #: ADDING a route without one was caught by nothing. A seven-line `@api_bp.get("/backup")`
 #: with no decorator served every register to an anonymous caller and the suite stayed at
 #: the same count, byte for byte.
-PUBLIC_PATHS = frozenset(
+#:
+#: Keyed by METHOD AND PATH, not path alone. A path-keyed set exempts every method of a
+#: declared path, so an `@api_bp.post("/diagnostics")` writing to a register rode in on the
+#: GET read-out's exemption and served an anonymous caller with the suite unchanged.
+PUBLIC_ROUTES = frozenset(
     {
-        "/",
-        "/healthz",
-        "/health",
-        "/livez",
-        "/ping",
-        "/readyz",
-        "/api/diagnostics",
-        "/sign-in",
-        "/sign-out",
-        "/auth/callback",
-        "/static/<path:filename>",
+        ("GET", "/"),
+        ("GET", "/healthz"),
+        ("GET", "/health"),
+        ("GET", "/livez"),
+        ("GET", "/ping"),
+        ("GET", "/readyz"),
+        ("GET", "/api/diagnostics"),
+        ("GET", "/sign-in"),
+        ("POST", "/sign-in"),
+        ("POST", "/sign-out"),
+        ("GET", "/auth/callback"),
+        ("GET", "/static/<path:filename>"),
     }
 )
 
@@ -116,31 +121,48 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
     deliberate one-line addition to that set, reviewable in the diff, rather than an
     unauthenticated hole nobody notices.
     """
-    served = []
+    adapter = client.application.url_map.bind("localhost")
+    walked = []
     for rule in client.application.url_map.iter_rules():
-        if rule.rule in PUBLIC_PATHS:
-            continue
         for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+            if (method, rule.rule) in PUBLIC_ROUTES:
+                continue
             path = rule.rule.replace("<register>", "tasks").replace("<path:filename>", "x")
+            reached, _ = adapter.match(path, method=method)
+            assert reached == rule.endpoint, (
+                f"{method} {path} reaches {reached}, not {rule.endpoint}, so this walk "
+                "never exercised the rule it thinks it did"
+            )
             response = client.open(path, method=method)
-            served.append((method, rule.rule, response.status_code))
+            if rule.rule.startswith("/api/"):
+                gated = response.status_code in {401, 403}
+            else:
+                location = response.headers.get("Location", "")
+                gated = response.status_code == 302 and "sign-in" in location
+            walked.append((method, rule.rule, response.status_code, gated))
 
-    open_to_anyone = [entry for entry in served if entry[2] not in {302, 401, 403, 405}]
+    open_to_anyone = [entry[:3] for entry in walked if not entry[3]]
 
-    assert served, "no rules were walked, so this proves nothing"
+    assert walked, "no rules were walked, so this proves nothing"
     assert not open_to_anyone, f"these answer an anonymous caller: {open_to_anyone}"
 
 
-def test_the_public_set_names_only_paths_the_application_serves(app: Flask) -> None:
-    """A renamed or removed public path must not sit in that set unnoticed.
+def test_the_public_set_names_only_routes_the_application_serves(app: Flask) -> None:
+    """A renamed or removed public route must not sit in that set unnoticed.
 
-    Without this, the frozen set decays into a list of paths that no longer exist, and the
-    test above silently stops covering whatever replaced them.
+    Without this, the frozen set decays into a list of routes that no longer exist, and the
+    test above silently stops covering whatever replaced them. Compared as method-and-path
+    pairs for the same reason the set is keyed that way: a public path losing a METHOD, so
+    that the exemption now covers nothing the application serves, has to redden too.
     """
-    served = {rule.rule for rule in app.url_map.iter_rules()}
+    served = {
+        (method, rule.rule)
+        for rule in app.url_map.iter_rules()
+        for method in rule.methods - {"HEAD", "OPTIONS"}
+    }
 
-    assert served >= PUBLIC_PATHS, (
-        f"declared public but not served: {sorted(PUBLIC_PATHS - served)}"
+    assert served >= PUBLIC_ROUTES, (
+        f"declared public but not served: {sorted(PUBLIC_ROUTES - served)}"
     )
 
 

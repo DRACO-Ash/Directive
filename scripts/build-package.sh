@@ -465,6 +465,14 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # so the rule would fire on every build and be turned off within a week. The experiment
     # is to replace `=` with `[ \t]*=[ \t]*` in the unquoted rule alone and scan every
     # tracked file. It is a real gap and it is recorded here rather than closed.
+    #
+    # The QUOTED rule has its own gap and its own price, and they are separate figures. Its
+    # keyword group carries `api_key`, `secret`, `token`, `password`, `passwd` and `pwd` but
+    # not a bare `key` or `keys`, which the unquoted rule's group does carry, so `key = "..."`
+    # in source is not caught. Adding them gives 7 findings on 7 lines across every tracked
+    # file, 6 beyond the declared double the shipped rules already report; every one of the
+    # six is a session or header NAME rather than a value, such as `ACTOR_KEY` and
+    # `TOKEN_KEY`. Left open at a measured price, like the other three.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1

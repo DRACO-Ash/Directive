@@ -654,6 +654,38 @@ def test_the_build_context_hides_the_test_inclusive_lockfile() -> None:
     assert "requirements-runtime.txt" not in entries, "the image needs this one"
 
 
+def _shipped_stage_instructions() -> list[str]:
+    """Return the shipped stage's instructions, one logical line each, comments dropped.
+
+    Continuations are folded first. A Dockerfile instruction may span lines with a trailing
+    backslash, and the shipped stage's `ENV` is already written that way, so a raw
+    `splitlines()` reads its second and later assignments as lines of their own that start
+    with neither `ENV` nor any other keyword - invisible to a scan keyed on the instruction.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    ship = dockerfile.split("FROM scratch", 1)[1]
+    folded = ship.replace("\\\n", " ")
+    return [
+        line.strip()
+        for line in folded.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def _assigned_names(operands: str) -> list[str]:
+    """Return the variable names an `ENV` operand string assigns, in either supported form.
+
+    `ENV NAME=value ...` and the legacy `ENV NAME value`, which assigns the rest of the
+    line to a single name and would otherwise read as assigning nothing.
+    """
+    tokens = operands.split()
+    if not tokens:
+        return []
+    if "=" not in tokens[0]:
+        return [tokens[0]]
+    return [token.split("=", 1)[0] for token in tokens if "=" in token]
+
+
 def test_the_shipped_stage_runs_as_the_non_root_numeric_user() -> None:
     """A hard rule, and it was held by nothing: deleting the line ships a root container.
 
@@ -666,10 +698,10 @@ def test_the_shipped_stage_runs_as_the_non_root_numeric_user() -> None:
     and a platform that reads the image config would see an unresolvable name rather than a
     non-root user.
     """
-    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
-    ship = dockerfile.split("FROM scratch", 1)[1]
     users = [
-        line.split(maxsplit=1)[1].strip() for line in ship.splitlines() if line.startswith("USER ")
+        line.split(maxsplit=1)[1]
+        for line in _shipped_stage_instructions()
+        if line.split(maxsplit=1)[0].upper() == "USER"
     ]
 
     assert users, "the shipped stage sets no USER, so the container runs as root"
@@ -682,13 +714,19 @@ def test_the_shipped_stage_sets_neither_port_nor_data_dir() -> None:
     `ENV PORT=` in the image overrides the platform's own value, which is how a container
     binds the wrong port and fails its health check with nothing in the logs to say why.
     `ENV DATA_DIR=` does the same to the storage contract.
+
+    Reads the NAMES each `ENV` assigns, off the folded logical line. A line-by-line scan
+    for a `PORT` substring passed a `PORT=8080` added as a continuation of the shipped
+    stage's existing multi-line `ENV`, which is the form that block is already written in
+    and therefore the form the addition would take.
     """
-    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
-    ship = dockerfile.split("FROM scratch", 1)[1]
+    banned = {"PORT", "DATA_DIR"}
     declared = [
-        line.strip()
-        for line in ship.splitlines()
-        if line.strip().startswith("ENV ") and ("PORT" in line or "DATA_DIR" in line)
+        (name, line)
+        for line in _shipped_stage_instructions()
+        if line.split(maxsplit=1)[0].upper() == "ENV"
+        for name in _assigned_names(line.split(maxsplit=1)[1])
+        if name in banned
     ]
 
     assert not declared, f"the image pins a platform value: {declared}"
@@ -703,12 +741,7 @@ def test_the_shipped_stage_adds_no_layer_after_the_flattening_copy() -> None:
     writes to the filesystem after the COPY brings the second layer back.
     """
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
-    ship = dockerfile.split("FROM scratch", 1)[1]
-    instructions = [
-        line.split()[0].upper()
-        for line in ship.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    instructions = [line.split()[0].upper() for line in _shipped_stage_instructions()]
     assert "COPY" in instructions, "the flattening COPY must be in this stage"
     mutating = {"WORKDIR", "RUN", "ADD"}
     assert not mutating.intersection(instructions[instructions.index("COPY") + 1 :])
