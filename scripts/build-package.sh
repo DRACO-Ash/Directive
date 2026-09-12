@@ -472,10 +472,11 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # in source is not caught. Adding them gives 7 findings on 7 lines across every tracked
     # file, 6 beyond the declared double the shipped rules already report, every one a
     # session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`.
-    # Those three module names are derived from the scan and asserted, and the count is not
-    # restated as a word: a decomposed figure needs every part held, and a figure written as
-    # a word is invisible to any scanner. Left open at a measured price, like the other
-    # three.
+    # That module list is derived from the scan and asserted, positively and against naming
+    # a module the scan does not give. No count is restated anywhere in this block: a
+    # decomposed figure needs every part held, and a count written as a word is invisible to
+    # any scanner, so a word restating it is free by construction. Left open at a measured
+    # price, not bought.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
