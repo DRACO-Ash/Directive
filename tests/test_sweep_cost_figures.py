@@ -286,10 +286,10 @@ def _normalise(text: str) -> str:
 #: no way to close that with a regular expression. REMOVING a phrasing from here drifts
 #: silently too, and that one IS closable: four of these shapes back no declared figure and
 #: exist only to ban a wording this project has retired or could regress to, so nothing
-#: else would miss them. Deleting three of them left the whole suite green while a false
+#: else would miss them. Deleting three of them left the suite green while a false
 #: figure sailed into the accreditation record. `FROZEN_SHAPES` below is the anchor, and
-#: the duplication is the control rather than an oversight: changing the set is meant to be
-#: a deliberate two-place edit.
+#: the duplication is the control rather than an oversight: changing the set is meant to cost a
+#: deliberate edit in three places, here, in `FROZEN_SHAPES` and in `PHRASINGS`.
 _SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -309,9 +309,13 @@ _SHAPES = (
 )
 
 
-#: The same set, written out again on purpose. `_SHAPES` is parametrised over, so a deleted
-#: entry is simply not tested, and the four entries that back no declared figure are held by
-#: nothing at all. This is the anchor that makes a deletion red.
+#: The same set, written out again on purpose, and be exact about what this holds, because
+#: a reader who thinks it is a redundant copy will update it reflexively and it will hold
+#: nothing. MEMBERSHIP is held by `PHRASINGS`, which catches a deletion semantically: the
+#: phrasing stops being readable. What `FROZEN_SHAPES` uniquely holds is ORDER, and order is
+#: load-bearing: the alternation is leftmost-first, and the sweep compares the text that
+#: matched against the allowed set, so a reorder changes which alternative wins. Nothing
+#: else in this module says order matters.
 FROZEN_SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -359,6 +363,23 @@ PHRASINGS = {
 }
 
 
+#: The markup a reader sees through and a scanner must. Every assertion in this module
+#: normalises BOTH sides of its comparison, which makes them all symmetric and therefore
+#: blind to the normaliser itself: a reviewer turned `_EMPHASIS` off entirely and shipped
+#: four false figures into the accreditation record and the release note with the whole
+#: suite green. This is the one leg that is deliberately ASYMMETRIC. The shapes carry no
+#: markup and these renderings do, so the scanner can only read them if the stripper is
+#: doing its job, and narrowing it to drop any one of these markers turns the corpus red.
+EMPHASIS_MARKERS = ("`", "**", "~~", "_")
+
+_DIGITS = re.compile(r"\d+")
+
+
+def _emphasised(phrasing: str, marker: str) -> str:
+    """Wrap every number in one phrasing in markup, the way a document actually writes it."""
+    return _DIGITS.sub(lambda run: f"{marker}{run.group(0)}{marker}", phrasing)
+
+
 def _shape_pattern(template: str) -> str:
     """Compile one template against normalised text, escaping everything but the numbers."""
     return r"\d+".join(re.escape(part) for part in _normalise(template).split("{n}"))
@@ -394,6 +415,23 @@ def test_the_shipped_files_report_the_figure_they_measured(experiment: str) -> N
         )
 
 
+def _allowed() -> set[str]:
+    """Every rendering this module has measured, normalised, as the sweep compares them."""
+    allowed = {_normalise(value) for value in _rendered().values()}
+    allowed |= {_normalise(f"{count} {clause}") for clause, count in _breakdowns().items()}
+    return allowed
+
+
+def _is_self(path: Path) -> bool:
+    """Report whether this is the module itself, which writes the figures it asserts.
+
+    A helper rather than an inline comparison so it can be held: widening it to every path
+    under `tests/` retired the sweep over every shipped test module with the suite green,
+    and `tests/` ships in the package.
+    """
+    return path.resolve() == SELF
+
+
 def test_no_tracked_file_reports_a_figure_that_was_never_measured() -> None:
     """EVERY tracked file, not the three that were declared.
 
@@ -402,11 +440,10 @@ def test_no_tracked_file_reports_a_figure_that_was_never_measured() -> None:
     where the reviewer pointed and left standing 154 lines away, then false figures placed in
     two shipped documents outside the declared three with the whole suite green.
     """
-    allowed = {_normalise(value) for value in _rendered().values()}
-    allowed |= {_normalise(f"{count} {clause}") for clause, count in _breakdowns().items()}
+    allowed = _allowed()
 
     for path in _tracked():
-        if path.resolve() == SELF:
+        if _is_self(path):
             continue
         for match in _RENDERINGS.finditer(_flowed(path)):
             relative = path.relative_to(ROOT)
@@ -563,8 +600,42 @@ def test_every_declared_figure_is_a_shape_the_scanner_reads() -> None:
         )
 
 
+#: The shapes that back no declared figure at all, derived and asserted below rather than
+#: counted in a comment: the count was prose in a module whose whole purpose is that prose
+#: cannot hold a number, and rewriting it left everything green. Both are pure ban-nets.
+#: `{n} tracked files` is the only guard against the tree-size figure returning after it was
+#: deliberately removed from every document, and the plural `findings across every tracked
+#: file` guards the singular live-cost sentence against being pluralised into a shape no
+#: constant covers. The two suffix-free forms are NOT here: they are substrings of the
+#: canonical sentences, so a declared figure does back them.
+UNBACKED_SHAPES = (
+    "{n} tracked files",
+    "{n} findings across every tracked file",
+)
+
+
+def test_the_unbacked_shapes_are_the_ones_named() -> None:
+    """Which shapes are pure ban-nets, derived rather than asserted in a comment.
+
+    A shape backed by a declared figure is held by that figure's carrier and its constant.
+    These are held by nothing else, which is why deleting a shape was green before
+    `PHRASINGS` existed, and naming them makes adding a declared figure for one of them a
+    deliberate change rather than a silent one.
+    """
+    declared = [_normalise(value) for value in _rendered().values()]
+    declared += [_normalise(f"{count} {clause}") for clause, count in _breakdowns().items()]
+
+    unbacked = tuple(
+        shape
+        for shape in _SHAPES
+        if not any(re.compile(_shape_pattern(shape)).search(text) for text in declared)
+    )
+
+    assert unbacked == UNBACKED_SHAPES
+
+
 def test_the_shape_set_is_the_frozen_one() -> None:
-    """Deleting a shape made the sweep blind with 1009 tests green.
+    """Deleting a shape made the sweep blind with the suite green.
 
     `_SHAPES` is parametrised over, so a deleted entry is not tested, and four of these
     shapes back no declared figure: they exist only to ban a wording this project has
@@ -574,8 +645,9 @@ def test_the_shape_set_is_the_frozen_one() -> None:
     tracked file`. A reviewer deleted all three and shipped a false figure into the
     accreditation record with the suite green.
 
-    The duplication below is the control, not an oversight. Changing the set is meant to
-    cost a deliberate edit in two places.
+    The duplication below is the control, not an oversight. Changing the set is meant to cost a
+    deliberate edit in three places: here, `FROZEN_SHAPES` and `PHRASINGS`. A two-place
+    deletion is red, measured, because `PHRASINGS` catches it independently.
     """
     assert _SHAPES == FROZEN_SHAPES
 
@@ -593,13 +665,56 @@ def test_every_shape_has_a_phrasing_that_exercises_it(shape: str) -> None:
 
 
 def test_every_phrasing_is_banned_by_the_compiled_scanner() -> None:
-    """The corpus, end to end.
+    """The corpus, end to end: read AND refused.
 
-    Each phrasing carries a number nothing measured, so the sweep must refuse every one of
-    them wherever it appears in the tree.
+    The assertion used to stop at `search`, which proves only that the scanner can READ the
+    phrasing. A phrasing whose number happened to be a measured one would then be read and
+    ALLOWED, and the test named for banning would pass. It was true by luck rather than by
+    construction, measured: the intersection was empty.
     """
+    allowed = _allowed()
     for shape, phrasing in PHRASINGS.items():
-        assert _RENDERINGS.search(_normalise(phrasing)), (
+        normalised = _normalise(phrasing)
+
+        assert _RENDERINGS.search(normalised), (
             f"{phrasing!r} would not be read back, so a figure in the shape {shape!r} could "
             "be written into a shipped document unnoticed"
         )
+        assert normalised not in allowed, (
+            f"{phrasing!r} carries a number this module MEASURED, so it is an allowed figure "
+            "rather than a banned one and this test proves nothing about that shape"
+        )
+
+
+@pytest.mark.parametrize("marker", EMPHASIS_MARKERS)
+def test_the_scanner_reads_a_figure_through_every_markup_it_knows(marker: str) -> None:
+    """The one asymmetric leg, and the reason it exists.
+
+    Every other assertion normalises both sides, so turning `_EMPHASIS` off entirely leaves
+    all of them green: a reviewer did exactly that and shipped four false figures into
+    `docs/ACCREDITATION-REVIEW.md` and `CHANGELOG.md` with 1026 tests passing. The shapes
+    carry no markup; these renderings do. So the scanner can read them only while the
+    stripper works, and dropping any one marker from it turns this red.
+
+    This is the component this project has failed on three times running: emphasis hiding a
+    digit, then strikethrough, then a backtick regression. It is the check to keep.
+    """
+    for shape, phrasing in PHRASINGS.items():
+        marked = _emphasised(phrasing, marker)
+
+        assert _RENDERINGS.search(_normalise(marked)), (
+            f"{marked!r} is invisible to the scanner, so a figure in the shape {shape!r} "
+            f"wrapped in {marker!r} would ship unread. The emphasis stripper has been "
+            "narrowed or disabled."
+        )
+
+
+def test_only_this_module_is_skipped_by_the_sweep() -> None:
+    """The sweep's one exemption, asserted rather than inlined.
+
+    Widening the skip to every path under `tests/` retired the sweep over every shipped test
+    module with the suite green, and `tests/` ships in the package.
+    """
+    skipped = [path for path in _tracked() if _is_self(path)]
+
+    assert [path.resolve() for path in skipped] == [SELF]

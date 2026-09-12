@@ -81,7 +81,7 @@ one.
 ● `tests/test_sweep_cost_figures.py` re-measures the three costs that justify the three
   open gaps, asserts the sentences that report them, and sweeps every tracked file for
   anything written in the same shapes. All three parts, because every earlier attempt at it
-  each closed one and left the next open: the measurement, then the prose reporting it, then
+  closed one and left the next open: the measurement, then the prose reporting it, then
   the files outside the declared three, then the clauses inside a pinned sentence. Every
   figure is a digit now, because a figure written as a word is invisible to any scanner.
 ● `tests/test_house_voice_hook.py` executes the house-voice hook once per registered tool.
