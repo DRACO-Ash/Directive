@@ -80,7 +80,7 @@ one.
   defeating the tests written for the one before it.
 ● `tests/test_sweep_cost_figures.py` re-measures the three costs that justify the three
   open gaps, asserts the sentences that report them, and sweeps every tracked file for
-  anything written in the same shapes. All three parts, because every earlier attempt at it
+  anything written in the same shapes. Every part of that was added only because an earlier attempt at it
   closed one and left the next open: the measurement, then the prose reporting it, then
   the files outside the declared three, then the clauses inside a pinned sentence. Every
   figure is a digit now, because a figure written as a word is invisible to any scanner.

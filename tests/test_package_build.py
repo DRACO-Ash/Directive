@@ -915,7 +915,7 @@ def test_the_simulations_cleanup_trap_survives_a_signal(clone: Path) -> None:
     try:
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            if list(scratch.iterdir()):
+            if list(scratch.glob("tmp.*")):
                 break
             if simulation.poll() is not None:
                 # NOT a skip. The package built, so the simulation had a package to unpack
@@ -936,7 +936,14 @@ def test_the_simulations_cleanup_trap_survives_a_signal(clone: Path) -> None:
         if simulation.poll() is None:
             simulation.kill()
 
-    assert not list(scratch.iterdir()), "a signal left the unpacked package behind"
+    # The SCRIPT'S OWN work directory, not everything in `TMPDIR`. The simulation runs a
+    # nested pytest at stage 5, which creates its own `pytest-of-*` tree there and owns it;
+    # asserting the whole directory is empty made this test stricter than the property it
+    # names and it went red under concurrent load, on a runner exactly as loaded as
+    # Continuous Integration. `mktemp -d` names the script's directory `tmp.XXXXXXXX`.
+    survivors = list(scratch.glob("tmp.*"))
+
+    assert not survivors, f"a signal left the unpacked package behind: {survivors}"
 
 
 def test_a_symlinked_dist_is_refused(clone: Path) -> None:

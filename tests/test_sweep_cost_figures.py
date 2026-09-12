@@ -284,12 +284,12 @@ def _normalise(text: str) -> str:
 #: THE RESIDUAL, stated in both directions because only one of them was stated before.
 #: Adding a new phrasing to a document without adding it here drifts silently, and there is
 #: no way to close that with a regular expression. REMOVING a phrasing from here drifts
-#: silently too, and that one IS closable: four of these shapes back no declared figure and
-#: exist only to ban a wording this project has retired or could regress to, so nothing
-#: else would miss them. Deleting three of them left the suite green while a false
-#: figure sailed into the accreditation record. `FROZEN_SHAPES` below is the anchor, and
-#: the duplication is the control rather than an oversight: changing the set is meant to cost a
-#: deliberate edit in three places, here, in `FROZEN_SHAPES` and in `PHRASINGS`.
+#: silently too, and that one IS closable: the shapes in `UNBACKED_SHAPES` back no declared
+#: figure and exist only to ban a wording this project has retired or could regress to, so
+#: nothing else would miss them. Deleting three shapes left the suite green while a false
+#: figure sailed into the accreditation record. Changing the set costs an edit in three
+#: places, here, `FROZEN_SHAPES` and `PHRASINGS`, and four for an unbacked one, which is
+#: also in `UNBACKED_SHAPES`.
 _SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -314,8 +314,9 @@ _SHAPES = (
 #: nothing. MEMBERSHIP is held by `PHRASINGS`, which catches a deletion semantically: the
 #: phrasing stops being readable. What `FROZEN_SHAPES` uniquely holds is ORDER, and order is
 #: load-bearing: the alternation is leftmost-first, and the sweep compares the text that
-#: matched against the allowed set, so a reorder changes which alternative wins. Nothing
-#: else in this module says order matters.
+#: matched against the allowed set, so a reorder changes which alternative wins. The sweep
+#: does catch a harmful reorder, measured; this makes it red at the anchor rather than four
+#: hundred lines away in a message about a document.
 FROZEN_SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -371,6 +372,11 @@ PHRASINGS = {
 #: markup and these renderings do, so the scanner can only read them if the stripper is
 #: doing its job, and narrowing it to drop any one of these markers turns the corpus red.
 EMPHASIS_MARKERS = ("`", "**", "~~", "_")
+
+#: The characters the stripper removes, read out of its own pattern. Asserted against the
+#: markers above, so trimming either one alone is red: the marker corpus had no anchor of
+#: its own and could be cut to a single entry with the suite green.
+_STRIPPED_CHARACTERS = frozenset(re.sub(r"[\[\]+]", "", _EMPHASIS.pattern))
 
 _DIGITS = re.compile(r"\d+")
 
@@ -514,7 +520,7 @@ def test_no_file_outside_the_declared_set_carries_a_canonical_sentence() -> None
     sentences = _rendered()
     declared = {path.resolve() for files in REPORTS.values() for path in files}
     for path in _tracked():
-        if path.resolve() in declared or path.resolve() == SELF:
+        if path.resolve() in declared or _is_self(path):
             continue
         flowed = _flowed(path)
         carried = [name for name, sentence in sentences.items() if _normalise(sentence) in flowed]
@@ -637,17 +643,16 @@ def test_the_unbacked_shapes_are_the_ones_named() -> None:
 def test_the_shape_set_is_the_frozen_one() -> None:
     """Deleting a shape made the sweep blind with the suite green.
 
-    `_SHAPES` is parametrised over, so a deleted entry is not tested, and four of these
-    shapes back no declared figure: they exist only to ban a wording this project has
-    retired, so nothing else notices their absence. Removing `{n} tracked files` reopens the
-    tree-size figure that was deliberately taken out of every document; removing the two
-    suffix-free forms lets the canonical sentence be reworded away from `across every
-    tracked file`. A reviewer deleted all three and shipped a false figure into the
-    accreditation record with the suite green.
+    `_SHAPES` is parametrised over, so a deleted entry is not tested. The shapes in
+    `UNBACKED_SHAPES` back no declared figure at all: removing `{n} tracked files` reopens
+    the tree-size figure that was deliberately taken out of every document. A reviewer
+    deleted three shapes and shipped a false figure into the accreditation record with the
+    suite green.
 
-    The duplication below is the control, not an oversight. Changing the set is meant to cost a
-    deliberate edit in three places: here, `FROZEN_SHAPES` and `PHRASINGS`. A two-place
-    deletion is red, measured, because `PHRASINGS` catches it independently.
+    `PHRASINGS` catches a deletion semantically, so a two-place edit is red. What this
+    anchor adds is ORDER: the alternation is leftmost-first and the sweep judges the text
+    that matched, so a reorder changes the verdict. The sweep does catch a harmful reorder
+    on its own; this makes it red here rather than four hundred lines away.
     """
     assert _SHAPES == FROZEN_SHAPES
 
@@ -676,13 +681,19 @@ def test_every_phrasing_is_banned_by_the_compiled_scanner() -> None:
     for shape, phrasing in PHRASINGS.items():
         normalised = _normalise(phrasing)
 
-        assert _RENDERINGS.search(normalised), (
+        match = _RENDERINGS.search(normalised)
+
+        assert match is not None, (
             f"{phrasing!r} would not be read back, so a figure in the shape {shape!r} could "
             "be written into a shipped document unnoticed"
         )
-        assert normalised not in allowed, (
-            f"{phrasing!r} carries a number this module MEASURED, so it is an allowed figure "
-            "rather than a banned one and this test proves nothing about that shape"
+        # The MATCHED text, which is what the sweep judges. Comparing the whole phrasing let
+        # a phrasing whose matched substring was an allowed figure pass while the sweep
+        # allowed it: `0 false positives in the tree` is not an allowed string, and
+        # `0 false positives` is.
+        assert match.group(0) not in allowed, (
+            f"{phrasing!r} matches as {match.group(0)!r}, a number this module MEASURED, so "
+            "it is an allowed figure rather than a banned one and this test proves nothing"
         )
 
 
@@ -692,7 +703,7 @@ def test_the_scanner_reads_a_figure_through_every_markup_it_knows(marker: str) -
 
     Every other assertion normalises both sides, so turning `_EMPHASIS` off entirely leaves
     all of them green: a reviewer did exactly that and shipped four false figures into
-    `docs/ACCREDITATION-REVIEW.md` and `CHANGELOG.md` with 1026 tests passing. The shapes
+    `docs/ACCREDITATION-REVIEW.md` and `CHANGELOG.md` with the suite green. The shapes
     carry no markup; these renderings do. So the scanner can read them only while the
     stripper works, and dropping any one marker from it turns this red.
 
@@ -702,6 +713,10 @@ def test_the_scanner_reads_a_figure_through_every_markup_it_knows(marker: str) -
     for shape, phrasing in PHRASINGS.items():
         marked = _emphasised(phrasing, marker)
 
+        # The fixture must actually emphasise. Reducing `_emphasised` to `return phrasing`
+        # left this test asserting what every other test already asserts, and the stripper
+        # was unheld again for one invisible line.
+        assert marker in marked, f"{marker!r} was not applied to {phrasing!r}"
         assert _RENDERINGS.search(_normalise(marked)), (
             f"{marked!r} is invisible to the scanner, so a figure in the shape {shape!r} "
             f"wrapped in {marker!r} would ship unread. The emphasis stripper has been "
@@ -718,3 +733,15 @@ def test_only_this_module_is_skipped_by_the_sweep() -> None:
     skipped = [path for path in _tracked() if _is_self(path)]
 
     assert [path.resolve() for path in skipped] == [SELF]
+
+
+def test_the_marker_corpus_covers_the_stripper() -> None:
+    """The markers exercised must be the characters the stripper removes.
+
+    `EMPHASIS_MARKERS` had no anchor of its own, so cutting it to one entry was green and
+    the other three markups went unexercised. Reading the character class out of the
+    stripper's own pattern ties the two together: narrowing either alone is red.
+    """
+    exercised = {character for marker in EMPHASIS_MARKERS for character in marker}
+
+    assert exercised == set(_STRIPPED_CHARACTERS)
