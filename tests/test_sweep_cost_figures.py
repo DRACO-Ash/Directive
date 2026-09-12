@@ -265,8 +265,10 @@ def _normalise(text: str) -> str:
     compiled. Normalising only one side is not a smaller version of this control, it is a
     hole: widening the stripper to remove backticks while four shapes still contained
     literal backticks made those four unmatchable, and a false figure of that shape shipped
-    green in the accreditation record. That is what `test_every_shape_matches_its_own_rendering`
-    exists to catch, and it is the check to keep whenever this function changes.
+    green in the accreditation record. Measured: compiling the shapes from the raw template
+    instead of the normalised one is red at `test_every_shape_has_a_phrasing_that_exercises_it`,
+    on exactly those four shapes, and in ten other places. That is the check to keep whenever
+    this function changes.
     """
     return " ".join(_EMPHASIS.sub("", text).replace("#", " ").split())
 
@@ -311,12 +313,15 @@ _SHAPES = (
 
 #: The same set, written out again on purpose, and be exact about what this holds, because
 #: a reader who thinks it is a redundant copy will update it reflexively and it will hold
-#: nothing. MEMBERSHIP is held by `PHRASINGS`, which catches a deletion semantically: the
-#: phrasing stops being readable. What `FROZEN_SHAPES` uniquely holds is ORDER, and order is
-#: load-bearing: the alternation is leftmost-first, and the sweep compares the text that
-#: matched against the allowed set, so a reorder changes which alternative wins. The sweep catches a
-#: harmful reorder too; what this uniquely holds, measured, is MEMBERSHIP under a
-#: coordinated deletion from `_SHAPES` and `PHRASINGS` together, which nothing else sees.
+#: nothing.
+#:
+#: Measured, and narrowly: for a shape SUBSUMED BY A LONGER SIBLING, which is
+#: `{n} findings on {n} lines` and `{n} matches on {n} lines`, this anchor is the only test
+#: that sees a coordinated deletion from `_SHAPES` and `PHRASINGS` together. Those two are
+#: substrings of a canonical sentence, so neither the declared-figure direction nor
+#: `UNBACKED_SHAPES` covers them. For the other thirteen shapes another test is red as well,
+#: and the sweep catches a harmful reorder on its own. That narrow case is the whole reason
+#: this stays, and an earlier version of this comment claimed a general one.
 FROZEN_SHAPES = (
     "{n} findings on {n} lines across every tracked file",
     "{n} matches on {n} lines across every tracked file",
@@ -625,9 +630,9 @@ def test_the_shape_set_is_the_frozen_one() -> None:
     deleted three shapes and shipped a false figure into the accreditation record with the
     suite green.
 
-    Deleting a shape from `_SHAPES` alone is red at the phrasing corpus. Deleting it from
-    `_SHAPES` and `PHRASINGS` together is red HERE and nowhere else, measured, which is why
-    this anchor stays.
+    Deleting a shape from `_SHAPES` alone is red at the phrasing corpus. For the two shapes
+    subsumed by a longer sibling, deleting from `_SHAPES` and `PHRASINGS` together is red
+    here and nowhere else, measured across all fifteen; that narrow case is why this stays.
     """
     assert _SHAPES == FROZEN_SHAPES
 
