@@ -238,7 +238,24 @@ def test_an_outcome_outside_the_closed_set_is_rejected(outcome: str) -> None:
         validation.normalise_fields(fixed_entry(outcome=outcome))
 
 
-@pytest.mark.parametrize("state", ["OPEN", "IN_PROGRESS", "PHASE_3", "A", "S" * 32])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "OPEN",
+        "IN_PROGRESS",
+        "PHASE_3",
+        "A",
+        "S" * 32,
+        #: The four the rule ACCEPTS that look like record content, named in the sibling
+        #: test's docstring as measured. Held here so that claim is held rather than
+        #: asserted: `validation.py` says a single upper-case token can be a surname, and
+        #: these are what that sentence means.
+        "HIGGINS",
+        "ASHLEY_HIGGINS",
+        "JANE_DOE_LONDON",
+        "SW1A1AA",
+    ],
+)
 def test_an_enumerated_workflow_state_is_accepted(state: str) -> None:
     """A task status and an incident phase are exactly what AUD-001 wants recorded."""
     fields = validation.normalise_fields(fixed_entry(old_state="OPEN", new_state=state))
@@ -253,6 +270,12 @@ def test_an_enumerated_workflow_state_is_accepted(state: str) -> None:
         ("a postal address", "1 Example Street"),
         ("lower case free text", "reporter was jane"),
         ("a short sentence", "REPORTER CHANGED"),
+        #: Lower case ALONE. Every other lower-case case here also carries a space, so the
+        #: space rule made them red and nothing isolated the case rule: widening `_STATE` to
+        #: accept lower case was green across the whole suite. That is the same defect that
+        #: produced the over-claim one round earlier, and correcting the wording did not
+        #: widen the corpus that caused it.
+        ("a lower-case single token", "closed"),
     ],
 )
 def test_a_state_field_rejects_the_common_shapes_of_record_content(label: str, value: str) -> None:

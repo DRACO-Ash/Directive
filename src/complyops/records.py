@@ -127,9 +127,13 @@ def check_state(value: object, *, register: str) -> str:
     """Validate a workflow state against the register's closed vocabulary.
 
     A closed set, not a character rule. This is the structural control the audit module
-    could not define on its own: a value outside this list cannot reach `old_state` or
-    `new_state`, so record content cannot ride into an immutable log in a state field
-    whatever a caller intends.
+    could not define on its own, and it is bounded: no route in this application reaches
+    `old_state` or `new_state` without passing through here, so a value outside this list
+    cannot ride in by that path. The audit boundary ITSELF still accepts any token
+    satisfying its character rule, so a caller that bypassed this function would not be
+    stopped there. That is the wording `docs/DEPLOYMENT.md` uses, and the stronger form -
+    that record content cannot reach the log whatever a caller intends - is the claim
+    CLAUDE.md forbids by name for this rule.
     """
     states = REGISTERS[register]["states"]
     if value not in states:

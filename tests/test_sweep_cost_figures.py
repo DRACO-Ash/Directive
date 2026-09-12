@@ -1790,7 +1790,7 @@ def _is_written_out(node: ast.expr) -> bool:
     return False
 
 
-def _module_bindings() -> dict[str, ast.expr]:
+def _module_bindings(source: str | None = None) -> dict[str, ast.expr]:
     """Return this module's top-level single-name assignments, by name.
 
     ANNOTATED assignments included. Reading `ast.Assign` alone made `X: T = (...)` invisible
@@ -1799,7 +1799,7 @@ def _module_bindings() -> dict[str, ast.expr]:
     edits with the anchoring test left in place, and the whole suite stayed green while a
     figure nobody measured shipped into this project's own gate record.
     """
-    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    tree = ast.parse(source if source is not None else Path(__file__).read_text(encoding="utf-8"))
     bound: dict[str, ast.expr] = {}
     for node in tree.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -1839,6 +1839,28 @@ def _anchoring_comparisons() -> set[tuple[str, str]]:
         if left.id in bound and right.id in bound:
             found.add((left.id, right.id))
     return found
+
+
+@pytest.mark.parametrize(
+    ("source", "seen"),
+    [
+        pytest.param("X = (1,)", {"X"}, id="a plain assignment is seen"),
+        pytest.param("X: tuple[int, ...] = (1,)", {"X"}, id="an annotated assignment is seen"),
+        pytest.param("X: tuple[int, ...]", set(), id="an annotation with no value binds nothing"),
+        pytest.param("X = Y = (1,)", set(), id="a chained assignment binds no single name"),
+        pytest.param("X, Y = (1,), (2,)", set(), id="a tuple target binds no single name"),
+    ],
+)
+def test_the_source_reader_sees_every_shape_of_binding(source: str, seen: set[str]) -> None:
+    """The reader, fed source directly, because this module has no shape to feed it.
+
+    Its annotated branch was reached by zero inputs: the module parses only its own source
+    and carries no top-level annotated assignment, so reverting the branch in one edit left
+    the whole suite green. That is the identical property that graded `_is_written_out`
+    MAJOR one run earlier, and taking a source argument costs a parameter rather than a
+    register, so it terminates here too.
+    """
+    assert set(_module_bindings(source)) == seen
 
 
 def test_the_anchored_pairs_are_every_pair_this_module_anchors() -> None:
@@ -1979,6 +2001,24 @@ ALIAS_SHAPES = (
     ("('a', 1, None, True)", True),
     ("()", True),
 )
+
+
+def test_the_alias_corpus_is_not_empty() -> None:
+    """An empty corpus is a SKIP, not a red, and the loop does not read skip counts.
+
+    That is what puts this guard on a different footing from the residuals recorded beside
+    it. Every other one needs a coordinated multi-edit; this needed ONE. `ALIAS_SHAPES = ()`
+    left the suite at `1178 passed, 3 skipped` with `LOOP: PASS`, after which the element
+    reader the whole freeze rests on was held by nothing and could be widened back in a
+    second edit. Both gates measured it and both put the line here.
+
+    A bare non-empty assertion holds no register and spawns none, so it terminates the
+    regress rather than extending it, which is the discriminator that matters: not how many
+    layers up a control sits, but whether the guard ADDS a register or asserts on one that
+    already exists. It sits at module scope rather than inside the parametrised test,
+    because an empty corpus means that body never runs.
+    """
+    assert ALIAS_SHAPES
 
 
 @pytest.mark.parametrize(("source", "written_out"), ALIAS_SHAPES)
