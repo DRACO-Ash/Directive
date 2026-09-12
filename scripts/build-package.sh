@@ -473,11 +473,15 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # file, 6 beyond the declared double the shipped rules already report, every one a
     # session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`.
     # That module list is derived from the scan and asserted, positively and against naming
-    # a module the scan does not give. No count is restated anywhere in this block: a
+    # a module the scan does not give. No count is restated anywhere in this paragraph: a
     # decomposed figure needs every part held, and a count written as a word is invisible to
-    # any scanner, so a word restating it is free by construction. The test bans a count
+    # any scanner, so a word restating it is free by construction. Nothing in this PARAGRAPH
+    # restates the count; the comment run around it is not in scope and does carry one. The test bans a count
     # written as a word in this paragraph, in either case, with the ordinals that name a
-    # gate run removed first. Left open at a measured price, not bought.
+    # gate run removed first, and bans any digit here that it did not itself measure. Not
+    # every way English says a number is on that list; the far end of the class is recorded
+    # as accepted residual rather than implied closed. Left open at a measured price, not
+    # bought.
     text = raw.decode("utf-8", errors="replace")
     stripped = raw.replace(b"\x00", b"").decode("utf-8", errors="replace")
     examined += 1
