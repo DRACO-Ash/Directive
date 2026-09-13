@@ -465,47 +465,119 @@ def test_a_register_entry_records_the_socket_address_not_a_header(
         )
 
 
-#: The ONLY attribute of `request` either address reader may touch, and the only function
-#: either may call. A whitelist, because the blacklist this replaced named `headers` and a
-#: header reaches the reader under other names: `request.environ.get("HTTP_X_PEER_ADDRESS")`
-#: is the same header by its WSGI spelling, and it passed the blacklist, passed the
-#: seven-header drive, and passed the whole suite, after which 40 requests from one socket
-#: address wrote 40 durable rows with 40 forged `source_ip` values. A helper-function
-#: indirection evaded it the same way.
 #: The audit-entry field whose value may never be built from anything a caller sends, and
 #: the two shapes a view can write it in: a keyword argument, and a dict value. Both forms
 #: are live, and a pin keyed only on the keyword misses `auth_routes.py`'s dict entirely.
 ADDRESS_KEYWORD = "source_ip"
 
-#: What a `source_ip` value may be made of. A whitelist of CALLS plus a ban on `request`,
-#: rather than a list of admissible expressions, because the shipped forms differ per module
-#: (`_client_ip()`, a literal, `collapsed.address`, and a conditional over two of those) and
-#: enumerating them would have to change every time one does. What must never differ is that
-#: no caller-supplied value reaches the field.
-ADDRESS_VALUE_CALLS = frozenset({"recordable", "_client_ip"})
-REQUEST_OBJECT = "request"
+#: Every NAME and every ATTRIBUTE that may appear in a source address value, anywhere in the
+#: package. A whitelist of what may be there, not a ban on what may not, and the difference
+#: decided four demonstrated attacks.
+#:
+#: The rule before this banned the word `request` inside the value. A gate walked past it
+#: four ways, twice end to end with attacker-chosen addresses in durable signed entries and
+#: the whole loop at `LOOP: PASS`: a one-line local hoist, where the value is a bare name and
+#: mentions nothing; `flask.request` qualified, where `request` is an Attribute and not a
+#: Name; an aliased import, `from flask import request as req`; and a subscript store onto
+#: the entry after the dict literal the pin was reading. A ban has to enumerate the spellings
+#: of the thing it forbids. A whitelist enumerates the four names this application actually
+#: uses, and those do not grow when Flask gains a new alias.
+#:
+#: This is a RESTORATION. The first version of this pin demanded a bare `_client_ip()` and
+#: was loosened to accommodate the refusal path's legitimate values. The gate's judgement on
+#: that trade is recorded and correct: the strict form would have refused the first two
+#: attacks on sight. The loosening is undone and those values are admitted by NAME instead.
+ADDRESS_VALUE_NAMES = frozenset({"_client_ip", "recordable", "source_ip", "collapsed"})
+ADDRESS_VALUE_ATTRIBUTES = frozenset({"address"})
+
+#: Where a source address is assembled outside `views/`, and why each is sound. Declared,
+#: because the derivation now ranges over the WHOLE package: a gate reached a durable entry
+#: through `records.py`, which a `views/`-only derivation could not see.
+ASSEMBLED_OUTSIDE_THE_VIEWS = {
+    "audit/validation.py": "the field's length cap, an integer, not an address",
+    "records.py": "passes through the parameter its pinned callers fill",
+}
+
+
+def _assigned_at_module_and_function_scope(tree: ast.AST) -> dict[str, list[ast.AST]]:
+    """Return every expression bound to a plain name anywhere in this tree.
+
+    A list per name, because a name can be rebound and the pin has to see every value it
+    ever holds, not the last one.
+    """
+    bound: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bound.setdefault(target.id, []).append(node.value)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            bound.setdefault(node.target.id, []).append(node.value)
+    return bound
 
 
 def _source_address_values(tree: ast.AST) -> list[ast.AST]:
-    """Return every expression assigned to `source_ip`, in either form a view writes it."""
+    """Return every expression that can reach `source_ip`, in every form a view writes it.
+
+    FOUR forms, and the first version of this saw two. A gate defeated it twice with the
+    whole suite green, both on the unauthenticated `/auth/callback` path:
+
+    ● A one-line local HOIST. `peer = request.environ.get(...) or collapsed.address` then
+      `source_ip=peer` passes a pin that inspects only the expression at the keyword,
+      because that expression is a bare name and mentions `request` nowhere. So a bare name
+      is resolved back to everything ever assigned to it.
+    ● A SUBSCRIPT assignment. `entry["source_ip"] = request.headers.get(...)` is neither a
+      keyword nor a dict literal, so it was invisible to the collector AND to the derivation
+      that decides which modules are pinned at all, which is the worse half: the module
+      would not have been parametrised.
+
+    The two forms already covered are the keyword argument and the dict literal value.
+    """
     values: list[ast.AST] = []
+    bound = _assigned_at_module_and_function_scope(tree)
+
+    def take(value: ast.AST) -> None:
+        values.append(value)
+        #: A bare name is only as safe as what was put in it. One level of resolution is
+        #: enough for the hoist that was demonstrated; a chain of rebinding would need more,
+        #: and the ban on `request` anywhere in the resolved value is what makes one level
+        #: bite, because the header read has to appear in SOME assignment to reach here.
+        if isinstance(value, ast.Name):
+            values.extend(bound.get(value.id, []))
+
     for node in ast.walk(tree):
         if isinstance(node, ast.keyword) and node.arg == ADDRESS_KEYWORD:
-            values.append(node.value)
+            take(node.value)
         if isinstance(node, ast.Dict):
-            values += [
-                value
-                for key, value in zip(node.keys, node.values, strict=True)
-                if isinstance(key, ast.Constant) and key.value == ADDRESS_KEYWORD
-            ]
+            for key, value in zip(node.keys, node.values, strict=True):
+                if isinstance(key, ast.Constant) and key.value == ADDRESS_KEYWORD:
+                    take(value)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == ADDRESS_KEYWORD
+                ):
+                    take(node.value)
     return values
 
 
+def _view_modules() -> list[str]:
+    """Return every view module, recursively, keyed by its path relative to `views/`.
+
+    `rglob`, because `glob` is not recursive: a view PACKAGE, `views/incidents/routes.py`,
+    sat outside every derivation here. Keyed on the relative path rather than the file name,
+    because two modules can both be called `api.py` once a package exists.
+    """
+    return [str(path.relative_to(SRC / "views")) for path in sorted((SRC / "views").rglob("*.py"))]
+
+
 def _views_writing_a_source_address() -> list[str]:
-    """Return every view module that assigns a source address, in either form."""
+    """Return every module in the PACKAGE that assigns a source address, in any form."""
     return [
-        path.name
-        for path in sorted((SRC / "views").glob("*.py"))
+        str(path.relative_to(SRC))
+        for path in sorted(SRC.rglob("*.py"))
         if _source_address_values(ast.parse(path.read_text(encoding="utf-8")))
     ]
 
@@ -536,25 +608,55 @@ def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: 
     #: skip for the rest. Four honest skips are still four entries that `verify.sh` reads
     #: as passes, in a suite where exactly that has retired a control before. The guard
     #: below is what stops an empty list collecting nothing at all.
-    values = _source_address_values(ast.parse((SRC / "views" / module).read_text("utf-8")))
+    tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
+    bound = _assigned_at_module_and_function_scope(tree)
+    values = _source_address_values(tree)
+    assert values, f"{module} assembles no source address, so this case proves nothing"
+
+    def check(value: ast.AST, via: str) -> None:
+        names = {node.id for node in ast.walk(value) if isinstance(node, ast.Name)}
+        attributes = {node.attr for node in ast.walk(value) if isinstance(node, ast.Attribute)}
+        assert names <= ADDRESS_VALUE_NAMES, (
+            f"{module}: a source address value{via} names "
+            f"{sorted(names - ADDRESS_VALUE_NAMES)}. Only {sorted(ADDRESS_VALUE_NAMES)} may "
+            "appear in one. A whitelist, because a ban on `request` was walked past by a "
+            "local, by `flask.request` qualified, and by an aliased import."
+        )
+        assert attributes <= ADDRESS_VALUE_ATTRIBUTES, (
+            f"{module}: a source address value{via} reads "
+            f"{sorted(attributes - ADDRESS_VALUE_ATTRIBUTES)}, and the only attribute one "
+            f"may read is {sorted(ADDRESS_VALUE_ATTRIBUTES)}."
+        )
 
     for value in values:
-        named = {node.id for node in ast.walk(value) if isinstance(node, ast.Name)}
-        assert REQUEST_OBJECT not in named, (
-            f"views/{module}: a `{ADDRESS_KEYWORD}` value mentions `{REQUEST_OBJECT}`. The "
-            "recorded source address comes from the socket, and a header is not evidence "
-            "by any spelling."
-        )
-        called = {
-            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
-            for node in ast.walk(value)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute | ast.Name)
-        }
-        assert called <= ADDRESS_VALUE_CALLS, (
-            f"views/{module}: a `{ADDRESS_KEYWORD}` value calls "
-            f"{sorted(called - ADDRESS_VALUE_CALLS)}. Only `recordable` and `_client_ip` "
-            "may contribute to it; anything else can reach a request header."
-        )
+        check(value, "")
+        #: One level of resolution, which is what catches the hoist. The whitelist alone
+        #: admits `source_ip = request.headers.get(...)` followed by `source_ip=source_ip`,
+        #: because that name is legitimately on the list: it is the PARAMETER both
+        #: `records.mutate` and `_record_authentication` receive. Resolution is what
+        #: distinguishes a seam a pinned caller fills from a local somebody composed.
+        for node in ast.walk(value):
+            if isinstance(node, ast.Name) and node.id in bound:
+                for assigned in bound[node.id]:
+                    check(assigned, f" assigned to `{node.id}`")
+
+
+def test_no_middleware_rewrites_the_address_the_container_saw(signed_out: FlaskClient) -> None:
+    """The attack no pin over source text can see: a wrapper around the WSGI application.
+
+    A nine-line middleware setting `environ["REMOTE_ADDR"] = environ["HTTP_X_PEER_ADDRESS"]`
+    leaves both `_client_ip` bodies and every call site byte-identical, so every pin above is
+    green by construction, and a gate used one to put three attacker-chosen addresses into
+    durable entries from an unauthenticated caller with the whole loop passing. `_client_ip`
+    reading the socket is worth something only if nothing rewrote what the socket reported.
+    """
+    application = signed_out.application
+
+    assert application.wsgi_app.__self__ is application, (
+        f"`wsgi_app` is {application.wsgi_app!r}, not Flask's own unwrapped application. A "
+        "middleware there rewrites `REMOTE_ADDR` before any view reads it, and no assertion "
+        "about the source of `_client_ip` would notice."
+    )
 
 
 def test_the_source_address_pin_covers_every_view_that_writes_one() -> None:
@@ -564,10 +666,26 @@ def test_the_source_address_pin_covers_every_view_that_writes_one() -> None:
     emptied every view of `source_ip` would retire the pin above in silence. This is the
     assertion that cannot be made vacuous by the same edit, because it names the modules.
     """
+    defining = [
+        module
+        for module in _view_modules()
+        if any(
+            isinstance(node, ast.FunctionDef) and node.name == "_client_ip"
+            for node in ast.walk(ast.parse((SRC / "views" / module).read_text("utf-8")))
+        )
+    ]
+    assert sorted(defining) == ["api.py", "auth_routes.py"], (
+        f"the views defining `_client_ip` are now {defining}. Each is pinned by "
+        "`test_neither_client_address_reader_reaches_past_the_socket`; this assertion "
+        "exists so a module joining or leaving that set is deliberate."
+    )
+
     writing = _views_writing_a_source_address()
-    assert sorted(writing) == ["api.py", "auth_routes.py"], (
-        f"the views writing a source address are now {writing}. Each is pinned by the test "
-        "above; this assertion exists so a module leaving the set is deliberate."
+    expected = sorted({"views/api.py", "views/auth_routes.py", *ASSEMBLED_OUTSIDE_THE_VIEWS})
+    assert sorted(writing) == expected, (
+        f"the modules assembling a source address are now {sorted(writing)}, not {expected}. "
+        "Each is pinned by the test above; this assertion exists so a module joining or "
+        "leaving that set is a deliberate line rather than a silent widening."
     )
 
 
@@ -603,7 +721,20 @@ def test_neither_client_address_reader_reaches_past_the_socket() -> None:
     What it still does not cover is the CALL SITE, where the value can be composed after
     this function returns. That is the sibling below.
     """
-    for module in ("views/auth_routes.py", "views/api.py"):
+    #: Derived, for the reason one screen above: a new blueprint defining its own
+    #: header-reading `_client_ip` passed this pin while the hand-written tuple named two
+    #: modules. The tripwire below names the expected two.
+    defining = [
+        module
+        for module in _view_modules()
+        if any(
+            isinstance(node, ast.FunctionDef) and node.name == "_client_ip"
+            for node in ast.walk(ast.parse((SRC / "views" / module).read_text("utf-8")))
+        )
+    ]
+    assert defining, "no view defines `_client_ip`, so this proves nothing"
+    for relative in defining:
+        module = f"views/{relative}"
         source = (SRC / module).read_text(encoding="utf-8")
         defined = [
             node
