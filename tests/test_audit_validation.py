@@ -117,7 +117,7 @@ def test_the_outcome_set_is_the_one_that_shipped() -> None:
     `FIELD_LIMITS` was pinned against a written-out twin for this reason and the closed set
     beside it was missed.
     """
-    assert validation.OUTCOMES == frozenset({"SUCCESS", "FAILURE"})
+    assert frozenset({"SUCCESS", "FAILURE"}) == validation.OUTCOMES
 
 
 @pytest.mark.parametrize("field", ["actor", "resource", "resource_id"])
