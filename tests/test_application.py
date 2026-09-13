@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sys
@@ -1680,3 +1681,59 @@ def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
             "an export pack's anchor does not match its own entries, so the pack fails its "
             "own verification off the volume"
         )
+
+
+#: What must sit inside `with chain.appends_paused():` in each route that reads the log and
+#: the anchor together. The call NAMES as they appear in the source.
+PAUSED_READS = {
+    "_verify_the_volume": ("read_entries", "_stored_anchor", "anchor"),
+    "export": ("read_entries", "read_anchor"),
+}
+
+
+@pytest.mark.parametrize("route", sorted(PAUSED_READS), ids=sorted(PAUSED_READS))
+def test_every_read_of_the_pair_sits_inside_the_paused_window(route: str) -> None:
+    """The window's EXTENT, which the drive beside this cannot hold.
+
+    The drive catches a window that is absent or badly wrong. It does not catch one that is
+    narrow: moving the in-process head read from inside the window to the line just after
+    it leaves a real race, and the drive went green three runs in three, because the window
+    shrank from the milliseconds `verify_log` spends walking hundreds of entries to the
+    microseconds between two statements. A race that is merely unlikely is still the same
+    false tamper alarm in front of an assessor, so the placement is asserted structurally.
+
+    This is the same lesson as the append lock one commit earlier: a drive proves a lock is
+    taken, and only a structural assertion proves how far it reaches.
+    """
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "complyops" / "views" / "api.py"
+    ).read_text(encoding="utf-8")
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == route
+    )
+    windows = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr == "appends_paused"
+            for item in node.items
+        )
+    ]
+
+    assert len(windows) == 1, f"`{route}` no longer pauses appends exactly once"
+    inside = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        for node in ast.walk(windows[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute | ast.Name)
+    }
+    missing = set(PAUSED_READS[route]) - inside
+    assert not missing, (
+        f"`{route}` reads {sorted(missing)} outside the paused window. Every read of the "
+        "log, the anchor and the in-process head has to be one consistent set, or the "
+        "comparison straddles an append and reports tampering on evidence nobody touched."
+    )

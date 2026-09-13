@@ -38,7 +38,8 @@ import json
 import os
 import stat
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, fields
 from pathlib import Path
 
@@ -265,8 +266,21 @@ class JournalChain:
         with self._append_lock:
             return list(self._entries), self._chain.anchor()
 
-    def volume_snapshot(self) -> tuple[list[AuditEntry], Anchor | None]:
-        """Return the log and the anchor read from the VOLUME as one consistent pair.
+    @contextmanager
+    def appends_paused(self) -> Iterator[None]:
+        """Hold the append lock for the caller, so a pair of reads is one consistent view.
+
+        A context manager rather than a method returning the pair, and the reason is a
+        real defect this shape caused. A `volume_snapshot()` returning
+        `(read_entries(...), read_anchor(...))` loses the entries whenever the anchor read
+        raises, because the tuple never binds: the verify route's anchor handlers report
+        `checked=len(entries)`, and they got `UnboundLocalError` and a 500 instead, on
+        every one of the sixteen anchor-interference paths. Those handlers distinguish
+        interference from a fault and are the read-out an assessor is shown, so breaking
+        them to fix a race would have traded a false alarm for no alarm at all.
+
+        Borrowing the lock leaves every existing exception path exactly as it was and adds
+        only the serialisation.
 
         The append lock is the control here, not a convenience, and closing it on the
         writer side was only half the job. An append writes the line and then the anchor.
@@ -287,12 +301,9 @@ class JournalChain:
         entries fails its own verification later, off the volume, with nothing to compare
         against. The false alarm is durable rather than transient.
 
-        Exceptions propagate rather than being caught here: `JournalError` on an unreadable
-        log and `AnchorTamperError` on an anchor whose STATE says interference are
-        different verdicts, and the caller distinguishes them.
         """
         with self._append_lock:
-            return read_entries(self._data_dir), read_anchor(self._data_dir, self._key)
+            yield
 
 
 def resume(
