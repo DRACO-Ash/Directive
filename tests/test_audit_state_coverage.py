@@ -726,7 +726,14 @@ def _views_writing_a_source_address() -> list[str]:
 #: `rows.append(record)` in `records.py`, which is a list of register rows and not an entry
 #: at all, so the check red on correct source.
 AUDIT_SINK = "append"
-AUDIT_RECEIVERS = ("chain", "_chain")
+
+#: Receivers of `.append` that are NOT the audit boundary, whitelisted so every other
+#: receiver has to satisfy the entry rule. The first version whitelisted the two audit
+#: receivers instead, and a gate bound `journal = chain` and put an attacker-chosen ACTOR
+#: into a durable signed row with the whole suite green. A list of the audit receivers has
+#: to enumerate every alias somebody might use; a list of the non-audit ones is four names
+#: this package actually has, and a new alias lands on the checked side by default.
+NOT_THE_AUDIT_SINK = frozenset({"rows", "entries", "parts", "admitted", "collapsed", "written"})
 
 
 def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST]]:
@@ -737,57 +744,76 @@ def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST]]:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == AUDIT_SINK
-            and node.args
         ):
             continue
         receiver = ast.unparse(node.func.value)
-        if receiver.split(".")[-1] in AUDIT_RECEIVERS:
-            found.append((receiver, node.args[0]))
+        if receiver.split(".")[-1].lstrip("_") in NOT_THE_AUDIT_SINK:
+            continue
+        #: FAIL CLOSED on a call with no positional argument. The first version required
+        #: `node.args` to be non-empty and skipped silently otherwise, so
+        #: `chain.append(entry_fields={...})` was invisible to the rule entirely.
+        found.append((receiver, node.args[0] if node.args else None))
     return found
 
 
-def _parameters_of(tree: ast.AST, node: ast.AST) -> set[str]:
-    """Return every parameter name of every function in this module.
-
-    Module-wide rather than scoped to the enclosing function, because `ast` carries no
-    parent links and the precision is not needed: a name that is a parameter ANYWHERE in a
-    module and is passed to the audit sink is a pass-through in the only shape this package
-    has, and `test_the_seam_assertion_covers_every_module_that_reaches_it` pins which three
-    modules reach the sink at all.
-    """
-    return {
-        argument.arg
-        for function in ast.walk(tree)
-        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
-        for argument in [
-            *function.args.args,
-            *function.args.posonlyargs,
-            *function.args.kwonlyargs,
-        ]
+#: The pass-through seams: a module and the PARAMETER name it forwards to the audit
+#: boundary without composing it. Declared per module and per name, never inferred.
+#:
+#: The first version inferred "is a parameter anywhere in this module", and the hole was
+#: live rather than hypothetical: `entry_fields` is already a parameter of the `AppendsAudit`
+#: protocol in `records.py`, so a gate hoisted the entry to a local, named it `entry_fields`,
+#: mutated it afterwards, and the test went from red to green on the variable NAME alone
+#: with no other change.
+PASS_THROUGH_SEAMS = MappingProxyType(
+    {
+        #: `JournalChain.append` forwards its caller's literal. Both callers compose one and
+        #: both are pinned by this same test, so verifying here would verify the wrong
+        #: expression.
+        "audit/journal.py": ("entry_fields",),
     }
+)
 
 
-def _mutated_after_binding(tree: ast.AST, name: str) -> list[ast.AST]:
-    """Return every post-construction write to `name`, by subscript or by `update`."""
-    written: list[ast.AST] = []
+def _mutated_after_binding(tree: ast.AST, name: str) -> list[str]:
+    """Return every way `name` is written to after it is first bound.
+
+    ANY second store, not a list of named forms. The first version knew subscript assignment
+    and `.update`, and a gate walked through it with `entry |= {...}`, which is an
+    `AugAssign` and neither. Enumerating mutation forms is the same mistake as enumerating
+    header names, one layer along, so the rule is now "bound once, never written again".
+    """
+    written: list[str] = []
     for node in ast.walk(tree):
+        #: An `AugAssign` target is the NAME itself, not a subscript of it, so
+        #: `_stores_into` returned False and `staged |= {...}` stayed invisible after the
+        #: rule was written to catch exactly that. Checked directly here.
+        if isinstance(node, ast.AugAssign) and (
+            (isinstance(node.target, ast.Name) and node.target.id == name)
+            or _stores_into(node.target, name)
+        ):
+            written.append(f"`{name} {type(node.op).__name__}=` at line {node.lineno}")
         if isinstance(node, ast.Assign):
             written += [
-                node.value
+                f"a store into `{name}` at line {node.lineno}"
                 for target in node.targets
-                if isinstance(target, ast.Subscript)
-                and isinstance(target.value, ast.Name)
-                and target.value.id == name
+                if _stores_into(target, name)
             ]
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "update"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == name
+            and node.func.attr not in ("get", "items", "keys", "values", "copy")
         ):
-            written += list(node.args)
+            written.append(f"`{name}.{node.func.attr}()` at line {node.lineno}")
     return written
+
+
+def _stores_into(target: ast.AST, name: str) -> bool:
+    """Report whether this assignment target writes into `name`, by subscript or attribute."""
+    if isinstance(target, ast.Subscript | ast.Attribute):
+        return isinstance(target.value, ast.Name) and target.value.id == name
+    return False
 
 
 def _modules_reaching_the_audit_boundary() -> list[str]:
@@ -842,6 +868,11 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
     assert arguments, f"{module} reaches the audit boundary nowhere, so this proves nothing"
 
     for receiver, argument in arguments:
+        assert argument is not None, (
+            f"{module}: `{receiver}.{AUDIT_SINK}` is called with no positional argument, so "
+            "the entry arrives as a keyword and nothing here inspects it. It cannot be "
+            "verified, so it fails closed."
+        )
         literal = argument
         if isinstance(argument, ast.Name):
             #: A PARAMETER is a pass-through, not an entry this module builds. `JournalChain
@@ -849,7 +880,7 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
             #: this same test, so verifying here would be verifying the wrong expression.
             #: The distinction is the one `source_ip` already turns on: a parameter is a
             #: seam a pinned caller fills, a local is something this module composed.
-            if argument.id in _parameters_of(tree, argument):
+            if argument.id in PASS_THROUGH_SEAMS.get(module, ()):
                 continue
             assignments = bound.get(argument.id, [])
             assert len(assignments) == 1, (
@@ -860,9 +891,8 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
             literal = assignments[0]
             after = _mutated_after_binding(tree, argument.id)
             assert not after, (
-                f"{module}: `{argument.id}` is written to after it is built, by subscript "
-                "or by `update`, before it reaches the boundary. A value added there is "
-                "invisible to every check on the literal."
+                f"{module}: `{argument.id}` is written to after it is built: {after}. A "
+                "value added there is invisible to every check on the literal."
             )
 
         assert isinstance(literal, ast.Dict), (
@@ -1365,22 +1395,31 @@ DYNAMIC_IMPORT_NAMES = frozenset({"__import__", "eval", "exec", "globals", "vars
 DECLARED_INTRA_PACKAGE_IMPORTS = {
     #: The blueprint objects, not a request. `views/__init__.py` assembles them and holds
     #: nothing itself.
-    "views/__init__.py": (
-        "views/health.py",
-        "views/api.py",
-        "views/auth_routes.py",
-        "views/console.py",
-    ),
+    #: One entry, not four. The first version pre-authorised `views/api.py`,
+    #: `views/auth_routes.py` and `views/console.py`, none of which this module imports, so
+    #: a later `from .api import api_bp` would have landed silently inside a control added
+    #: in the same commit. An allowance wider than the code is a hole with a comment on it.
+    "views/__init__.py": ("views/health.py",),
 }
 
 
-def _intra_package_targets(node: ast.ImportFrom, module: str) -> list[str]:
+def _intra_package_targets(node: ast.ImportFrom | ast.Import, module: str) -> list[str]:
     """Return the package modules this import names, relative or absolute.
 
     `node.level` carries the leading dots, so comparing `node.module` against absolute names
     left every relative import unexamined: `from .. import auth` names no `complyops` at
     all, and a gate used it to bind the live request proxy in a pinned module.
     """
+    if isinstance(node, ast.Import):
+        #: `import complyops.auth` names the module in the alias itself.
+        found: list[str] = []
+        for alias in node.names:
+            head, _, rest = alias.name.partition(".")
+            if head != "complyops" or not rest:
+                continue
+            stem = rest.replace(".", "/")
+            found += [f"{stem}.py", f"{stem}/__init__.py"]
+        return [name for name in found if (SRC / name).exists()]
     if node.level:
         parts = module.split("/")[:-1]
         for _ in range(node.level - 1):
@@ -1402,9 +1441,41 @@ def _intra_package_targets(node: ast.ImportFrom, module: str) -> list[str]:
     return [name for name in candidates if (SRC / name).exists()]
 
 
+#: The NAMED routes to the module table and to a live frame. Kept, and no longer relied on
+#: alone: the argument that this set is closed was checked and is false. `builtins` is not a
+#: module attribute at all, while `__builtins__` IS one, is a dict, and hands out
+#: `__import__` under a string key so `DYNAMIC_IMPORT_NAMES` never sees it. A gate drove
+#: that to a durable forged entry, and a second reached the live request with NO import by
+#: raising inside a `try` and walking `__traceback__.tb_frame.f_back.f_globals`. The frame
+#: attributes are added here because that set IS closed in the way the module-table set was
+#: claimed to be. "This particular set is closed" is the argument this build has now been
+#: wrong about three times, which is why the shape rule below carries the weight.
 MODULE_REGISTRY_ATTRIBUTES = frozenset(
-    {"sys", "_sys", "modules", "import_module", "__globals__", "__dict__", "builtins"}
+    {
+        "sys",
+        "_sys",
+        "modules",
+        "import_module",
+        "__globals__",
+        "__dict__",
+        "__builtins__",
+        "__traceback__",
+        "tb_frame",
+        "f_back",
+        "f_globals",
+        "f_locals",
+        "gi_frame",
+        "cr_frame",
+        "__code__",
+    }
 )
+
+#: The dunder attributes a pinned module may read, which is the near-closed rule that does
+#: not depend on enumerating routes. Measured across every pinned module: the whole
+#: legitimate usage is two names, `__name__` in `audit/journal.py` and `audit/validation.py`
+#: and `__setattr__` in `audit/anchor.py`. Refusing the SHAPE covers `__builtins__`,
+#: `__loader__`, `__spec__`, `__class__`, `__subclasses__` and `__code__` in one rule.
+PERMITTED_DUNDER_READS = frozenset({"__name__", "__setattr__"})
 
 
 def _modules_without_a_request_context() -> list[str]:
@@ -1462,7 +1533,11 @@ def test_a_module_with_no_request_context_cannot_reach_one(module: str) -> None:
         {
             target
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
+            #: BOTH statement kinds. The first version resolved `ast.ImportFrom` only, so
+            #: `import complyops.auth` passed: its head is `complyops`, which the whitelist
+            #: admits, and `auth.request` is then the live proxy. Both gates drove it to a
+            #: durable entry. Two spellings of three were closed; this is the third.
+            if isinstance(node, ast.ImportFrom | ast.Import)
             for target in _intra_package_targets(node, module)
             if target in HOLDS_A_REQUEST_CONTEXT
         }
@@ -1497,12 +1572,54 @@ def test_a_module_with_no_request_context_cannot_reach_one(module: str) -> None:
         'names re-export `sys`, so `os.sys.modules.get("flask")` needs no import at all.'
     )
 
+    #: And every OTHER dunder, which is the half a named list cannot close. `__builtins__`
+    #: hands out `__import__` by string key, `__loader__` and `__spec__.loader` import
+    #: modules directly, and `().__class__.__base__.__subclasses__()` reaches both without
+    #: naming anything at all. Refusing the shape rather than the names covers all of them.
+    dunders = sorted(
+        {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr.startswith("__")
+            and node.attr not in PERMITTED_DUNDER_READS
+        }
+    )
+    assert not dunders, (
+        f"{module} reads {dunders}. A pinned module may read only "
+        f"{sorted(PERMITTED_DUNDER_READS)}, because a dunder reaches the import machinery "
+        "and the object graph without naming a module."
+    )
+
     dynamic = sorted(loaded & DYNAMIC_IMPORT_NAMES)
     assert not dynamic, (
         f"{module} loads {dynamic}, which reaches a module the import statements do not "
         'name. A gate used `sys.modules.get("flask")` to read the live request with no '
         "flask import and no `request` name anywhere."
     )
+
+
+def test_every_declared_intra_package_import_is_one_the_module_makes() -> None:
+    """An allowance wider than the code is permission nobody asked for.
+
+    Every comparable allowance in this file carries a tripwire and this one did not, which
+    is how it came to grant four exemptions where the source needs one: three modules were
+    pre-authorised that `views/__init__.py` does not import, so a later `from .api import
+    api_bp` would have landed silently inside a control added in the same commit.
+    """
+    for module, declared in DECLARED_INTRA_PACKAGE_IMPORTS.items():
+        tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
+        actual = {
+            target
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom | ast.Import)
+            for target in _intra_package_targets(node, module)
+        }
+        assert set(declared) <= actual, (
+            f"{module} declares {sorted(set(declared) - actual)} as an allowed intra-package "
+            "import and does not make it. The allowance has to match the code, or it "
+            "pre-authorises an import somebody adds later."
+        )
 
 
 def test_the_request_context_allowance_is_the_one_that_shipped() -> None:
@@ -1599,8 +1716,15 @@ def test_the_collapsed_row_records_the_same_address_as_the_rows_it_collapses(
     Two rows on the refusal path carry a source address and they reach it by different
     routes. `LOGIN_FAILED` takes it straight from `_client_ip`. `LOGIN_FAILED_REPEATED`
     takes it from `refusals.note`, which receives it as an argument and is the module every
-    source pin misses by construction. Both describe the SAME request, so they must agree,
-    and nothing that alters the address inside the refusal path can keep them agreeing.
+    source pin misses by construction. Both describe the SAME request, so they must agree.
+
+    Be exact about which clause does which work, because the first version of this sentence
+    said "nothing that alters the address inside the refusal path can keep them agreeing"
+    and a gate falsified it: a forge placed in `recordable`, which BOTH rows traverse, moved
+    them identically and the divergence comparison stayed silent. The DIVERGENCE clause
+    holds for a forge inside `refusals.note`, downstream of the fork, which is where the
+    source pins miss. The `== {socket_address}` clause is what covers anything upstream of
+    it, and it deserves the credit for the shared-path case.
 
     This is what the randomised drive above does NOT give, and saying so is the point of
     writing both. That drive compares a run with no caller input against one with random
