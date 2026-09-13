@@ -932,6 +932,15 @@ def test_every_admitted_name_is_reached_by_some_value() -> None:
 #: in this module missed because they all used a public or loopback socket.
 #:
 #: A name list generalises over mechanism and not over channel. The matrix does the reverse.
+#: Names no pin and no other drive mentions, sent alongside `FORWARDING_HEADERS` so both
+#: header channels carry every name the suite knows about.
+UNENUMERATED_HEADER_NAMES = (
+    "X-Peer-Address",
+    "X-Custom-Origin",
+    "X-Originating-Address",
+    "X-Client-Address",
+)
+
 FORGERY_CHANNELS = (
     "an unenumerated header",
     "a header the client already sends",
@@ -960,13 +969,26 @@ def _drive_every_channel(client: FlaskClient, channel: str, socket_address: str)
     on the volume, rather than the drive quietly pretending the write succeeded.
     """
     headers = {"X-CSRF-Token": client.get("/").headers["X-CSRF-Token"]}
-    if channel == "an unenumerated header":
-        headers["X-Peer-Address"] = FORGED
-    if channel == "a header the client already sends":
-        headers["X-Forwarded-For"] = FORGED
+    #: EVERY name the suite knows, in both header channels, not one apiece. The first
+    #: version sent `X-Peer-Address` and `X-Forwarded-For` alone, so a forge keyed on any
+    #: third name was inert on every driven request and the whole matrix passed it: a gate
+    #: read `X-Real-IP` inside `views/refusals.py` and put `ash.higgins.laptop` into the
+    #: `source_ip` of a durable entry at `LOOP: PASS`. The channel enumeration was sound
+    #: and the NAME enumeration inside it was the same defect one level down.
+    if channel in ("an unenumerated header", "a header the client already sends"):
+        for name in (*FORWARDING_HEADERS, *UNENUMERATED_HEADER_NAMES):
+            headers[name] = FORGED
     if channel == "a cookie":
         client.set_cookie("src", FORGED)
-    query = f"&src={FORGED}&source_ip={FORGED}&remote_addr={FORGED}"
+    #: Only when the query channel is the one under test. It was appended to EVERY request
+    #: in every case, so all twelve cases drove the query channel and a query forge reported
+    #: twelve failures naming twelve different carriers, eleven of them wrong. A drive that
+    #: mis-attributes its own failure sends the next reader to the wrong place.
+    query = (
+        f"&src={FORGED}&source_ip={FORGED}&remote_addr={FORGED}"
+        if channel == "a query parameter"
+        else ""
+    )
     base = {"REMOTE_ADDR": socket_address}
 
     #: Enough refusals to bank a suppressed count, then the window aged so the collapsed
@@ -1059,6 +1081,52 @@ def test_no_channel_at_all_reaches_a_recorded_address_on_either_path(
     )
 
 
+#: Modules that must never see a request at all, and why each is sound without one. A
+#: structural complement to the channel matrix, and the reason it is worth more than another
+#: header name: a drive can only send names somebody thought of, and this needs none.
+NO_REQUEST_CONTEXT = {
+    "views/refusals.py": (
+        "a pure counting module. Its address arrives as an argument from a caller that is "
+        "pinned, so reading a request there is how a forged value enters a row no source "
+        "pin covers: it defines no `_client_ip` and writes no `source_ip`, so neither "
+        "structural pin inspects it. A gate read `X-Real-IP` there and forged a durable "
+        "`LOGIN_FAILED_REPEATED` entry with the whole loop green."
+    ),
+}
+
+
+@pytest.mark.parametrize("module", sorted(NO_REQUEST_CONTEXT))
+def test_a_counting_module_never_reaches_for_the_request(module: str) -> None:
+    """No Flask import, no request object, no header by any name anybody thinks of.
+
+    The channel matrix drives names. This asserts the module cannot read one, which is the
+    complement that does not grow a list every time a gate thinks of another spelling.
+    """
+    tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
+    imported = sorted(
+        {
+            node.module.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        | {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+    )
+
+    assert "flask" not in imported, (
+        f"{module} imports flask, and it is {NO_REQUEST_CONTEXT[module]} Its imports are "
+        f"{imported}."
+    )
+    named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert "request" not in named, (
+        f"{module} names `request`, and it is {NO_REQUEST_CONTEXT[module]}"
+    )
+
+
 def test_the_address_a_view_reads_is_the_one_the_socket_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1108,6 +1176,16 @@ def _hook_registries(bare: flask.Flask) -> list[str]:
     return sorted(
         name
         for name in vars(bare)
+        #: A DECLARED exclusion, which the first version left unstated. Selecting on
+        #: `isinstance(..., dict)` alone was tried and is far too wide: `blueprints`,
+        #: `config` and `extensions` are all dicts a real application legitimately fills,
+        #: so the comparison would red on every correct build. The suffix set is therefore
+        #: the filter, with `_processors` added because `template_context_processors` fell
+        #: out of the original four for ending in that rather than `_preprocessors`. The
+        #: residual is stated rather than hidden: a registry Flask adds under a suffix
+        #: outside this set leaves the comparison in silence, and
+        #: `test_the_address_a_view_reads_is_the_one_the_socket_reported` is the backstop
+        #: for that, since it asserts the outcome and needs no registry name at all.
         if name.endswith(("_funcs", "_preprocessors", "_functions", "_handlers"))
         and isinstance(getattr(bare, name), dict)
         #: Only what runs BEFORE the view. `after_request_funcs` legitimately carries the
@@ -1158,6 +1236,18 @@ def test_nothing_between_the_socket_and_the_view_is_wired_to_rewrite_the_address
             f"{label}: the application is {type(application)!r}. A subclass can override "
             "`preprocess_request` or `request_context` and never touch a named hook."
         )
+        #: The class itself, not only its identity. Assigning
+        #: `Request.remote_addr = property(...)` at package scope leaves `type(application)`
+        #: and `request_class` both unchanged, installs no hook, defines no `_client_ip` and
+        #: assembles no `source_ip`, so it walked past every instrument in this module and
+        #: put an unauthenticated caller's arbitrary string into three durable signed
+        #: entries with format, lint, strict types, bandit and all 1304 tests clean. One
+        #: assertion, no header name and no channel: the attribute must not be shadowed.
+        assert "remote_addr" not in vars(application.request_class), (
+            f"{label}: `remote_addr` is shadowed on {application.request_class!r} itself. A "
+            "class-level property rewrites the address for every request while the class "
+            "identity, the hook registries and both `_client_ip` bodies stay untouched."
+        )
         assert application.request_class is bare.request_class, (
             f"{label}: `request_class` is {application.request_class!r}. A subclass sets "
             "`remote_addr` in its own `__init__`, before any view reads it."
@@ -1168,6 +1258,14 @@ def test_nothing_between_the_socket_and_the_view_is_wired_to_rewrite_the_address
                 f"bare Flask's {getattr(bare, registry)!r}. Anything registered there runs "
                 "before the view and can assign `request.remote_addr` outright."
             )
+        #: The routing converters, which run BEFORE every hook: a `UnicodeConverter`
+        #: subclass installed before `register_blueprint` executes during routing and can
+        #: assign `remote_addr` ahead of anything in the registries above. `url_map` is in
+        #: `vars()` and is not a dict, so the comparison below never reached it.
+        assert application.url_map.converters == bare.url_map.converters, (
+            f"{label}: the routing converters differ from a bare Flask's. A converter runs "
+            "during routing, before every hook, and can rewrite the address there."
+        )
         #: `list`, because `receivers_for` returns a GENERATOR and a generator is always
         #: truthy: the assertion could never have passed, which is its own kind of unheld.
         connected = list(flask.request_started.receivers_for(application))
