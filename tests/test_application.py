@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,8 @@ from complyops import (
     store,
 )
 from complyops.audit import AuditFieldError, normalise_fields
-from complyops.audit.journal import JournalError
+from complyops.audit.journal import JournalError, read_entries
+from complyops.views import api as api_module
 from complyops.views.api import DEFAULT_AUDIT_PAGE, MAXIMUM_AUDIT_PAGE
 from conftest import fixed_entry
 
@@ -1630,7 +1632,7 @@ def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
     straddles an append, and `verify_log` returns that as `tampered` with "entries were
     added or removed": the AUD-001 tamper-evidence control raising a false alarm on
     evidence nobody touched, which is exactly the inversion the writer-side lock exists to
-    stop. Measured before `volume_snapshot`: 58 of 100 verifies and 28 of 40 export packs.
+    stop. Measured before `appends_paused` existed: 58 of 100 verifies, 28 of 40 packs.
 
     The export half is the one that lasts. CLAUDE.md makes the export a security control
     rather than housekeeping, because between exports the volume holds the only copy of the
@@ -1649,6 +1651,11 @@ def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
         try:
             while not appending.is_set():
                 chain.append(fixed_entry(resource_id="SNAP"))
+                #: Bounded, so the COST is deterministic as well as the outcome. Unbounded
+                #: it ran 0.94s to 4.14s on one machine, because each verify walks a log
+                #: the appender is still growing. Sensitivity is unaffected: the defect
+                #: shows on a single core in 0.4s.
+                time.sleep(0.001)
         except BaseException as error:
             failures.append(error)
 
@@ -1675,12 +1682,34 @@ def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
 
     #: And every pack is internally consistent, which is the durable half: a pack whose
     #: anchor runs one entry behind its own entries verifies as tampered for ever.
-    for pack in packs:
+    for index, pack in enumerate(packs):
         assert pack["auditAnchor"] is not None, "an export pack carried no anchor"
-        assert pack["auditAnchor"]["length"] == len(pack["auditEntries"]), (
-            "an export pack's anchor does not match its own entries, so the pack fails its "
-            "own verification off the volume"
-        )
+        if pack["auditAnchor"]["length"] != len(pack["auditEntries"]):
+            #: A POST-MORTEM rather than a bare number, because a security gate saw this
+            #: assertion go red once in eight full-suite runs and could not reproduce it in
+            #: seven further runs, 2193 direct paired reads, 140 packs, or a probe that
+            #: widened the append's anchor-write gap by fifty milliseconds. The direction of
+            #: the skew, log ahead of anchor, is the signature of a read straddling an
+            #: append's critical section, so it is either an environment artefact or a hole
+            #: nobody has named, and the difference decides whether this control works.
+            #: Failing closed on that uncertainty: if it recurs, the next reader gets the
+            #: volume's state instead of `assert 240 == 241`.
+            with chain.appends_paused():
+                on_disk = read_entries(str(signed_in.application.config["COMPLYOPS_DATA_DIR"]))
+                live = len(chain.entries)
+                head = chain.anchor()
+            pytest.fail(
+                f"pack {index} of {len(packs)}: anchor records "
+                f"{pack['auditAnchor']['length']} against {len(pack['auditEntries'])} of "
+                f"its own entries.\n"
+                f"  pack anchor head:   {pack['auditAnchor']['head'][:16]}\n"
+                f"  on disk now:        {len(on_disk)} entries\n"
+                f"  in process now:     {live} entries, head {head.head[:16]}, "
+                f"anchor length {head.length}\n"
+                f"  chain wedged:       {chain.wedged!r}\n"
+                f"  chain id:           {id(chain)}\n"
+                f"  appender failures:  {failures}"
+            )
 
 
 #: What must sit inside `with chain.appends_paused():` in each route that reads the log and
@@ -1689,6 +1718,118 @@ PAUSED_READS = {
     "_verify_the_volume": ("read_entries", "_stored_anchor", "anchor"),
     "export": ("read_entries", "read_anchor"),
 }
+
+
+#: Nothing that APPENDS may be called inside a paused window. The lock is not reentrant,
+#: so an append there deadlocks the worker permanently, against the hard rule that nothing
+#: may block a request indefinitely. No path does it today and a docstring warning is not
+#: a control.
+#: `appends_paused` is deliberately absent: the window's own opener is one of the `With`
+#: items, so forbidding it means walking the BODY rather than the node, which is what the
+#: helper below does. A NESTED window would still deadlock and is caught, because the
+#: nested opener does appear in the body.
+FORBIDDEN_INSIDE = frozenset({"append", "mutate", "snapshot", "appends_paused"})
+
+#: Functions that read the pair without a window of their own, and why each is sound.
+#: Declared rather than silently excluded, so a third one is a deliberate line here.
+READS_WITHOUT_A_WINDOW = {
+    #: A helper, called only from inside `_verify_the_volume`'s window. Its own reads are
+    #: therefore already serialised, and giving it a window would deadlock: the lock is
+    #: not reentrant. The test below asserts it is called nowhere else.
+    "_stored_anchor": "called only inside `_verify_the_volume`'s window",
+    #: Reads through `JournalChain.snapshot`, which takes the lock ITSELF rather than
+    #: borrowing it. No `with` block to pin, and the pair is held on the wire instead by
+    #: `test_the_audit_read_out_takes_its_page_and_anchor_as_one_pair`.
+    "audit_log": "reads through `snapshot`, which takes the lock itself",
+}
+
+
+def _paused_windows(function: ast.FunctionDef) -> list[ast.With]:
+    """Return every `with chain.appends_paused():` block in one function."""
+    return [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr == "appends_paused"
+            for item in node.items
+        )
+    ]
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    """Return every function name called anywhere under this node."""
+    return {
+        call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute | ast.Name)
+    }
+
+
+def _api_source() -> str:
+    return (
+        Path(__file__).resolve().parents[1] / "src" / "complyops" / "views" / "api.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_the_paused_read_list_names_every_function_that_reads_the_pair() -> None:
+    """The list is derived, not remembered, so a fifth reader cannot be unheld by default.
+
+    `PAUSED_READS` was a hand-maintained literal and `audit_log` was already the case in
+    point: it read a pair and was not in it, so a control added in the same commit was
+    held by nothing. A route added next month would inherit exactly that.
+    """
+    readers = {
+        node.name
+        for node in ast.walk(ast.parse(_api_source()))
+        if isinstance(node, ast.FunctionDef)
+        and _called_names(node) & {"read_entries", "read_anchor", "snapshot"}
+    }
+
+    declared = set(PAUSED_READS) | set(READS_WITHOUT_A_WINDOW)
+    assert readers == declared, (
+        f"these functions read the log, the anchor or a snapshot and are declared nowhere: "
+        f"{sorted(readers - declared)}; and these are declared but no longer read: "
+        f"{sorted(declared - readers)}. Either pin the new one in `PAUSED_READS` or say in "
+        "`READS_WITHOUT_A_WINDOW` why it needs no window of its own."
+    )
+
+    #: And the helper's premise. `_stored_anchor` is sound only because it is called from
+    #: inside a window; a second caller outside one would read the anchor unserialised.
+    calls = [
+        node.name
+        for node in ast.walk(ast.parse(_api_source()))
+        if isinstance(node, ast.FunctionDef) and "_stored_anchor" in _called_names(node)
+    ]
+    assert calls == ["_verify_the_volume"], (
+        f"`_stored_anchor` is called from {calls}, and it reads the anchor with no window "
+        "of its own. It is serialised only while its single caller holds one."
+    )
+
+
+@pytest.mark.parametrize("route", sorted(PAUSED_READS), ids=sorted(PAUSED_READS))
+def test_no_paused_window_calls_anything_that_appends(route: str) -> None:
+    """The negative half. The lock is lent, and it is not reentrant.
+
+    An append inside a window blocks that thread for the life of the process and takes a
+    worker with it. The positive pin says what must be inside; without this, nothing says
+    what must not be.
+    """
+    function = next(
+        node
+        for node in ast.walk(ast.parse(_api_source()))
+        if isinstance(node, ast.FunctionDef) and node.name == route
+    )
+    for window in _paused_windows(function):
+        #: The BODY, not the node: the window's own `appends_paused()` is a `With` item.
+        body = ast.Module(body=window.body, type_ignores=[])
+        forbidden = _called_names(body) & FORBIDDEN_INSIDE
+        assert not forbidden, (
+            f"`{route}` calls {sorted(forbidden)} inside a paused window. The append lock "
+            "is not reentrant, so that deadlocks the worker permanently."
+        )
 
 
 @pytest.mark.parametrize("route", sorted(PAUSED_READS), ids=sorted(PAUSED_READS))
@@ -1713,27 +1854,166 @@ def test_every_read_of_the_pair_sits_inside_the_paused_window(route: str) -> Non
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.FunctionDef) and node.name == route
     )
-    windows = [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.With)
-        and any(
-            isinstance(item.context_expr, ast.Call)
-            and isinstance(item.context_expr.func, ast.Attribute)
-            and item.context_expr.func.attr == "appends_paused"
-            for item in node.items
-        )
-    ]
+    windows = _paused_windows(function)
 
     assert len(windows) == 1, f"`{route}` no longer pauses appends exactly once"
-    inside = {
-        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
-        for node in ast.walk(windows[0])
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute | ast.Name)
-    }
+    inside = _called_names(windows[0])
     missing = set(PAUSED_READS[route]) - inside
     assert not missing, (
         f"`{route}` reads {sorted(missing)} outside the paused window. Every read of the "
         "log, the anchor and the in-process head has to be one consistent set, or the "
         "comparison straddles an append and reports tampering on evidence nobody touched."
+    )
+    #: And ABSENCE outside it, which the name promises and the first version did not
+    #: assert: a duplicate read left behind outside the window passed a test called
+    #: "sits inside the paused window". Counted rather than set-subtracted, because the
+    #: same name appearing twice is exactly the case being caught.
+    everywhere = [
+        call
+        for call in ast.walk(function)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute | ast.Name)
+        and (call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id)
+        in PAUSED_READS[route]
+    ]
+    within = [
+        call
+        for call in ast.walk(windows[0])
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute | ast.Name)
+        and (call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id)
+        in PAUSED_READS[route]
+    ]
+    assert len(everywhere) == len(within), (
+        f"`{route}` reads the pair {len(everywhere) - len(within)} more times outside the "
+        "paused window than inside it. A second read outside makes the window decorative."
+    )
+
+
+#: How long the register read is made to take, standing in for three files off a persistent
+#: volume rather than a tmpfs. The orphan window is the gap between the register read and
+#: the entry read, so a delay is what makes a machine-speed race measurable at all: 0 of 60
+#: packs without it, 20 of 20 with it.
+SLOW_VOLUME_SECONDS = 0.02
+
+
+def test_an_export_pack_never_holds_a_register_row_with_no_audit_entry(
+    signed_in: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ORDER of the export's two reads, which is a control and not a convenience.
+
+    `records.mutate` appends the audit entry and then commits the register, so entry time
+    always precedes commit time. Reading the registers BEFORE the entries therefore makes
+    an orphan row impossible by construction; reading them after makes it merely unlikely.
+    A commit in this build reversed that order while closing a different race, and the
+    reversal measured 0 of 60 packs at machine speed and 20 of 20 once the register read
+    took 20 milliseconds.
+
+    An orphan row is worse than a mismatched anchor. It is the AUD-001 claim that no path
+    reaches a stored record without the log, contradicted by the evidence file itself,
+    permanently, off the volume, with nothing left to compare against.
+    """
+    headers = token_for(signed_in)
+    real_iter = store.iter_registers
+
+    def slow_iter(directory: str) -> list[tuple[str, list[dict[str, Any]]]]:
+        #: Stall BEFORE reading, and the direction matters: the first version of this shim
+        #: stalled afterwards and the test was green under the very mutation it was written
+        #: to catch. The orphan window is between the ENTRY read and the REGISTER read, so
+        #: under the bad order a mutation has to land while this is stalling, and then be
+        #: seen by the read that follows. Stalling after the read widens nothing.
+        time.sleep(SLOW_VOLUME_SECONDS)
+        return list(real_iter(directory))
+
+    monkeypatch.setattr(store, "iter_registers", slow_iter)
+    monkeypatch.setattr(api_module.store, "iter_registers", slow_iter)
+
+    mutating = threading.Event()
+    failures: list[BaseException] = []
+
+    def mutate_forever() -> None:
+        try:
+            while not mutating.is_set():
+                signed_in.post(
+                    "/api/registers/tasks", json={"title": "Access review"}, headers=headers
+                )
+        except BaseException as error:
+            failures.append(error)
+
+    mutator = threading.Thread(target=mutate_forever, daemon=True)
+    mutator.start()
+    try:
+        packs = [signed_in.get("/api/export", headers=headers).get_json() for _ in range(20)]
+    finally:
+        mutating.set()
+        mutator.join(timeout=30)
+        assert not mutator.is_alive(), "the mutating thread did not finish"
+
+    assert not failures, f"the mutator raised: {failures}"
+
+    orphans = []
+    for pack in packs:
+        evidenced = {entry["resource_id"] for entry in pack["auditEntries"]}
+        for register, rows in pack["registers"].items():
+            orphans += [(register, row["id"]) for row in rows if row["id"] not in evidenced]
+
+    assert not orphans, (
+        f"{len(orphans)} register rows in these packs have no audit entry: {orphans[:5]}. "
+        "The registers must be read BEFORE the entries, because a mutation writes its "
+        "entry first and commits the register second."
+    )
+
+
+def test_the_audit_read_out_takes_its_page_and_anchor_as_one_pair(
+    signed_in: FlaskClient,
+) -> None:
+    """The THIRD `snapshot` call site, which the drive and the structural pin both miss.
+
+    `PAUSED_READS` covers `_verify_the_volume` and `export`, and the live-appender drive
+    exercises those two routes, so reverting `audit_log` to `chain.entries, chain.anchor()`
+    left the whole suite green: 1279 passed. The consequence is smaller than a tamper
+    verdict, a read-out whose `pageOf` disagrees with its anchor by one, but the control
+    was added deliberately and CLAUDE.md does not grade a control by how bad its absence
+    is: it is unfinished until a mutation shows it can fail.
+
+    Driven over the ROUTE, and the first version of this was not: it called
+    `chain.snapshot()` directly, so it held the method and said nothing about the call
+    site, and reverting `audit_log` to two separate reads left it green. `pageOf` is
+    `len(entries)` and not the capped page, so the disagreement IS observable on the wire.
+    """
+    chain = signed_in.application.extensions["complyops_chain"]
+    headers = token_for(signed_in)
+    appending = threading.Event()
+    failures: list[BaseException] = []
+
+    def append_forever() -> None:
+        try:
+            while not appending.is_set():
+                chain.append(fixed_entry(resource_id="PAIR"))
+                time.sleep(0.001)
+        except BaseException as error:
+            failures.append(error)
+
+    appender = threading.Thread(target=append_forever, daemon=True)
+    appender.start()
+    try:
+        pairs = [
+            signed_in.get("/api/audit?limit=1", headers=headers).get_json() for _ in range(200)
+        ]
+    finally:
+        appending.set()
+        appender.join(timeout=30)
+        assert not appender.is_alive(), "the appender thread did not finish"
+
+    assert not failures, f"the appender raised: {failures}"
+
+    mismatched = [
+        (page["pageOf"], page["anchor"]["length"])
+        for page in pairs
+        if page["pageOf"] != page["anchor"]["length"]
+    ]
+    assert not mismatched, (
+        f"{len(mismatched)} of {len(pairs)} read-outs report a page count and an anchor "
+        f"that disagree: {mismatched[:5]}. Both are read under the append lock or neither "
+        "is, and the read-out is what an operator and an assessor page through."
     )

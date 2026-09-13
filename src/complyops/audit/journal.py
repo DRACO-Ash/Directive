@@ -260,7 +260,7 @@ class JournalChain:
     def snapshot(self) -> tuple[list[AuditEntry], Anchor]:
         """Return this process's entries and anchor as ONE consistent pair.
 
-        Taken under the append lock, for the reason `volume_snapshot` gives below: read
+        Taken under the append lock, for the reason `appends_paused` gives below: read
         separately, the two can straddle an append and disagree by one entry.
         """
         with self._append_lock:
