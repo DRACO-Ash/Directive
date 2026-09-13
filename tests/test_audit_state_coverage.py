@@ -501,10 +501,16 @@ def _source_address_values(tree: ast.AST) -> list[ast.AST]:
     return values
 
 
-@pytest.mark.parametrize(
-    "module",
-    sorted(path.name for path in (SRC / "views").glob("*.py")),
-)
+def _views_writing_a_source_address() -> list[str]:
+    """Return every view module that assigns a source address, in either form."""
+    return [
+        path.name
+        for path in sorted((SRC / "views").glob("*.py"))
+        if _source_address_values(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+
+
+@pytest.mark.parametrize("module", _views_writing_a_source_address())
 def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: str) -> None:
     """Derived over EVERY view, because the hand-kept version left the live gap.
 
@@ -526,9 +532,11 @@ def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: 
     `collapsed.address`, and the conditional over the first and a validated argument, and it
     refuses a header by any spelling without needing to know which spellings exist.
     """
+    #: Parametrised over the modules that WRITE one, rather than over every view with a
+    #: skip for the rest. Four honest skips are still four entries that `verify.sh` reads
+    #: as passes, in a suite where exactly that has retired a control before. The guard
+    #: below is what stops an empty list collecting nothing at all.
     values = _source_address_values(ast.parse((SRC / "views" / module).read_text("utf-8")))
-    if not values:
-        pytest.skip(f"{module} writes no {ADDRESS_KEYWORD}")
 
     for value in values:
         named = {node.id for node in ast.walk(value) if isinstance(node, ast.Name)}
@@ -550,16 +558,13 @@ def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: 
 
 
 def test_the_source_address_pin_covers_every_view_that_writes_one() -> None:
-    """The parametrisation skips a module that writes none, so count what it actually held.
+    """The parametrisation is derived, so an empty one collects NOTHING and reds nowhere.
 
-    A skip reads as a pass to `verify.sh`, which reads no skip count, so a rename or a move
-    that emptied every view of `source_ip` would retire this pin in silence.
+    `verify.sh` reads no skip count and no collected count, so a rename or a move that
+    emptied every view of `source_ip` would retire the pin above in silence. This is the
+    assertion that cannot be made vacuous by the same edit, because it names the modules.
     """
-    writing = [
-        path.name
-        for path in sorted((SRC / "views").glob("*.py"))
-        if _source_address_values(ast.parse(path.read_text("utf-8")))
-    ]
+    writing = _views_writing_a_source_address()
     assert sorted(writing) == ["api.py", "auth_routes.py"], (
         f"the views writing a source address are now {writing}. Each is pinned by the test "
         "above; this assertion exists so a module leaving the set is deliberate."
