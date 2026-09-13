@@ -374,6 +374,81 @@ def test_the_flood_marker_written_to_the_chain_carries_no_caller_value(
         )
 
 
+#: Every header a proxy, a CDN or a load balancer conventionally sets to carry the original
+#: client address. None of them is evidence, because any caller can send any of them.
+FORWARDING_HEADERS = (
+    "X-Forwarded-For",
+    "X-Real-IP",
+    "Forwarded",
+    "True-Client-IP",
+    "CF-Connecting-IP",
+    "X-Client-IP",
+    "X-Original-Forwarded-For",
+)
+
+
+@pytest.mark.parametrize("header", FORWARDING_HEADERS)
+def test_the_recorded_source_address_comes_from_the_socket_never_a_header(
+    signed_out: FlaskClient, header: str
+) -> None:
+    """AUD-001's source address is evidence, so it may not be caller-asserted.
+
+    The property held and nothing held it: changing `_client_ip` to
+    `request.headers.get("X-Forwarded-For") or request.remote_addr` left all 1253 tests
+    green. Measured consequence of that one line: 40 requests from ONE address rotating the
+    header wrote 40 durable refusal rows with 40 distinct recorded addresses, defeating
+    `RECORDED_PER_WINDOW = 3`, and `X-Forwarded-For: ash.higgins.laptop` landed verbatim in
+    the `source_ip` of an immutable entry.
+
+    That is the whole value of keeping authentication in the application rather than
+    delegating it to the platform gateway, which CLAUDE.md records as Ash's decision: the
+    audit entry's attribution comes from what the container actually saw, not from a header
+    a caller reaching the pod directly could assert.
+    """
+    forged = "203.0.113.9"
+    signed_out.get(
+        "/auth/callback?code=x&state=forged",
+        headers={header: forged},
+        environ_base={"REMOTE_ADDR": "198.51.100.4"},
+    )
+
+    chain = signed_out.application.extensions["complyops_chain"]
+    recorded = {entry.source_ip for entry in chain.entries}
+
+    assert recorded, "no entry was written, so this proves nothing"
+    assert forged not in recorded, (
+        f"{header} reached the source address of an audit entry. AUD-001's source address "
+        "is evidence, and a header a caller sets is not."
+    )
+    assert recorded == {"198.51.100.4"}, (
+        f"the recorded address is {recorded}, not the socket address the container saw"
+    )
+
+
+def test_neither_client_address_reader_consults_a_header() -> None:
+    """The source pin beside the drive, in both modules that read an address.
+
+    The drive above catches a reader that consults one of the seven headers it sends. This
+    catches one that consults any header at all, which is the class: `request.headers` has
+    no business in either function, and a reader rewritten to take an eighth header name
+    would pass the drive.
+    """
+    for module in ("views/auth_routes.py", "views/api.py"):
+        source = (SRC / module).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        reader = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_client_ip"
+        )
+        read = ast.dump(reader)
+        assert "remote_addr" in read, f"{module}: `_client_ip` no longer reads the socket"
+        assert "headers" not in read, (
+            f"{module}: `_client_ip` consults a request header. The recorded source address "
+            "must come from the connection, because a header is not evidence."
+        )
+
+
 def test_the_refusal_marker_source_is_still_server_composed() -> None:
     """The one value written outside the vocabulary is a count, not a caller's text.
 

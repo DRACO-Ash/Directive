@@ -917,16 +917,39 @@ def test_an_over_long_request_body_is_refused(signed_in: FlaskClient) -> None:
     assert oversized.status_code == 413
 
 
-#: Every `RecordError` echo that can carry caller-supplied text, driven at a size that
-#: fits inside `MAXIMUM_REQUEST_BYTES` so the 413 does not answer first and hide the cap.
-#: One case per echo, because each was capped in a different commit and two of the three
-#: were green with the cap deleted. `check_fields` tests `isinstance(value, str)` BEFORE it
-#: looks the name up in `FIELD_CAPS`, so an unknown name carrying a non-string value takes
-#: the "must be text" branch and never reaches the field-name cap below it.
+#: Every `RecordError` echo that can carry caller-supplied text FROM THE BODY, driven at a
+#: size that fits inside `MAXIMUM_REQUEST_BYTES` so the 413 does not answer first and hide
+#: the cap. One case per echo, because each was capped in a different commit and two of the
+#: three were green with the cap deleted. `check_fields` tests `isinstance(value, str)`
+#: BEFORE it looks the name up in `FIELD_CAPS`, so an unknown name carrying a non-string
+#: value takes the "must be text" branch and never reaches the field-name cap below it.
+#:
+#: Bounded to the body deliberately. The first version of this comment said "every
+#: `RecordError` echo" and four were missing, all of them fed from the URL rather than the
+#: body; they are the corpus below this one. A sentence in a file that ships in the upload
+#: package is a claim an assessor can read, so the scope is stated rather than implied.
 UNBOUNDED_ECHOES = (
     ("the state", {"title": "Access review", "state": "N" * 200_000}),
     ("an unknown field name", {"title": "Access review", "z" * 200_000: "x"}),
     ("an unknown field name carrying a non-string value", {"title": "x", "z" * 200_000: 7}),
+)
+
+#: And every echo fed from the URL PATH, which is the sibling set the body corpus above
+#: established a rule for and did not sweep. `register` and `record_id` are path segments
+#: interpolated with `!r`, so each was returned verbatim in a 400 body: measured at 8,033
+#: and 8,047 bytes for an 8,000-character segment. Shorter than the body cases because a
+#: request LINE is bounded by gunicorn's own default rather than by
+#: `MAXIMUM_REQUEST_BYTES`, and that default is not asserted anywhere in this repository,
+#: so the cap in `records.py` is the only bound this build controls.
+#:
+#: The GET case is the one that matters most: it reaches the echo with no CSRF token, so
+#: the reflection is available to any signed-in caller over a plain link.
+LONG_SEGMENT = "z" * 8_000
+UNBOUNDED_PATH_ECHOES = (
+    ("an unknown register on create", "POST", f"/api/registers/{LONG_SEGMENT}"),
+    ("an unknown register on read", "GET", f"/api/registers/{LONG_SEGMENT}"),
+    ("an unknown record id on update", "PATCH", f"/api/registers/tasks/{LONG_SEGMENT}"),
+    ("an unknown register on update", "PATCH", f"/api/registers/{LONG_SEGMENT}/TSK-0001"),
 )
 
 
@@ -947,6 +970,44 @@ def test_no_record_error_mirrors_the_caller_back(
 
     assert refused.status_code == 400, echo
     assert len(refused.get_json()["error"]) < 200, echo
+
+
+@pytest.mark.parametrize(
+    ("echo", "method", "path"),
+    UNBOUNDED_PATH_ECHOES,
+    ids=[case[0] for case in UNBOUNDED_PATH_ECHOES],
+)
+def test_no_record_error_mirrors_a_url_segment_back(
+    signed_in: FlaskClient, echo: str, method: str, path: str
+) -> None:
+    """The same rule, applied to the arguments the body corpus above did not reach.
+
+    The commit that capped the body echoes established the rule and swept none of these,
+    which is the engineering gate's own meta-observation missed on the very fix that
+    quoted it: when a fix establishes a rule, sweep the rule's siblings in the same commit.
+    """
+    refused = signed_in.open(path, method=method, json={"title": "x"}, headers=token_for(signed_in))
+
+    assert refused.status_code == 400, echo
+    assert len(refused.get_json()["error"]) < 200, echo
+    assert LONG_SEGMENT not in refused.get_data(as_text=True), echo
+
+
+def test_the_unreachable_register_guard_is_also_capped() -> None:
+    """`check_fields` has its own register guard and no route reaches it.
+
+    `mutate` is its only caller and guards the register first, so the four drives above all
+    stop one frame earlier and none of them holds this cap: uncapping it is green across
+    the whole suite. Tested directly rather than through a route invented to reach it,
+    because the honest description of this guard is defence in depth behind `mutate`, and a
+    contrived route would claim reach the application does not have. It is capped anyway,
+    since a second caller would arrive with no cap and nothing to notice.
+    """
+    with pytest.raises(records.RecordError) as raised:
+        records.check_fields({"title": "x"}, register=LONG_SEGMENT, complete=True)
+
+    assert len(str(raised.value)) < 200
+    assert LONG_SEGMENT not in str(raised.value)
 
 
 def test_a_no_op_state_change_claims_no_transition(signed_in: FlaskClient) -> None:
