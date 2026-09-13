@@ -14,7 +14,9 @@ vocabulary, the refusal path is the one declared exception, and it carries no ca
 from __future__ import annotations
 
 import ast
+import random
 import re
+import string
 from pathlib import Path
 from types import MappingProxyType
 
@@ -719,6 +721,113 @@ def _views_writing_a_source_address() -> list[str]:
     ]
 
 
+#: The call every audit entry in the package reaches the boundary through, and the receivers
+#: it is called on. Scoped by RECEIVER as well as by name: `append` alone matched
+#: `rows.append(record)` in `records.py`, which is a list of register rows and not an entry
+#: at all, so the check red on correct source.
+AUDIT_SINK = "append"
+AUDIT_RECEIVERS = ("chain", "_chain")
+
+
+def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST]]:
+    """Return the argument passed to every call reaching the audit boundary."""
+    found = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == AUDIT_SINK
+            and node.args
+        ):
+            continue
+        receiver = ast.unparse(node.func.value)
+        if receiver.split(".")[-1] in AUDIT_RECEIVERS:
+            found.append((receiver, node.args[0]))
+    return found
+
+
+def _mutated_after_binding(tree: ast.AST, name: str) -> list[ast.AST]:
+    """Return every post-construction write to `name`, by subscript or by `update`."""
+    written: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            written += [
+                node.value
+                for target in node.targets
+                if isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == name
+            ]
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == name
+        ):
+            written += list(node.args)
+    return written
+
+
+@pytest.mark.parametrize("module", _views_writing_a_source_address())
+def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
+    """The positive assertion over the one seam, which needs no shape heuristic at all.
+
+    The rule this supersedes was negative and scoped by a guess: collect a non-constant key
+    only in a dict naming two or more audit fields as constants. Two gates walked through it
+    in the same round, and the second enumerated the ways. `{**snapshot, _FIELD: peer}` with
+    fewer than two constant keys, `entry[_FIELD] = peer` by subscript,
+    `entry.update({_FIELD: peer})` and `dict(snapshot, **{_FIELD: peer})` were each
+    invisible, and the subscript form put an attacker-chosen address into every durable
+    authentication row with lint, strict types and all 1318 tests clean.
+
+    Extending a list of evaded shapes would have been the fifth time this file made that
+    mistake. So the rule is inverted: what reaches the boundary must BE a dict literal whose
+    every key is a constant, built in one expression and not mutated afterwards. Anything
+    else fails, per CLAUDE.md, because a control that cannot be verified is treated as
+    failed. The two-key scoping becomes unnecessary, which is the right outcome, since that
+    scoping is exactly what the attacks walked through.
+    """
+    tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
+    bound = _assigned_at_module_and_function_scope(tree)
+    arguments = _entry_arguments(tree)
+    if not arguments:
+        pytest.skip(f"{module} reaches the audit boundary nowhere")
+
+    for receiver, argument in arguments:
+        literal = argument
+        if isinstance(argument, ast.Name):
+            assignments = bound.get(argument.id, [])
+            assert len(assignments) == 1, (
+                f"{module}: `{receiver}.{AUDIT_SINK}` is passed `{argument.id}`, bound "
+                f"{len(assignments)} times. An entry has to trace to one expression or it "
+                "cannot be verified at all."
+            )
+            literal = assignments[0]
+            after = _mutated_after_binding(tree, argument.id)
+            assert not after, (
+                f"{module}: `{argument.id}` is written to after it is built, by subscript "
+                "or by `update`, before it reaches the boundary. A value added there is "
+                "invisible to every check on the literal."
+            )
+
+        assert isinstance(literal, ast.Dict), (
+            f"{module}: what reaches `{receiver}.{AUDIT_SINK}` is "
+            f"{type(literal).__name__}, not a dict literal. It cannot be verified, so it "
+            "fails closed."
+        )
+        unverifiable = [
+            "** unpacking" if key is None else ast.dump(key)
+            for key in literal.keys
+            if key is None or not isinstance(key, ast.Constant)
+        ]
+        assert not unverifiable, (
+            f"{module}: the entry reaching `{receiver}.{AUDIT_SINK}` carries "
+            f"{unverifiable}. Every key has to be a constant, or a field name can be "
+            "computed and the value under it never checked."
+        )
+
+
 @pytest.mark.parametrize("module", _views_writing_a_source_address())
 def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: str) -> None:
     """Derived over EVERY view, because the hand-kept version left the live gap.
@@ -1194,6 +1303,55 @@ PERMITTED_IMPORTS = frozenset(
 #: in one line rather than waiting for each to be demonstrated.
 DYNAMIC_IMPORT_NAMES = frozenset({"__import__", "eval", "exec", "globals", "vars", "compile"})
 
+#: The attribute routes to the module table and to another module's namespace. Closed set,
+#: which is what makes a blacklist defensible here where it was not defensible for header
+#: names: CPython offers these and no more.
+#: Intra-package imports that target a request-holding module and are sound anyway, with
+#: the reason. One entry, which is the price the gate measured for closing the reach axis.
+DECLARED_INTRA_PACKAGE_IMPORTS = {
+    #: The blueprint objects, not a request. `views/__init__.py` assembles them and holds
+    #: nothing itself.
+    "views/__init__.py": (
+        "views/health.py",
+        "views/api.py",
+        "views/auth_routes.py",
+        "views/console.py",
+    ),
+}
+
+
+def _intra_package_targets(node: ast.ImportFrom, module: str) -> list[str]:
+    """Return the package modules this import names, relative or absolute.
+
+    `node.level` carries the leading dots, so comparing `node.module` against absolute names
+    left every relative import unexamined: `from .. import auth` names no `complyops` at
+    all, and a gate used it to bind the live request proxy in a pinned module.
+    """
+    if node.level:
+        parts = module.split("/")[:-1]
+        for _ in range(node.level - 1):
+            parts = parts[:-1]
+        base = [*parts, *(node.module.split(".") if node.module else [])]
+    else:
+        head, _, rest = (node.module or "").partition(".")
+        if head != "complyops":
+            return []
+        base = rest.split(".") if rest else []
+    stem = "/".join(base)
+    #: The package `__init__` is a target only when the statement NAMES it. `from . import
+    #: store` binds `store`, not anything from `complyops/__init__.py`, and counting the
+    #: package itself made this red on `records.py`, which is correct source.
+    candidates = [f"{stem}.py", f"{stem}/__init__.py"] if node.module else []
+    candidates += [
+        f"{stem}/{alias.name}.py" if stem else f"{alias.name}.py" for alias in node.names
+    ]
+    return [name for name in candidates if (SRC / name).exists()]
+
+
+MODULE_REGISTRY_ATTRIBUTES = frozenset(
+    {"sys", "_sys", "modules", "import_module", "__globals__", "__dict__", "builtins"}
+)
+
 
 def _modules_without_a_request_context() -> list[str]:
     """Return every module in the package that must never reach for a request."""
@@ -1241,6 +1399,50 @@ def test_a_module_with_no_request_context_cannot_reach_one(module: str) -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     }
+    #: An intra-package import that targets a request-holding sibling. `PERMITTED_IMPORTS`
+    #: admits `complyops` wholesale, and eight modules inside it bind the live request
+    #: proxy, so the whitelist was closed against the outside world and open against itself.
+    #: `from .. import auth` then reaches the proxy by `getattr`, and it names no
+    #: `complyops`, so a check keyed on absolute names never saw it either.
+    reaching = sorted(
+        {
+            target
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for target in _intra_package_targets(node, module)
+            if target in HOLDS_A_REQUEST_CONTEXT
+        }
+        - set(DECLARED_INTRA_PACKAGE_IMPORTS.get(module, ()))
+    )
+    assert not reaching, (
+        f"{module} imports from {reaching}, which holds a request context. A module outside "
+        "`HOLDS_A_REQUEST_CONTEXT` must not reach one by any route, and a sibling that has "
+        "one is a route."
+    )
+
+    #: The module REGISTRY, reached by attribute rather than by import. `PERMITTED_IMPORTS`
+    #: cannot close this: eight permitted standard-library names re-export `sys`, measured
+    #: (`os`, `typing`, `contextlib`, `logging`, `shutil` expose `sys`; `threading`,
+    #: `tempfile`, `collections` expose `_sys`), and `os.sys.modules.get("flask")` reached
+    #: the live request with every import admitted and the whole loop green.
+    #:
+    #: This is a BLACKLIST and it is written as one deliberately, because the set it names
+    #: is closed: these are the routes CPython gives to the module table and to another
+    #: module's namespace. A whitelist of permitted attributes per import was considered and
+    #: rejected as churn with no extra reach. The residual is recorded rather than hidden.
+    reached = sorted(
+        {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr in MODULE_REGISTRY_ATTRIBUTES
+        }
+    )
+    assert not reached, (
+        f"{module} reads {reached}, which reaches the module table or another module's "
+        "namespace. An import whitelist cannot refuse that: eight permitted standard-library "
+        'names re-export `sys`, so `os.sys.modules.get("flask")` needs no import at all.'
+    )
+
     dynamic = sorted(loaded & DYNAMIC_IMPORT_NAMES)
     assert not dynamic, (
         f"{module} loads {dynamic}, which reaches a module the import statements do not "
@@ -1276,6 +1478,160 @@ def test_the_request_context_allowance_is_the_one_that_shipped() -> None:
         f"declared allowance is {sorted(HOLDS_A_REQUEST_CONTEXT)}. A module joining or "
         "leaving that set has to be a deliberate line, because everything outside it is "
         "pinned by subtraction."
+    )
+
+
+#: How many randomised inputs each side of the property drive carries. Enough that a forge
+#: reading any one of them differs between the two runs; small enough that the drive stays
+#: inside a second.
+NOISE_INPUTS = 12
+
+
+def _noisy_inputs(seed: int) -> tuple[dict[str, str], dict[str, str], str]:
+    """Return headers, cookies and a query string of randomised NAMES and values.
+
+    Names as well as values, because every instrument in this module that drives a header
+    enumerates the names it sends, and every bypass found so far chose a name outside that
+    set. A random name cannot be enumerated by the attacker either.
+    """
+    rng = random.Random(seed)  # noqa: S311 - test fixture entropy, not a credential
+
+    def token() -> str:
+        return "".join(rng.choices(string.ascii_lowercase, k=10))
+
+    headers = {f"X-{token()}": token() for _ in range(NOISE_INPUTS)}
+    cookies = {token(): token() for _ in range(NOISE_INPUTS)}
+    query = "&".join(f"{token()}={token()}" for _ in range(NOISE_INPUTS))
+    return headers, cookies, query
+
+
+def _recorded_addresses(directory: Path, noise: int | None) -> list[str]:
+    """Drive both paths once and return the source addresses that reached the volume."""
+    client = create_app().test_client()
+    headers, cookies, query = _noisy_inputs(noise) if noise is not None else ({}, {}, "")
+    for name, value in cookies.items():
+        client.set_cookie(name, value)
+    base = {"REMOTE_ADDR": "198.51.100.4"}
+    token = {"X-CSRF-Token": client.get("/").headers["X-CSRF-Token"], **headers}
+
+    for _ in range(refusals.RECORDED_PER_WINDOW + 2):
+        client.get(f"/auth/callback?code=x&state=forged&{query}", headers=token, environ_base=base)
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+    client.get(f"/auth/callback?code=x&state=forged&{query}", headers=token, environ_base=base)
+
+    fresh = client.get("/").headers["X-CSRF-Token"]
+    client.post(
+        f"/sign-in?{query}",
+        data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": fresh},
+        headers={**headers, "X-CSRF-Token": fresh},
+        environ_base=base,
+    )
+    created = client.post(
+        f"/api/registers/tasks?{query}",
+        json={"title": "Access review"},
+        headers={**headers, "X-CSRF-Token": client.get("/").headers["X-CSRF-Token"]},
+        environ_base=base,
+    )
+    assert created.status_code == 201, created.get_data(as_text=True)
+    return [entry.source_ip for entry in read_entries(str(directory)) if entry.source_ip]
+
+
+def test_the_collapsed_row_records_the_same_address_as_the_rows_it_collapses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An internal-consistency property, and the one control here that needs no names.
+
+    Two rows on the refusal path carry a source address and they reach it by different
+    routes. `LOGIN_FAILED` takes it straight from `_client_ip`. `LOGIN_FAILED_REPEATED`
+    takes it from `refusals.note`, which receives it as an argument and is the module every
+    source pin misses by construction. Both describe the SAME request, so they must agree,
+    and nothing that alters the address inside the refusal path can keep them agreeing.
+
+    This is what the randomised drive above does NOT give, and saying so is the point of
+    writing both. That drive compares a run with no caller input against one with random
+    input, so a forge keyed on a FIXED header name is absent from both runs and they agree:
+    randomising names does not catch a name the attacker chose, because the two sets never
+    meet. Two gates demonstrated exactly that, once through `from .. import auth` and once
+    through `os.sys.modules`, each with the whole loop green.
+
+    Divergence, not enumeration, is what closes it. A forge in `refusals.note` moves one row
+    and not the other whatever name it reads, through whatever module it reaches flask by.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    client = create_app().test_client()
+    socket_address = "198.51.100.4"
+    base = {"REMOTE_ADDR": socket_address}
+    #: Names a forging edit plausibly reads, sent so a fixed-name forge is live rather than
+    #: inert. The property below holds without them; they make the drive bite sooner.
+    headers = dict.fromkeys((*FORWARDING_HEADERS, "X-Bluestaq-Peer"), "ash.higgins.laptop")
+
+    for _ in range(refusals.RECORDED_PER_WINDOW + 2):
+        client.get("/auth/callback?code=x&state=forged", headers=headers, environ_base=base)
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+    client.get("/auth/callback?code=x&state=forged", headers=headers, environ_base=base)
+
+    persisted = read_entries(str(tmp_path))
+    direct = {entry.source_ip for entry in persisted if entry.action == "LOGIN_FAILED"}
+    collapsed = {entry.source_ip for entry in persisted if entry.action == "LOGIN_FAILED_REPEATED"}
+
+    assert direct, "no direct refusal row was written, so this proves nothing"
+    assert collapsed, "no collapsed row was written, so half of this is vacuous"
+    assert direct == collapsed == {socket_address}, (
+        f"the direct rows recorded {sorted(direct)} and the collapsed row {sorted(collapsed)}"
+        f", against a socket of {socket_address!r}. Both describe the same request and reach "
+        "the address by different routes, so a difference means the refusal path altered it."
+    )
+
+
+@pytest.mark.parametrize("seed", (1, 2, 3))
+def test_no_caller_input_of_any_name_changes_the_recorded_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: int
+) -> None:
+    """The name-free property, and the only instrument here that enumerates nothing.
+
+    Every other control in this module names something: header names, channels, import
+    names, hook registries, binding forms. Every bypass found across five gate runs chose
+    the thing outside whatever set was named, and the last of them showed the naming problem
+    is not closable by an import whitelist at all, because eight permitted standard-library
+    modules re-export `sys` and `os.sys.modules.get("flask")` reaches the live request with
+    every import admitted.
+
+    So this asserts a PROPERTY instead. Two runs from the same socket address, one plain and
+    one carrying twelve randomised headers, twelve randomised cookies and twelve randomised
+    query parameters, with the NAMES randomised as well as the values, must record exactly
+    the same addresses. Any forge that reads any caller-controlled input, by any spelling,
+    through any module, makes the two runs differ. A caller cannot choose a name outside the
+    set, because there is no set.
+    """
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+
+    plain_dir = tmp_path / "plain"
+    noisy_dir = tmp_path / "noisy"
+    monkeypatch.setenv("DATA_DIR", str(plain_dir))
+    plain = _recorded_addresses(plain_dir, None)
+    monkeypatch.setenv("DATA_DIR", str(noisy_dir))
+    noisy = _recorded_addresses(noisy_dir, seed)
+
+    assert plain and noisy, "a run recorded no address at all, so this proves nothing"
+    #: The SET of addresses, not the sequence. The two runs legitimately differ in how many
+    #: rows they write, because the refusal collapsing is sensitive to cookie state and the
+    #: noisy run carries twelve, and comparing lengths would fail for a reason that is not
+    #: the property. What must not differ is any recorded VALUE.
+    assert set(plain) == set(noisy), (
+        f"the same socket recorded {sorted(set(plain))} with no caller input and "
+        f"{sorted(set(noisy))} with randomised input. Something between the socket and the "
+        "audit entry reads a caller-controlled value, and which name it reads does not "
+        "matter."
+    )
+    assert set(plain) == {"198.51.100.4"}, (
+        f"the recorded addresses are {sorted(set(plain))}, not the socket address."
     )
 
 
