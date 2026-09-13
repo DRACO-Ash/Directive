@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -993,6 +994,22 @@ def test_no_record_error_mirrors_a_url_segment_back(
     assert LONG_SEGMENT not in refused.get_data(as_text=True), echo
 
 
+def test_the_unreachable_update_register_cap_is_also_held() -> None:
+    """`_update`'s `register` half, held by nothing, and the sibling of the test below.
+
+    Uncapping it was green across the whole suite: `mutate` refuses an unknown register
+    before `_update` is reached, so by that line the value is one of three literals and no
+    route can carry a long one there. The `record_id` half beside it IS route-reachable and
+    is held by the corpus above. Same treatment as `check_fields`'s guard, for the same
+    reason: a direct call rather than a route invented to claim reach.
+    """
+    with pytest.raises(records.RecordError) as raised:
+        records._update([], "TSK-0001", {"title": "x"}, register=LONG_SEGMENT)
+
+    assert len(str(raised.value)) < 200
+    assert LONG_SEGMENT not in str(raised.value)
+
+
 def test_the_unreachable_register_guard_is_also_capped() -> None:
     """`check_fields` has its own register guard and no route reaches it.
 
@@ -1594,3 +1611,72 @@ def test_no_audit_file_can_be_replaced_by_something_that_is_not_a_file(
     restarted = create_app().test_client()
 
     assert restarted.get("/healthz").status_code == 200, f"{target_name} as {shape} hung the boot"
+
+
+#: How many verify calls run against a live appender. The defect showed at 58 in 100 with
+#: ONE appender and no interpreter tricks, so 60 is comfortably above the detection floor
+#: while staying inside the suite's per-test budget.
+SNAPSHOT_VERIFIES = 60
+
+
+def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
+    signed_in: FlaskClient,
+) -> None:
+    """The READER half of the snapshot, which the writer-side lock did not close.
+
+    An append writes the line and then the anchor. A reader taking those two files at two
+    instants therefore sees a log of N+1 against an anchor recording N whenever it
+    straddles an append, and `verify_log` returns that as `tampered` with "entries were
+    added or removed": the AUD-001 tamper-evidence control raising a false alarm on
+    evidence nobody touched, which is exactly the inversion the writer-side lock exists to
+    stop. Measured before `volume_snapshot`: 58 of 100 verifies and 28 of 40 export packs.
+
+    The export half is the one that lasts. CLAUDE.md makes the export a security control
+    rather than housekeeping, because between exports the volume holds the only copy of the
+    log and its anchor, so a pack whose anchor disagrees with its own entries fails its own
+    verification later, off the volume, with nothing left to compare against.
+
+    The appender here is authenticated only because the fixture is; the real one is an
+    unauthenticated `GET /auth/callback`, so any caller could induce this.
+    """
+    headers = token_for(signed_in)
+    chain = signed_in.application.extensions["complyops_chain"]
+    appending = threading.Event()
+    failures: list[BaseException] = []
+
+    def append_forever() -> None:
+        try:
+            while not appending.is_set():
+                chain.append(fixed_entry(resource_id="SNAP"))
+        except BaseException as error:
+            failures.append(error)
+
+    appender = threading.Thread(target=append_forever, daemon=True)
+    appender.start()
+    try:
+        verdicts = [
+            signed_in.post("/api/audit/verify", headers=headers).get_json()
+            for _ in range(SNAPSHOT_VERIFIES)
+        ]
+        packs = [signed_in.get("/api/export", headers=headers).get_json() for _ in range(8)]
+    finally:
+        appending.set()
+        appender.join(timeout=30)
+        assert not appender.is_alive(), "the appender thread did not finish"
+
+    assert not failures, f"the appender raised: {failures}"
+
+    alarms = [verdict for verdict in verdicts if verdict.get("tampered")]
+    assert not alarms, (
+        f"{len(alarms)} of {SNAPSHOT_VERIFIES} verifies reported tampering while the log "
+        f"was being appended to. First: {alarms[0].get('summary')}"
+    )
+
+    #: And every pack is internally consistent, which is the durable half: a pack whose
+    #: anchor runs one entry behind its own entries verifies as tampered for ever.
+    for pack in packs:
+        assert pack["auditAnchor"] is not None, "an export pack carried no anchor"
+        assert pack["auditAnchor"]["length"] == len(pack["auditEntries"]), (
+            "an export pack's anchor does not match its own entries, so the pack fails its "
+            "own verification off the volume"
+        )

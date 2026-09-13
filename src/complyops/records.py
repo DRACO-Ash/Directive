@@ -242,9 +242,14 @@ def _update(
     """Apply a change to an existing record, returning it and what changed."""
     record = store.find(rows, record_id)
     if record is None:
-        #: Both halves capped. `record_id` and `register` are URL path segments, so both
-        #: are attacker-supplied and bounded only by gunicorn's request-line default, which
-        #: nothing in this repository asserts and the Dockerfile does not set.
+        #: Both halves capped, for two different reasons, and the first version of this
+        #: comment gave the wrong one for `register`. `record_id` IS an attacker-supplied
+        #: path segment reaching here unfiltered, bounded only by gunicorn's request-line
+        #: default, which nothing in this repository asserts and the Dockerfile does not
+        #: set. `register` is not: `mutate` refuses anything outside `REGISTERS` before
+        #: this function is reached, so by this line it is one of three literals. Its cap
+        #: is defence in depth behind that guard, exactly as `check_fields`'s own register
+        #: guard is, and saying so is owed to the sibling that got the honest treatment.
         raise RecordError(
             f"no record {str(record_id)[:64]!r} in the {str(register)[:64]!r} register"
         )

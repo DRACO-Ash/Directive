@@ -17,9 +17,8 @@ from ..audit.anchor import (
     AnchorError,
     AnchorRollbackError,
     AnchorTamperError,
-    read_anchor,
 )
-from ..audit.journal import JournalChain, JournalError, read_entries
+from ..audit.journal import JournalChain, JournalError
 from ..audit.keys import AuditKeyError
 from ..audit.validation import recordable
 from ..records import RecordError
@@ -205,7 +204,9 @@ def audit_log() -> Response:
     returned, because a log approaching its 24-month retention is longer than a screen.
     """
     chain = _chain()
-    entries = chain.entries
+    # The same atomic pair in process. Read apart, `pageOf` and `anchor` disagree by one
+    # entry whenever a concurrent append lands between them.
+    entries, anchor = chain.snapshot()
     limit = min(
         max(request.args.get("limit", type=int) or DEFAULT_AUDIT_PAGE, 1), MAXIMUM_AUDIT_PAGE
     )
@@ -213,7 +214,7 @@ def audit_log() -> Response:
         {
             "entries": [entry.__dict__ for entry in reversed(entries[-limit:])],
             "pageOf": len(entries),
-            "anchor": chain.anchor().__dict__,
+            "anchor": anchor.__dict__,
         }
     )
 
@@ -274,16 +275,16 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
     The in-memory head is then compared to the stored one, because a volume that verifies
     against a stale anchor while this process holds a longer chain is also a finding.
     """
-    directory = _data_dir()
     try:
-        entries = read_entries(directory)
+        # ONE atomic pair. Read separately, the log and the anchor can straddle an append
+        # and disagree by one entry, which verifies as `tampered`: measured at 58 of 100
+        # with a single concurrent unauthenticated caller. See `JournalChain.volume_snapshot`.
+        entries, anchor = chain.volume_snapshot()
     except JournalError:
         current_app.logger.exception("verification could not read the log")
         return ChainVerdict(ok=False, checked=0, reason="the log could not be read"), (
             "The audit log on the volume could not be read. See /api/diagnostics."
         )
-    try:
-        anchor = read_anchor(directory, chain.signing_key)
     except AnchorTamperError as error:
         # The anchor's STATE says interference: a genuine older anchor put back, an anchor
         # signed by a key this server does not hold, or an anchor deleted beside a marker
@@ -341,7 +342,10 @@ def export() -> Response:
     """
     directory = _data_dir()
     chain = _chain()
-    stored_anchor = read_anchor(directory, chain.signing_key)
+    # One atomic pair, for the reason `volume_snapshot` gives: a pack whose anchor does not
+    # match its own entries fails its own verification later, off the volume, with nothing
+    # left to compare against. Measured at 28 of 40 packs before the snapshot existed.
+    stored_entries, stored_anchor = chain.volume_snapshot()
     pack = {
         "exported": records.now(),
         "exportedBy": auth.audit_actor(),
@@ -349,7 +353,7 @@ def export() -> Response:
         # Read from the VOLUME, not from this process's memory. The pack is the off-volume
         # corroboration the anchor's blind spot rests on, so a pack assembled from memory
         # would corroborate the volume against nothing at all.
-        "auditEntries": [entry.__dict__ for entry in read_entries(directory)],
+        "auditEntries": [entry.__dict__ for entry in stored_entries],
         "auditAnchor": stored_anchor.__dict__ if stored_anchor else None,
         "note": (
             "Keep the anchor with this pack. A pack without it proves the entries were "

@@ -425,27 +425,95 @@ def test_the_recorded_source_address_comes_from_the_socket_never_a_header(
     )
 
 
-def test_neither_client_address_reader_consults_a_header() -> None:
+@pytest.mark.parametrize("header", FORWARDING_HEADERS)
+def test_a_register_entry_records_the_socket_address_not_a_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, header: str
+) -> None:
+    """The SECOND reader, on an authenticated route, which no drive reached.
+
+    `views/api.py` has its own `_client_ip` and the refusal drive above never touches it,
+    so that reader rested on the source pin alone: rewriting it to
+    `request.environ.get("HTTP_X_FORWARDED_FOR")` left all 1267 tests green while letting a
+    caller set the recorded `source_ip` on every register-mutation entry. A pin and a drive
+    catch different mutations, and this reader had only one of the pair.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    client = create_app().test_client()
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+    )
+    token = {"X-CSRF-Token": client.get("/").headers["X-CSRF-Token"], header: "203.0.113.9"}
+
+    created = client.post("/api/registers/tasks", json={"title": "Access review"}, headers=token)
+    assert created.status_code == 201, created.get_data(as_text=True)
+
+    chain = client.application.extensions["complyops_chain"]
+    written = [entry for entry in chain.entries if entry.action == "TSK_CREATED"]
+
+    assert written, "no register entry was written, so this proves nothing"
+    for entry in written:
+        assert entry.source_ip != "203.0.113.9", (
+            f"{header} reached the source address of a register entry through the api "
+            "reader. AUD-001's source address is evidence, and a header is not."
+        )
+
+
+#: The ONLY attribute of `request` either address reader may touch, and the only function
+#: either may call. A whitelist, because the blacklist this replaced named `headers` and a
+#: header reaches the reader under other names: `request.environ.get("HTTP_X_PEER_ADDRESS")`
+#: is the same header by its WSGI spelling, and it passed the blacklist, passed the
+#: seven-header drive, and passed the whole suite, after which 40 requests from one socket
+#: address wrote 40 durable rows with 40 forged `source_ip` values. A helper-function
+#: indirection evaded it the same way.
+ADDRESS_SOURCE = "remote_addr"
+ADDRESS_CALLS = frozenset({"recordable"})
+
+
+def test_neither_client_address_reader_reaches_past_the_socket() -> None:
     """The source pin beside the drive, in both modules that read an address.
 
-    The drive above catches a reader that consults one of the seven headers it sends. This
-    catches one that consults any header at all, which is the class: `request.headers` has
-    no business in either function, and a reader rewritten to take an eighth header name
-    would pass the drive.
+    Be exact about what this asserts, because the sentence it replaces over-claimed and
+    shipped in the upload package: it does not say "no header is consulted". It says the
+    reader touches ONE attribute of `request`, `remote_addr`, and calls one function,
+    `recordable`. That is a whitelist, so it catches `environ`, any header by any name, and
+    any indirection through a helper, none of which a blacklist on the word `headers` sees.
     """
     for module in ("views/auth_routes.py", "views/api.py"):
         source = (SRC / module).read_text(encoding="utf-8")
-        tree = ast.parse(source)
         reader = next(
             node
-            for node in ast.walk(tree)
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.FunctionDef) and node.name == "_client_ip"
         )
-        read = ast.dump(reader)
-        assert "remote_addr" in read, f"{module}: `_client_ip` no longer reads the socket"
-        assert "headers" not in read, (
-            f"{module}: `_client_ip` consults a request header. The recorded source address "
-            "must come from the connection, because a header is not evidence."
+
+        touched = {
+            node.attr
+            for node in ast.walk(reader)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "request"
+        }
+        assert touched == {ADDRESS_SOURCE}, (
+            f"{module}: `_client_ip` reads {sorted(touched)} off `request`, and the only "
+            f"one it may read is {ADDRESS_SOURCE!r}. A header is not evidence, by any "
+            "spelling: `environ` carries the same values under their WSGI names."
+        )
+
+        called = {
+            node.func.id
+            for node in ast.walk(reader)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert called <= ADDRESS_CALLS, (
+            f"{module}: `_client_ip` calls {sorted(called - ADDRESS_CALLS)}. A helper is "
+            "where a header read hides from a pin that only inspects this function."
         )
 
 

@@ -8,6 +8,7 @@ alarm. Every refusal below is asserted as a refusal, not as a fallback.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -515,8 +516,10 @@ def test_concurrent_appends_persist_in_the_order_they_were_chained(tmp_path: Pat
     failures: list[BaseException] = []
 
     def write(worker: int) -> None:
-        start.wait(timeout=10)
         try:
+            #: Inside the try. A `BrokenBarrierError` here escaped the worker, left
+            #: `failures` empty, and surfaced as a bare length mismatch with no cause.
+            start.wait(timeout=10)
             for number in range(APPENDS_EACH):
                 chain.append(fixed_entry(index=1, resource_id=f"W{worker}-{number}"))
         except BaseException as error:
@@ -550,8 +553,55 @@ def test_concurrent_appends_persist_in_the_order_they_were_chained(tmp_path: Pat
     anchor = read_anchor(str(tmp_path), KEY)
     assert anchor is not None, "no anchor on the volume, so verification proves nothing"
     verdict = verify_log(persisted, KEYS, anchor)
-    assert verdict.ok, f"the log does not verify after concurrent appends: {verdict.summary}"
+    assert verdict.ok, f"the log does not verify after concurrent appends: {verdict.summary()}"
     assert not verdict.tampered, (
         "concurrent appends made the log report tampering, which is the AUD-001 "
         "tamper-evidence control raising a false alarm on evidence nobody touched"
     )
+
+
+#: The three calls that must sit INSIDE `JournalChain.append`'s critical section. Written
+#: out, because a drive cannot see this: moving `write_anchor` out on its own leaves the
+#: whole suite green AND the concurrency drive above green five runs in five, while the
+#: chain wedges under load with `AnchorError: refusing to write an anchor recording N
+#: entries ever over one recording N+1`, after which every register answers 503 for the
+#: life of the process. A structural assertion is deterministic where a drive is not.
+SERIALISED_CALLS = ("append_entry", "write_anchor")
+
+
+def test_the_append_holds_one_lock_across_both_writes() -> None:
+    """The lock's EXTENT, not its existence, is the control.
+
+    The drive above proves a lock is taken. It does not prove how far it reaches, and the
+    reach is what stops the line and the anchor being written in different orders by
+    different threads.
+    """
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "complyops" / "audit" / "journal.py"
+    ).read_text(encoding="utf-8")
+    append = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "append"
+    )
+    guarded = [
+        node
+        for node in ast.walk(append)
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Attribute)
+            and item.context_expr.attr == "_append_lock"
+            for item in node.items
+        )
+    ]
+
+    assert len(guarded) == 1, "`append` no longer takes `_append_lock` exactly once"
+    inside = ast.dump(guarded[0])
+    for call in SERIALISED_CALLS:
+        assert call in inside, (
+            f"`{call}` is outside the append lock. The head advance and BOTH writes have to "
+            "be one operation, or two threads persist their lines in the order they did "
+            "not take their heads."
+        )
+    #: And the in-process list, which `snapshot` reads under the same lock.
+    assert "_entries" in inside, "the in-process entry list is appended outside the lock"
