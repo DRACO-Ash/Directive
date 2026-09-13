@@ -256,6 +256,44 @@ class JournalChain:
         """Return the chain's current anchor."""
         return self._chain.anchor()
 
+    def snapshot(self) -> tuple[list[AuditEntry], Anchor]:
+        """Return this process's entries and anchor as ONE consistent pair.
+
+        Taken under the append lock, for the reason `volume_snapshot` gives below: read
+        separately, the two can straddle an append and disagree by one entry.
+        """
+        with self._append_lock:
+            return list(self._entries), self._chain.anchor()
+
+    def volume_snapshot(self) -> tuple[list[AuditEntry], Anchor | None]:
+        """Return the log and the anchor read from the VOLUME as one consistent pair.
+
+        The append lock is the control here, not a convenience, and closing it on the
+        writer side was only half the job. An append writes the line and then the anchor.
+        A reader taking those two files at two instants therefore sees a log of N+1 against
+        an anchor recording N whenever it straddles an append, and `verify_log` reports
+        that as `tampered` with "entries were added or removed": the AUD-001 tamper-evidence
+        control raising a false alarm on evidence nobody touched, which is the same
+        inversion the writer-side lock was added to stop.
+
+        Measured before this existed, with ONE concurrent appender and no interpreter
+        tricks: 58 of 100 `POST /api/audit/verify` calls reported tampering, and 28 of 40
+        export packs carried an anchor that did not match their own entries. The appender
+        is an unauthenticated `GET /auth/callback`, so any caller could induce it.
+
+        The export case is the one that lasts. CLAUDE.md makes the export a security
+        control rather than housekeeping, because between exports the volume holds the only
+        copy of the log and its anchor, so a pack whose anchor disagrees with its own
+        entries fails its own verification later, off the volume, with nothing to compare
+        against. The false alarm is durable rather than transient.
+
+        Exceptions propagate rather than being caught here: `JournalError` on an unreadable
+        log and `AnchorTamperError` on an anchor whose STATE says interference are
+        different verdicts, and the caller distinguishes them.
+        """
+        with self._append_lock:
+            return read_entries(self._data_dir), read_anchor(self._data_dir, self._key)
+
 
 def resume(
     data_dir: str, *, key: bytes, key_id: str, keys: Mapping[str, bytes]
