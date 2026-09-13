@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -185,6 +186,10 @@ class JournalChain:
         self._key = key
         self._entries: list[AuditEntry] = list(entries or [])
         self._wedged: str | None = None
+        #: Held across the head advance AND the two writes. `AuditChain` has its own lock,
+        #: but it covers the advance only, so two threads could take heads in one order and
+        #: persist their lines in the other. See `append` for what that cost.
+        self._append_lock = threading.Lock()
 
     @property
     def entries(self) -> list[AuditEntry]:
@@ -211,21 +216,41 @@ class JournalChain:
 
         Raises :class:`JournalError` if the entry cannot be persisted, and wedges the chain
         so no later append can fork the log by chaining onto an entry that is not on disk.
+
+        The whole sequence is under ONE lock, and that is the control rather than a
+        performance choice. `AuditChain.append` has a lock of its own, but it covers the
+        head advance alone and is released before the line is written, so two threads could
+        take heads in one order and persist their lines in the other. The shipped command
+        is a single worker with eight threads, and `_record_authentication` takes no
+        register lock, so two concurrent unauthenticated requests to `/auth/callback` were
+        enough: measured at four concurrent appends producing `chain broken at index 2`,
+        and over the real path a restart against that volume refused to resume and left
+        every register 503 with no way back, because the entries are immutable and fsynced.
+
+        What makes it a security defect rather than a race is WHICH control it breaks. The
+        result is `verify_log` reporting `tampered` on evidence nobody touched, which is
+        the AUD-001 tamper-evidence claim inverted: a false alarm in front of an assessor
+        costs exactly the credibility the chain exists to buy.
+
+        Across processes this is still not enough, and `chain.py` says so: the head read
+        and the line write would have to be one operation under an inter-process lock on
+        the volume. Until that exists the container runs a SINGLE worker.
         """
-        if self._wedged is not None:
-            raise JournalError(
-                f"the audit log stopped accepting entries earlier in this process, so no "
-                f"further change can be recorded: {self._wedged}"
-            )
-        entry = self._chain.append(entry_fields)
-        try:
-            append_entry(self._data_dir, entry)
-            write_anchor(self._data_dir, self._chain.anchor(), self._key)
-        except Exception as error:
-            self._wedged = f"{type(error).__name__}: {error}"
-            raise JournalError(f"the audit entry could not be persisted: {error}") from error
-        self._entries.append(entry)
-        return entry
+        with self._append_lock:
+            if self._wedged is not None:
+                raise JournalError(
+                    f"the audit log stopped accepting entries earlier in this process, so "
+                    f"no further change can be recorded: {self._wedged}"
+                )
+            entry = self._chain.append(entry_fields)
+            try:
+                append_entry(self._data_dir, entry)
+                write_anchor(self._data_dir, self._chain.anchor(), self._key)
+            except Exception as error:
+                self._wedged = f"{type(error).__name__}: {error}"
+                raise JournalError(f"the audit entry could not be persisted: {error}") from error
+            self._entries.append(entry)
+            return entry
 
     def anchor(self) -> Anchor:
         """Return the chain's current anchor."""

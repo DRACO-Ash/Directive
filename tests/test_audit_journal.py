@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from complyops.audit import Anchor, AuditChain, read_anchor, write_anchor
 from complyops.audit import journal as journal_module
 from complyops.audit.anchor import anchor_path, marker_path
+from complyops.audit.chain import verify_log
 from complyops.audit.journal import (
     JournalChain,
     JournalError,
@@ -31,6 +32,7 @@ from complyops.audit.journal import (
     read_entries,
     resume,
 )
+from conftest import fixed_entry
 
 #: Real key material, published here on purpose: it is not a credential.
 KEY = bytes(range(32))
@@ -481,3 +483,75 @@ def test_appending_to_a_pipe_with_a_reader_is_refused(tmp_path: Path) -> None:
         reader.join(timeout=5)
 
     assert drained in ([], [b""]), "no audit entry may be written into a pipe"
+
+
+#: How many threads drive `JournalChain.append` at once, and how many entries each writes.
+#: Eight is the shipped `--threads 8`, and the defect reproduced at four; six rounds each
+#: gives the interpreter enough switch points to interleave without making the test slow.
+CONCURRENT_WRITERS = 8
+APPENDS_EACH = 6
+
+
+def test_concurrent_appends_persist_in_the_order_they_were_chained(tmp_path: Path) -> None:
+    """The head advance and the line write are ONE operation, or the log forges an alarm.
+
+    `AuditChain.append` has a lock, and it covers the head advance alone: it is released
+    before `JournalChain.append` writes the line. Two threads could therefore take heads in
+    one order and persist their lines in the other, and the shipped command is a single
+    worker with EIGHT threads while `_record_authentication` takes no register lock, so two
+    concurrent unauthenticated requests to `/auth/callback` were enough to do it.
+
+    Measured before the fix, with the lock removed: four concurrent appends produced
+    `chain broken at index 2`, and over the real WSGI path a restart against that volume
+    refused to resume, leaving every register 503 with no way back because the entries are
+    immutable and fsynced. The failure mode is what makes it a security defect rather than
+    a race: `verify_log` reports `tampered` on evidence nobody touched, which inverts the
+    AUD-001 tamper-evidence claim in front of an assessor.
+
+    The whole suite passed with the lock absent, which is the reason this test exists.
+    """
+    chain, _ = resume(str(tmp_path), key=KEY, key_id="k1", keys=KEYS)
+    start = threading.Barrier(CONCURRENT_WRITERS)
+    failures: list[BaseException] = []
+
+    def write(worker: int) -> None:
+        start.wait(timeout=10)
+        try:
+            for number in range(APPENDS_EACH):
+                chain.append(fixed_entry(index=1, resource_id=f"W{worker}-{number}"))
+        except BaseException as error:
+            failures.append(error)
+
+    #: A fine switch interval so the interpreter is forced to interleave inside the window
+    #: between the head advance and the line write. Restored afterwards, because leaving it
+    #: set would slow every test that runs after this one in the same process.
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [
+            threading.Thread(target=write, args=(worker,)) for worker in range(CONCURRENT_WRITERS)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+            assert not thread.is_alive(), "an append thread did not finish"
+    finally:
+        sys.setswitchinterval(previous)
+
+    assert not failures, f"an append raised under concurrency: {failures}"
+
+    #: Read back from the VOLUME, not from the in-process list. The in-process list is
+    #: appended under the same lock, so it agrees with itself whatever the file says, and
+    #: the file is the evidence.
+    persisted = read_entries(str(tmp_path))
+    assert len(persisted) == CONCURRENT_WRITERS * APPENDS_EACH
+
+    anchor = read_anchor(str(tmp_path), KEY)
+    assert anchor is not None, "no anchor on the volume, so verification proves nothing"
+    verdict = verify_log(persisted, KEYS, anchor)
+    assert verdict.ok, f"the log does not verify after concurrent appends: {verdict.summary}"
+    assert not verdict.tampered, (
+        "concurrent appends made the log report tampering, which is the AUD-001 "
+        "tamper-evidence control raising a false alarm on evidence nobody touched"
+    )

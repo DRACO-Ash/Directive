@@ -98,7 +98,7 @@ def check_fields(
     callers towards read-modify-write round trips that lose concurrent edits.
     """
     if register not in REGISTERS:
-        raise RecordError(f"{register!r} is not a register")
+        raise RecordError(f"{str(register)[:64]!r} is not a register")
     clean: dict[str, Any] = {}
     for name, value in fields.items():
         if name in {"id", "created", "updated"}:
@@ -178,7 +178,7 @@ def mutate(  # noqa: PLR0913 - each argument is a distinct part of one audit ent
     Returns the stored record.
     """
     if register not in REGISTERS:
-        raise RecordError(f"{register!r} is not a register")
+        raise RecordError(f"{str(register)[:64]!r} is not a register")
     clean = (
         check_fields(fields or {}, register=register, complete=record_id is None)
         if fields is not None
@@ -242,7 +242,12 @@ def _update(
     """Apply a change to an existing record, returning it and what changed."""
     record = store.find(rows, record_id)
     if record is None:
-        raise RecordError(f"no record {record_id!r} in the {register} register")
+        #: Both halves capped. `record_id` and `register` are URL path segments, so both
+        #: are attacker-supplied and bounded only by gunicorn's request-line default, which
+        #: nothing in this repository asserts and the Dockerfile does not set.
+        raise RecordError(
+            f"no record {str(record_id)[:64]!r} in the {str(register)[:64]!r} register"
+        )
 
     changed = sorted(name for name, value in clean.items() if record.get(name) != value)
     if not changed:
@@ -263,7 +268,7 @@ def _update(
 def read(data_dir: str, register: str) -> list[dict[str, Any]]:
     """Return every record in one register, newest first."""
     if register not in REGISTERS:
-        raise RecordError(f"{register!r} is not a register")
+        raise RecordError(f"{str(register)[:64]!r} is not a register")
     rows = store.read(data_dir, register)
     return sorted(rows, key=lambda row: str(row.get("updated", "")), reverse=True)
 
