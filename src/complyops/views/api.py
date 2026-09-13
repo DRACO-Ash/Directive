@@ -292,7 +292,7 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
             return ChainVerdict(ok=False, checked=0, reason="the log could not be read"), (
                 "The audit log on the volume could not be read. See /api/diagnostics."
             )
-        anchor, failure = _stored_anchor(directory, chain, entries)
+        anchor, failure = _stored_anchor(directory, chain.signing_key, entries)
         # The in-process head, taken INSIDE the same window. It is the third read of this
         # comparison and it was outside: by the time it ran, this process had appended
         # again, so a healthy volume reported "the stored log does not match the chain this
@@ -305,7 +305,7 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
 
 
 def _stored_anchor(
-    directory: str, chain: JournalChain, entries: list[AuditEntry]
+    directory: str, signing_key: bytes, entries: list[AuditEntry]
 ) -> tuple[Anchor | None, tuple[ChainVerdict, str] | None]:
     """Read the stored anchor, returning either it or the verdict its failure calls for.
 
@@ -316,7 +316,7 @@ def _stored_anchor(
     paths answered 500 instead of its verdict.
     """
     try:
-        return read_anchor(directory, chain.signing_key), None
+        return read_anchor(directory, signing_key), None
     except AnchorTamperError as error:
         # The anchor's STATE says interference: a genuine older anchor put back, an anchor
         # signed by a key this server does not hold, or an anchor deleted beside a marker
@@ -391,16 +391,25 @@ def export() -> Response:
     """
     directory = _data_dir()
     chain = _chain()
-    # Appends paused across both reads, for the reason `appends_paused` gives: a pack whose
-    # anchor does not match its own entries fails its own verification later, off the
-    # volume, with nothing left to compare against. Measured at 28 of 40 packs before this.
+    # The REGISTERS first, and the order is a control rather than a convenience.
+    # `records.mutate` appends the audit entry and then commits the register, so entry time
+    # always precedes commit time, and a register read taken BEFORE the entries can never
+    # hold a row whose entry is missing. Taken after them it can: measured at 0 of 60 packs
+    # at machine speed and 20 of 20 once the register read takes 20ms, which three files
+    # off a persistent volume plausibly will. An orphan row is the AUD-001 claim that no
+    # path reaches a stored record without the log, contradicted by the evidence file
+    # itself, permanently, off the volume, with nothing left to compare against.
+    registers = dict(store.iter_registers(directory))
+    # Then the log and the anchor, with appends paused across BOTH, for the reason
+    # `appends_paused` gives: a pack whose anchor does not match its own entries fails its
+    # own verification later. Measured at 28 of 40 packs before this existed.
     with chain.appends_paused():
         stored_entries = read_entries(directory)
         stored_anchor = read_anchor(directory, chain.signing_key)
     pack = {
         "exported": records.now(),
         "exportedBy": auth.audit_actor(),
-        "registers": dict(store.iter_registers(directory)),
+        "registers": registers,
         # Read from the VOLUME, not from this process's memory. The pack is the off-volume
         # corroboration the anchor's blind spot rests on, so a pack assembled from memory
         # would corroborate the volume against nothing at all.

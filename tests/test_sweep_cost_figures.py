@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 #: compares against this dict on every run. The provenance IS the run.
 EXPECTED = {
     "prose rule folded to ignore case": (27, 19),
-    "unquoted rule with spaces around the equals": (23, 23),
+    "unquoted rule with spaces around the equals": (24, 24),
     "unquoted rule with the leading part of the name optional": (14, 14),
     "quoted rule with bare key and keys in its keyword group": (7, 7),
 }

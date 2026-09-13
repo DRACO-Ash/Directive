@@ -472,18 +472,79 @@ def test_a_register_entry_records_the_socket_address_not_a_header(
 #: seven-header drive, and passed the whole suite, after which 40 requests from one socket
 #: address wrote 40 durable rows with 40 forged `source_ip` values. A helper-function
 #: indirection evaded it the same way.
-ADDRESS_SOURCE = "remote_addr"
-ADDRESS_CALLS = frozenset({"recordable"})
+#: The audit-entry keyword whose value must be a bare call to the reader, and the modules
+#: that pass it. A pin on the reader alone is not enough: the value can be composed AFTER
+#: it returns, and `source_ip=recordable("source_ip", request.environ.get(...) or
+#: _client_ip())` at the call site needs no change to `_client_ip` at all and was green
+#: across the whole suite.
+ADDRESS_KEYWORD = "source_ip"
+COMPOSED_SOURCE_ADDRESS = ("views/api.py",)
+
+
+@pytest.mark.parametrize("module", COMPOSED_SOURCE_ADDRESS)
+def test_no_caller_composes_the_source_address_at_the_call_site(module: str) -> None:
+    """`source_ip=` takes a bare `_client_ip()` and nothing else.
+
+    `views/auth_routes.py` is deliberately absent from the list above: its refusal path
+    passes `source_ip="multiple"` and `source_ip=collapsed.address`, both server-composed
+    from values the refusal tracker owns, and neither is a call to the reader. A pin
+    demanding a bare `_client_ip()` there would be asserting something untrue about a path
+    that is already held by `test_the_refusal_marker_source_is_still_server_composed` and
+    by the drive over the seven headers.
+    """
+    source = (SRC / module).read_text(encoding="utf-8")
+    passed = [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.keyword) and node.arg == ADDRESS_KEYWORD
+    ]
+
+    assert passed, f"{module} passes no `{ADDRESS_KEYWORD}`, so this proves nothing"
+    for value in passed:
+        assert (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_client_ip"
+            and not value.args
+            and not value.keywords
+        ), (
+            f"{module}: `{ADDRESS_KEYWORD}=` is composed rather than taken from a bare "
+            "`_client_ip()`. The reader can be correct and the entry still carry a header, "
+            "if the header is folded in here."
+        )
+
+
+#: Every ATTRIBUTE the reader's body may name, and every NAME it may load. Both are
+#: whitelists over the whole body rather than over `request.<attr>` specifically, because
+#: scoping to that one expression left two live escapes, each green across the whole suite:
+#:
+#: ● An alias. `peer = request` then `peer.environ.get("HTTP_X_PEER_ADDRESS")` never forms
+#:   an `Attribute` whose value is the Name `request`, so the old comprehension saw only
+#:   `remote_addr` and passed, while `X-Peer-Address` landed verbatim in the `source_ip` of
+#:   a durable entry and defeated `RECORDED_PER_WINDOW` on the unauthenticated path.
+#: ● A helper. Any call out of the function moves the header read somewhere the pin is not
+#:   looking, which is why `ADDRESS_NAMES` is a whitelist and not merely non-empty.
+#:
+#: Collecting every attribute in the body catches `environ`, `headers`, and any other
+#: spelling; collecting every loaded name catches the alias, because the alias is a name
+#: the shipped readers do not load.
+ADDRESS_ATTRIBUTES = frozenset({"remote_addr"})
+ADDRESS_NAMES = frozenset({"request", "recordable"})
 
 
 def test_neither_client_address_reader_reaches_past_the_socket() -> None:
     """The source pin beside the drive, in both modules that read an address.
 
-    Be exact about what this asserts, because the sentence it replaces over-claimed and
-    shipped in the upload package: it does not say "no header is consulted". It says the
-    reader touches ONE attribute of `request`, `remote_addr`, and calls one function,
-    `recordable`. That is a whitelist, so it catches `environ`, any header by any name, and
-    any indirection through a helper, none of which a blacklist on the word `headers` sees.
+    Be exact about what this asserts, because two successive versions of this sentence
+    over-claimed and both shipped in the upload package. It does NOT say "no header is
+    consulted anywhere". It says: inside these two functions, the only attribute named is
+    `remote_addr` and the only names loaded are `request` and `recordable`. Both halves are
+    whitelists over the whole body, which is what refuses an alias and a helper; the
+    version before this one scoped the attribute check to `request.<attr>` and a two-line
+    alias walked past it with the whole suite green.
+
+    What it still does not cover is the CALL SITE, where the value can be composed after
+    this function returns. That is the sibling below.
     """
     for module in ("views/auth_routes.py", "views/api.py"):
         source = (SRC / module).read_text(encoding="utf-8")
@@ -495,25 +556,24 @@ def test_neither_client_address_reader_reaches_past_the_socket() -> None:
 
         touched = {
             node.attr
-            for node in ast.walk(reader)
+            for node in ast.walk(ast.Module(body=reader.body, type_ignores=[]))
             if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "request"
         }
-        assert touched == {ADDRESS_SOURCE}, (
-            f"{module}: `_client_ip` reads {sorted(touched)} off `request`, and the only "
-            f"one it may read is {ADDRESS_SOURCE!r}. A header is not evidence, by any "
-            "spelling: `environ` carries the same values under their WSGI names."
+        assert touched <= ADDRESS_ATTRIBUTES, (
+            f"{module}: `_client_ip` reads {sorted(touched - ADDRESS_ATTRIBUTES)}, and the "
+            f"only attribute it may read is {sorted(ADDRESS_ATTRIBUTES)}. A header is not "
+            "evidence by any spelling: `environ` carries the same values under their WSGI "
+            "names, and an alias reaches them without naming `request` at all."
         )
 
-        called = {
-            node.func.id
-            for node in ast.walk(reader)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        loaded = {
+            node.id
+            for node in ast.walk(ast.Module(body=reader.body, type_ignores=[]))
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
         }
-        assert called <= ADDRESS_CALLS, (
-            f"{module}: `_client_ip` calls {sorted(called - ADDRESS_CALLS)}. A helper is "
-            "where a header read hides from a pin that only inspects this function."
+        assert loaded <= ADDRESS_NAMES, (
+            f"{module}: `_client_ip` loads {sorted(loaded - ADDRESS_NAMES)}. A helper or an "
+            "alias is where a header read hides from a pin that inspects only this function."
         )
 
 
