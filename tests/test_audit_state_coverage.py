@@ -777,6 +777,36 @@ def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
         yield from _own_nodes(child)
 
 
+#: The list PARAMETERS that receive `.append` and are not the audit boundary. Declared per
+#: module and per name, never inferred, because the blanket version was defeated the round
+#: it shipped.
+#:
+#: The rule was "any parameter annotated `list[...]` is exempt", justified on the ground that
+#: mypy checks the argument at every call site against a type that is not `Any`. That
+#: justification was written without being measured and it is false: mypy checks the
+#: PARAMETER's type, and an argument of type `Any` satisfies `list[...]` happily. A gate
+#: annotated the chain `chain: Any`, passed it to a helper taking `rows: list[dict[str, str]]`,
+#: and appended a computed-key dict that nothing inspected, putting an unauthenticated
+#: caller's header into the signed `actor` of a durable entry that `verify_log` then
+#: confirmed as sound.
+#:
+#: One entry, because one list parameter in the package receives `.append`. Eight are
+#: annotated `list[...]`; the other seven are never appended to, and a new one lands on the
+#: CHECKED side by default.
+LIST_PARAMETER_SEAMS = MappingProxyType({"records.py": ("rows",)})
+
+
+def _mentions_any(annotation: ast.expr) -> bool:
+    """Report whether this annotation admits `Any` anywhere inside it.
+
+    `Any`, `Any | None`, `list[Any]`, `Mapping[str, Any]`: all of them hand back a value that
+    satisfies every later claim about its type, which is the exact property this file has now
+    been defeated by three times. Refused by SHAPE rather than by spelling, so the alias and
+    the union are covered without naming them.
+    """
+    return any(isinstance(node, ast.Name) and node.id == "Any" for node in ast.walk(annotation))
+
+
 def _constructs_a_list(value: ast.expr | None) -> bool:
     """Report whether this expression BUILDS a list, rather than claiming to be one.
 
@@ -793,7 +823,7 @@ def _constructs_a_list(value: ast.expr | None) -> bool:
     )
 
 
-def _list_names_bound_in(scope: ast.AST) -> set[str]:
+def _list_names_bound_in(scope: ast.AST, declared: tuple[str, ...] = ()) -> set[str]:
     """Return every name this scope binds to a list it can actually see being made.
 
     Two admissible forms and no third. A PARAMETER annotated `list[...]`, where the caller
@@ -817,7 +847,7 @@ def _list_names_bound_in(scope: ast.AST) -> set[str]:
                 *scope.args.posonlyargs,
                 *scope.args.kwonlyargs,
             ]
-            if _is_list_annotation(argument.annotation)
+            if _is_list_annotation(argument.annotation) and argument.arg in declared
         }
     for node in _own_nodes(scope):
         if (
@@ -832,7 +862,9 @@ def _list_names_bound_in(scope: ast.AST) -> set[str]:
     return found
 
 
-def _is_a_local_list(parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: str) -> bool:
+def _is_a_local_list(
+    parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: str, declared: tuple[str, ...]
+) -> bool:
     """Report whether this receiver is a list in its own scope, so `.append` is not the sink.
 
     The exemption is DERIVED from a `list[...]` annotation rather than from a list of names
@@ -860,16 +892,26 @@ def _is_a_local_list(parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: s
     other expression is a claim about a value rather than a value, and this file has now paid
     twice for treating the two as the same thing.
 
+    Be exact about the PARAMETER exception, because the sentence that stood here was wrong on
+    a fact and a gate proved it in one edit. It said mypy checks the argument at every call
+    site against a type that is not `Any`. mypy checks the PARAMETER's declared type; an
+    ARGUMENT of type `Any` satisfies `list[...]` without complaint. So a chain annotated
+    `chain: Any` and handed to a helper taking `rows: list[dict[str, str]]` took the
+    exemption, and a computed-key forge reached a signed durable entry that `verify_log` then
+    confirmed as sound. The exception is therefore DECLARED, in `LIST_PARAMETER_SEAMS`, and
+    is one name in one module.
+
     The second layer is `test_the_audit_chain_has_exactly_one_retrieval_shape`, which stops
     the untyped value existing rather than catching the claim about it. They are genuinely
     independent and each was measured alone: the construction rule reds on a computed-key
-    forge whose receiver never names the extension key, and the retrieval pin reds on the
-    key read by subscript, by an unannotated `.get`, and through a variable.
+    forge whose receiver never names the extension key, and the retrieval pin reds on the key
+    read by subscript, by an unannotated `.get`, through a variable, and now on `Any` in any
+    position, which is what let the two layers share a defect instead of covering each other.
     """
     name = receiver.split(".")[-1]
     scope = _enclosing(parents, node, (ast.FunctionDef, ast.AsyncFunctionDef))
     while scope is not None:
-        if name in _list_names_bound_in(scope):
+        if name in _list_names_bound_in(scope, declared):
             return True
         scope = _enclosing(parents, scope, (ast.FunctionDef, ast.AsyncFunctionDef))
     #: An attribute receiver, `self._entries`, is annotated in `__init__` and appended to in
@@ -877,7 +919,7 @@ def _is_a_local_list(parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: s
     if "." in receiver:
         owner = _enclosing(parents, node, (ast.ClassDef,))
         if owner is not None and any(
-            name in _list_names_bound_in(member)
+            name in _list_names_bound_in(member, declared)
             for member in ast.walk(owner)
             if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef)
         ):
@@ -885,9 +927,10 @@ def _is_a_local_list(parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: s
     return False
 
 
-def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST | None]]:
+def _entry_arguments(tree: ast.AST, module: str) -> list[tuple[str, ast.AST | None]]:
     """Return the argument passed to every call reaching the audit boundary."""
     parents = _parent_map(tree)
+    declared = LIST_PARAMETER_SEAMS.get(module, ())
     found: list[tuple[str, ast.AST | None]] = []
     for node in ast.walk(tree):
         if not (
@@ -897,7 +940,7 @@ def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST | None]]:
         ):
             continue
         receiver = ast.unparse(node.func.value)
-        if _is_a_local_list(parents, node, receiver):
+        if _is_a_local_list(parents, node, receiver, declared):
             continue
         #: FAIL CLOSED on a call with no positional argument. The first version required
         #: `node.args` to be non-empty and skipped silently otherwise, so
@@ -971,7 +1014,7 @@ def _modules_reaching_the_audit_boundary() -> list[str]:
     return [
         str(path.relative_to(SRC))
         for path in sorted(SRC.rglob("*.py"))
-        if _entry_arguments(ast.parse(path.read_text(encoding="utf-8")))
+        if _entry_arguments(ast.parse(path.read_text(encoding="utf-8")), str(path.relative_to(SRC)))
     ]
 
 
@@ -1014,7 +1057,7 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
     #: with a skip for the rest. Two honest skips are still two entries `verify.sh` reads as
     #: passes, in a suite where an emptied corpus has retired a control before. The tripwire
     #: above is what stops an empty derivation collecting nothing at all.
-    arguments = _entry_arguments(tree)
+    arguments = _entry_arguments(tree, module)
     assert arguments, f"{module} reaches the audit boundary nowhere, so this proves nothing"
 
     for receiver, argument in arguments:
@@ -1988,13 +2031,43 @@ def test_the_audit_chain_has_exactly_one_retrieval_shape() -> None:
                 and holder.args[0] is node
                 and isinstance(bound, ast.AnnAssign)
                 and not _is_list_annotation(bound.annotation)
+                and not _mentions_any(bound.annotation)
             ), (
                 f"{module}:{node.lineno} reaches the audit chain as "
                 f"`{ast.unparse(holder) if holder else node.value}`. The chain may only be "
                 "written by the factory or read as `.get()` bound to an annotation that is "
-                "not a list, because `extensions` is `dict[str, Any]` and an unannotated "
-                "read hands out a value that satisfies any later claim about its type."
+                "neither a list NOR `Any`, because `extensions` is `dict[str, Any]` and a "
+                "read that keeps `Any` hands out a value satisfying any later claim about "
+                "its type, which is the whole defect rather than a detail of it."
             )
+
+
+def test_every_declared_list_parameter_seam_is_one_the_module_has() -> None:
+    """An allowance wider than the code is permission nobody asked for.
+
+    The same tripwire `DECLARED_INTRA_PACKAGE_IMPORTS` carries, for the same reason: a
+    declared name that the source does not have pre-authorises a receiver somebody adds
+    later, inside a control added to stop exactly that.
+    """
+    for module, declared in LIST_PARAMETER_SEAMS.items():
+        tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
+        actual = {
+            argument.arg
+            for function in ast.walk(tree)
+            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+            for argument in [
+                *function.args.args,
+                *function.args.posonlyargs,
+                *function.args.kwonlyargs,
+            ]
+            if _is_list_annotation(argument.annotation)
+        }
+        missing = sorted(set(declared) - actual)
+        assert not missing, (
+            f"{module} declares {missing} as a list-parameter seam and has no such "
+            "parameter. The allowance has to match the code, or it pre-authorises a "
+            "receiver somebody adds later."
+        )
 
 
 def test_the_request_context_allowance_is_the_one_that_shipped() -> None:
