@@ -17,6 +17,7 @@ import ast
 import re
 from pathlib import Path
 
+import flask
 import pytest
 from flask.testing import FlaskClient
 
@@ -466,8 +467,9 @@ def test_a_register_entry_records_the_socket_address_not_a_header(
 
 
 #: The audit-entry field whose value may never be built from anything a caller sends, and
-#: the two shapes a view can write it in: a keyword argument, and a dict value. Both forms
-#: are live, and a pin keyed only on the keyword misses `auth_routes.py`'s dict entirely.
+#: and the FOUR shapes a module can write it in: a keyword argument, a dict literal value, a
+#: subscript store onto an entry after the literal, and an annotated assignment. The first
+#: version read two, and a pin keyed only on the keyword missed `auth_routes.py`'s dict.
 ADDRESS_KEYWORD = "source_ip"
 
 #: Every NAME and every ATTRIBUTE that may appear in a source address value, anywhere in the
@@ -487,8 +489,22 @@ ADDRESS_KEYWORD = "source_ip"
 #: was loosened to accommodate the refusal path's legitimate values. The gate's judgement on
 #: that trade is recorded and correct: the strict form would have refused the first two
 #: attacks on sight. The loosening is undone and those values are admitted by NAME instead.
-ADDRESS_VALUE_NAMES = frozenset({"_client_ip", "recordable", "source_ip", "collapsed"})
-ADDRESS_VALUE_ATTRIBUTES = frozenset({"address"})
+#: Each admitted name carries the shipped expression that needs it, because a bare set
+#: gives a maintainer nothing to decide against and this one has to be edited whenever a
+#: legitimate value does not fit. The test below asserts every entry here is actually
+#: reached by some collected value, so a stale entry reds rather than lingering as silent
+#: permission.
+ADDRESS_VALUE_NAMES = {
+    "_client_ip": "views/api.py and the else-branch of views/auth_routes.py",
+    "recordable": "the audit boundary's validator, in auth_routes' conditional",
+    "source_ip": "the PARAMETER of records.mutate and _record_authentication",
+    "collapsed": "the refusal summary at auth_routes.py, whose address came from _client_ip",
+    #: The fifth, and it arrived the moment the resolver learned loop targets: `collapsed`
+    #: is bound by `for collapsed in decision.collapsed`, so resolving that binding makes
+    #: the pin read `decision.collapsed` and `decision` has to be admitted with it.
+    "decision": "the refusal tracker's verdict, which `collapsed` is bound from",
+}
+ADDRESS_VALUE_ATTRIBUTES = frozenset({"address", "collapsed"})
 
 #: Where a source address is assembled outside `views/`, and why each is sound. Declared,
 #: because the derivation now ranges over the WHOLE package: a gate reached a durable entry
@@ -499,20 +515,71 @@ ASSEMBLED_OUTSIDE_THE_VIEWS = {
 }
 
 
-def _assigned_at_module_and_function_scope(tree: ast.AST) -> dict[str, list[ast.AST]]:
-    """Return every expression bound to a plain name anywhere in this tree.
+def _bound_names(target: ast.AST) -> list[str]:
+    """Return every plain name a binding target introduces, unwrapping tuples and stars."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Tuple | ast.List):
+        return [name for element in target.elts for name in _bound_names(element)]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    return []
 
-    A list per name, because a name can be rebound and the pin has to see every value it
-    ever holds, not the last one.
+
+def _assigned_at_module_and_function_scope(tree: ast.AST) -> dict[str, list[ast.AST]]:
+    """Return every expression a plain name is bound to, in EVERY form that binds one.
+
+    Seven forms, and the first version read two. A gate defeated it with the third:
+
+        for collapsed in (request.headers.get("X-Peer-Address") or _client_ip(),):
+            _record_authentication(..., source_ip=collapsed)
+
+    `collapsed` is a whitelisted name, the value at the keyword is a bare `Name`, and a
+    resolver that reads only `Assign` and `AnnAssign` finds NO binding for it, so nothing
+    is resolved and the whitelist passes it on sight. Measured: an unauthenticated caller's
+    `X-Peer-Address` in a durable signed entry on the volume, whole loop green.
+
+    That is the same class of miss this module was fixing one level down. The collector
+    learned four STORE forms and the resolver still knew two BINDING forms, so the
+    enumeration is now explicit in both and each is named.
+
+    A function PARAMETER is deliberately not a binding here. It is the seam a pinned caller
+    fills, and `source_ip` is a parameter in both `records.mutate` and
+    `_record_authentication`; treating it as an unresolvable binding is what distinguishes
+    that seam from a local somebody composed.
     """
     bound: dict[str, list[ast.AST]] = {}
+
+    def bind(target: ast.AST, value: ast.AST) -> None:
+        for name in _bound_names(target):
+            bound.setdefault(name, []).append(value)
+
     for node in ast.walk(tree):
+        #: 1 and 2, the two the first version knew.
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    bound.setdefault(target.id, []).append(node.value)
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
-            bound.setdefault(node.target.id, []).append(node.value)
+                bind(target, node.value)
+        if isinstance(node, ast.AnnAssign) and node.value:
+            bind(node.target, node.value)
+        #: 3, the loop target, which is what the gate used.
+        if isinstance(node, ast.For | ast.AsyncFor):
+            bind(node.target, node.iter)
+        #: 4, the context manager's bound name.
+        if isinstance(node, ast.With | ast.AsyncWith):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind(item.optional_vars, item.context_expr)
+        #: 5, the comprehension target, whose iterable is the value it takes from.
+        if isinstance(node, ast.comprehension):
+            bind(node.target, node.iter)
+        #: 6, the walrus.
+        if isinstance(node, ast.NamedExpr):
+            bind(node.target, node.value)
+        #: 7, the caught exception. Its value is the exception EXPRESSION, which cannot
+        #: carry a header, but the binding is recorded so the name is not treated as
+        #: unresolvable and waved through.
+        if isinstance(node, ast.ExceptHandler) and node.name and node.type is not None:
+            bound.setdefault(node.name, []).append(node.type)
     return bound
 
 
@@ -598,11 +665,15 @@ def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: 
     apply here: derive the set rather than writing the members down, because a hand-kept
     list leaves the next member unheld by default. `auth_routes.py` was already that member.
 
-    The rule is structural rather than a list of admissible expressions: a `source_ip` value
-    may call only `recordable` or `_client_ip`, and may not mention `request` at all. That
-    accepts every shipped form, `_client_ip()`, the literal `"multiple"`,
-    `collapsed.address`, and the conditional over the first and a validated argument, and it
-    refuses a header by any spelling without needing to know which spellings exist.
+    The rule is a WHITELIST of the names and attributes a source address value may contain,
+    and the docstring said otherwise for a commit after the instrument changed, which is
+    worse than saying nothing: a maintainer opening this test learnt the rule it had just
+    stopped using. It is not a ban on `request`. A ban has to enumerate the spellings of
+    what it forbids, and it was walked past by `flask.request` qualified, by an aliased
+    import, and by a local hoist that mentions nothing at all.
+
+    `ADDRESS_VALUE_NAMES` above carries the provenance of each admitted name. Adding a sixth
+    means naming the shipped expression that needs it, and a name no value reaches reds.
     """
     #: Parametrised over the modules that WRITE one, rather than over every view with a
     #: skip for the rest. Four honest skips are still four entries that `verify.sh` reads
@@ -612,15 +683,18 @@ def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: 
     bound = _assigned_at_module_and_function_scope(tree)
     values = _source_address_values(tree)
     assert values, f"{module} assembles no source address, so this case proves nothing"
+    reached: set[str] = set()
 
     def check(value: ast.AST, via: str) -> None:
         names = {node.id for node in ast.walk(value) if isinstance(node, ast.Name)}
         attributes = {node.attr for node in ast.walk(value) if isinstance(node, ast.Attribute)}
-        assert names <= ADDRESS_VALUE_NAMES, (
+        reached.update(names)
+        assert names <= set(ADDRESS_VALUE_NAMES), (
             f"{module}: a source address value{via} names "
-            f"{sorted(names - ADDRESS_VALUE_NAMES)}. Only {sorted(ADDRESS_VALUE_NAMES)} may "
-            "appear in one. A whitelist, because a ban on `request` was walked past by a "
-            "local, by `flask.request` qualified, and by an aliased import."
+            f"{sorted(names - set(ADDRESS_VALUE_NAMES))}. Only "
+            f"{sorted(ADDRESS_VALUE_NAMES)} may appear in one, each with its reason in "
+            "`ADDRESS_VALUE_NAMES`. A whitelist, because a ban on `request` was walked past "
+            "by a local, by `flask.request` qualified, and by an aliased import."
         )
         assert attributes <= ADDRESS_VALUE_ATTRIBUTES, (
             f"{module}: a source address value{via} reads "
@@ -641,6 +715,80 @@ def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: 
                     check(assigned, f" assigned to `{node.id}`")
 
 
+#: Header names the pins do NOT enumerate anywhere, chosen for exactly that reason. Every
+#: bypass a gate has found of the source pins had to use a name outside `FORWARDING_HEADERS`
+#: to stay green, so a drive over names nothing names is what catches the class rather than
+#: the instances.
+UNENUMERATED_HEADERS = ("X-Peer-Address", "X-Custom-Origin", "X-Originating-Address")
+
+
+@pytest.mark.parametrize("header", UNENUMERATED_HEADERS)
+def test_no_header_at_all_reaches_a_recorded_address_on_either_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, header: str
+) -> None:
+    """The BEHAVIOURAL backstop, and the most valuable test in this module.
+
+    Five bypasses of the source pins were demonstrated across two gate runs, each with the
+    whole suite green and each putting an attacker-chosen address into a durable signed
+    entry: a locally defined function shadowing a whitelisted callee, a walrus binding, a
+    `before_request` assigning `request.remote_addr` outright, a `request_class` subclass
+    setting it in `__init__`, and a middleware installed in `wsgi.py`, which no derivation
+    over `src/complyops` can see at all.
+
+    No amount of enumerating binding forms catches that set, because three of the five never
+    touch a `source_ip` value and two never touch `src/`. What they DO share is that each had
+    to carry its forged value in a header name the drives did not send. So this drives names
+    nothing enumerates, over BOTH paths, and asserts the recorded address is the socket's.
+
+    A pin says the source looks right. This says the entry on the volume is right, which is
+    the claim AUD-001 actually makes.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    client = create_app().test_client()
+    forged = "203.0.113.9"
+    socket_address = "198.51.100.4"
+
+    #: The unauthenticated path first, which is the one an in-scope adversary reaches.
+    client.get(
+        "/auth/callback?code=x&state=forged",
+        headers={header: forged},
+        environ_base={"REMOTE_ADDR": socket_address},
+    )
+    #: Then the authenticated register path, through the real sign-in and token.
+    client.post(
+        "/sign-in",
+        data={
+            "actor": "ash.higgins@bluestaq.uk",
+            "csrf_token": client.get("/").headers["X-CSRF-Token"],
+        },
+        headers={header: forged},
+        environ_base={"REMOTE_ADDR": socket_address},
+    )
+    client.post(
+        "/api/registers/tasks",
+        json={"title": "Access review"},
+        headers={"X-CSRF-Token": client.get("/").headers["X-CSRF-Token"], header: forged},
+        environ_base={"REMOTE_ADDR": socket_address},
+    )
+
+    chain = client.application.extensions["complyops_chain"]
+    recorded = {entry.source_ip for entry in chain.entries if entry.source_ip}
+
+    assert recorded, "no entry carried a source address, so this proves nothing"
+    assert forged not in recorded, (
+        f"{header} reached the source address of a durable entry. It is named by no pin in "
+        "this module, which is the point: a value that arrives by a route the pins do not "
+        "enumerate still has to fail here."
+    )
+    assert recorded == {socket_address}, (
+        f"the recorded addresses are {sorted(recorded)}, not the socket address the "
+        "container saw. AUD-001's source address is evidence."
+    )
+
+
 def test_no_middleware_rewrites_the_address_the_container_saw(signed_out: FlaskClient) -> None:
     """The attack no pin over source text can see: a wrapper around the WSGI application.
 
@@ -650,13 +798,39 @@ def test_no_middleware_rewrites_the_address_the_container_saw(signed_out: FlaskC
     durable entries from an unauthenticated caller with the whole loop passing. `_client_ip`
     reading the socket is worth something only if nothing rewrote what the socket reported.
     """
-    application = signed_out.application
+    #: Both objects. The factory's product is what the fixture builds; `wsgi.app` is what
+    #: `gunicorn wsgi:app` actually serves, and a wrap installed in `wsgi.py` AFTER
+    #: `create_app()` returns is invisible to the first and is the live path. Measured: a
+    #: nineteen-line wrap there passed format, lint, strict types, bandit and the whole
+    #: suite, and put an unauthenticated caller's header into a durable entry on the volume.
+    import wsgi  # noqa: PLC0415 - imported here so the module's own boot runs under the fixture
 
-    assert application.wsgi_app.__self__ is application, (
-        f"`wsgi_app` is {application.wsgi_app!r}, not Flask's own unwrapped application. A "
-        "middleware there rewrites `REMOTE_ADDR` before any view reads it, and no assertion "
-        "about the source of `_client_ip` would notice."
-    )
+    for label, application in (
+        ("the factory's product", signed_out.application),
+        ("wsgi.app", wsgi.app),
+    ):
+        #: `getattr`, because a wrapped `wsgi_app` has no `__self__` and the bare attribute
+        #: access raises before the assertion's message can print.
+        assert getattr(application.wsgi_app, "__self__", None) is application, (
+            f"{label}: `wsgi_app` is {application.wsgi_app!r}, not Flask's own unwrapped "
+            "application. A middleware there rewrites `REMOTE_ADDR` before any view reads "
+            "it, and no assertion about the source of `_client_ip` would notice."
+        )
+        #: `wsgi_app` is not the only wrapper. In Werkzeug 3 `remote_addr` is a plain
+        #: instance attribute set when the Request is constructed, so a `request_class`
+        #: subclass assigning it in `__init__`, and a `before_request` assigning it
+        #: outright, both forge the address with `wsgi_app` untouched and every
+        #: `_client_ip` body byte-identical. Both were measured putting three forged
+        #: addresses into durable rows from an unauthenticated caller.
+        assert application.request_class is flask.Request, (
+            f"{label}: `request_class` is {application.request_class!r}. A subclass can set "
+            "`remote_addr` in its own `__init__`, before any view reads it."
+        )
+        assert not application.before_request_funcs, (
+            f"{label}: {application.before_request_funcs} run before every view and can "
+            "assign `request.remote_addr` outright. There are none at HEAD; a new one has "
+            "to be declared here."
+        )
 
 
 def test_the_source_address_pin_covers_every_view_that_writes_one() -> None:
