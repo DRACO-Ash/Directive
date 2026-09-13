@@ -1079,19 +1079,27 @@ def test_an_access_fault_with_no_marker_stays_a_fault(
 
 
 def test_an_oversized_anchor_file_is_refused_before_it_is_parsed(tmp_path: Path) -> None:
-    """The size guard, held by nothing: widening it to four megabytes was green.
+    """The size guard on the SECOND read path, matched on the guard's own message.
 
-    It is the volume writer's cheapest attack on the reader. Nothing upstream bounds the
-    file, because the adversary this guard exists for is the one writing it, so a guard
-    held by no test is one edit from being a parser fed an arbitrary payload.
+    Be exact, because the first version of this was wrong twice. Its docstring said the
+    guard was held by nothing; `test_an_implausibly_large_anchor_is_refused_unread` held it
+    and predates this commit. What was unheld was the VALUE, which the pin below closes.
+    And it passed for the wrong reason: a bare `AnchorTamperError` is reached through the
+    first-use marker escalation that any unparseable payload triggers, so deleting the size
+    guard left it green. Matching the guard's own message is what makes it bite.
     """
     key = bytes(range(32))
     write_anchor(str(tmp_path), Anchor(head="a" * 64, length=1, key_id="k1", total_length=1), key)
     target = Path(tmp_path) / "audit-anchor.json"
     target.write_text(" " * (anchor_module.MAXIMUM_ANCHOR_BYTES + 1), encoding="utf-8")
 
-    with pytest.raises(AnchorTamperError):
+    with pytest.raises(AnchorTamperError) as raised:
         read_anchor(str(tmp_path), key)
+
+    #: The CAUSE, not the message. The marker escalation wraps whatever the read raised, so
+    #: matching the outer text asserts only that the escalation happened, which any
+    #: unparseable payload triggers. The guard's own message is one link down the chain.
+    assert "implausibly large" in str(raised.value.__cause__)
 
 
 def test_the_anchor_size_guard_is_the_one_that_shipped() -> None:
