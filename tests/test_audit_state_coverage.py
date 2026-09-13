@@ -31,6 +31,16 @@ SUITE_KEY = bytes(range(32)).hex()
 
 #: What a caller might try to smuggle into the collapsed count. Each is a shape that would
 #: satisfy an unguarded f-string and none is a counted integer.
+#:
+#: They do not all fail the same way, and that is measured rather than assumed. `ADMIN` and
+#: `ASH_HIGGINS` satisfy the audit boundary's state rule, so a smuggled one LANDS and the
+#: `MARKER` check is what catches it. `0 OR 1` and `1; DROP` carry a space and a semicolon,
+#: which the boundary refuses, so `_record_authentication` swallows the `AuditFieldError`
+#: and no row is written at all: those two are caught by the "no row was written" guard
+#: instead. A gate read that as two cases that cannot falsify; both drives below were
+#: mutated with all four and all four went red, by one route or the other. Keeping the
+#: refused pair is deliberate, because a widening of the boundary rule and a widening of
+#: the marker are different edits and this corpus should notice either.
 HOSTILE_TAGS = ("ADMIN", "0 OR 1", "ASH_HIGGINS", "1; DROP")
 
 
@@ -106,6 +116,68 @@ def _writers_of_a_state_field() -> set[str]:
 def _undeclared(writers: set[str]) -> set[str]:
     """Return the state writers that are neither the vocabulary nor a declared exception."""
     return writers - THROUGH_THE_VOCABULARY - set(DECLARED_EXCEPTIONS)
+
+
+#: One case per syntactic form the reader knows, each with a negative twin that names a
+#: field the reader must NOT match. Without the twin a case is satisfied by a reader that
+#: returns True for everything, which is the shape the vacuous first version had.
+#:
+#: The forms are not hypothetical in the same way. `Constant` and `Name` are both live in
+#: `src/` today and the two assertions below name the modules. `keyword`, `arg` and
+#: `Attribute` are not live, and that is exactly why they are held here: they were added
+#: because a gate wrote `chain.append(dict(..., new_state=caller_value))` and walked past a
+#: constant-only scan, so the branch that catches that writer has to be red before the
+#: writer exists, not after.
+READER_FORMS = (
+    ("a string constant", 'entry = {"new_state": value}', 'entry = {"new_stat": value}'),
+    ("a keyword argument", "chain.append(new_state=value)", "chain.append(new_stat=value)"),
+    (
+        "a parameter name",
+        "def write(*, old_state: str) -> None: ...",
+        "def write(*, old: str) -> None: ...",
+    ),
+    ("an attribute", "return entry.new_state", "return entry.state"),
+    ("an annotated declaration", "old_state: str", "old: str"),
+)
+
+
+@pytest.mark.parametrize(
+    ("form", "names_one", "names_none"), READER_FORMS, ids=[c[0] for c in READER_FORMS]
+)
+def test_the_reader_sees_a_state_field_in_every_form_a_writer_can_use(
+    form: str, names_one: str, names_none: str
+) -> None:
+    """Four of the five branches were held by nothing and deleting them was byte-identical.
+
+    The reader grew from a constant-only scan to five forms in one commit, and the whole
+    suite stayed green with the four new branches removed: `Attribute` is shadowed by the
+    constant that finds the same module, and `keyword`, `arg` and `Name` had no live writer
+    to find. A branch added to catch a writer that does not exist yet is the one branch a
+    test has to hold, because nothing else will notice when it goes.
+    """
+
+    def sees(source: str) -> bool:
+        return any(_names_a_state_field(node) for node in ast.walk(ast.parse(source)))
+
+    assert sees(names_one), f"the reader no longer sees a state field named as {form}"
+    assert not sees(names_none), f"the reader matches a non-state name in the {form} position"
+
+
+def test_the_reader_form_corpus_is_not_empty() -> None:
+    """Emptying the corpus is a SKIP, which `verify.sh` reads as a pass."""
+    assert len(READER_FORMS) == 5
+
+
+def test_the_reader_sees_the_annotation_only_writer() -> None:
+    """`audit/chain.py` declares both fields and names them nowhere else.
+
+    It reaches them through `normalise_fields`, so it belongs on the vocabulary side, and
+    that is why losing sight of it is silent: `_undeclared` SUBTRACTS the allowances, so a
+    reader that stops seeing an allowed module makes the set smaller rather than red. The
+    pin on `THROUGH_THE_VOCABULARY` does not help either, because it pins the allowance and
+    not what the reader found.
+    """
+    assert "audit/chain.py" in _writers_of_a_state_field()
 
 
 def test_the_reader_still_sees_the_writer_the_exception_is_written_for() -> None:
@@ -246,6 +318,59 @@ def test_the_refusal_marker_written_to_the_chain_carries_no_caller_value(
         assert MARKER.fullmatch(state), (
             f"{state!r} reached `new_state` on the refusal path. The marker must be composed "
             "from a counted integer, and nothing a caller sends may reach it."
+        )
+
+
+@pytest.mark.parametrize("hostile", HOSTILE_TAGS)
+def test_the_flood_marker_written_to_the_chain_carries_no_caller_value(
+    signed_out: FlaskClient, hostile: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OTHER writer of the same field on the same route, held by nothing until now.
+
+    `_refuse` writes `new_state` twice: once per address from `decision.collapsed`, and once
+    for the whole window from `decision.flood`. The drive above reaches only the first, so
+    feeding the flood row's count from a request header was green across the whole suite,
+    and an unauthenticated caller could put `REPEATED_ADMIN` into an audit entry by the
+    second door after the first was closed. That is the engineering gate's own rule from
+    the round before: when a fix establishes a rule, sweep the rule's siblings in the same
+    commit. This is the sibling.
+
+    The flood row needs the global row budget spent and the window rolled. The budget is
+    lowered rather than driven to its real 500, because 500 fsynced entries per parameter
+    is the cost of the realism and the path exercised is identical; `_budget` is then aged
+    the way time would age it. Addresses come from `REMOTE_ADDR`, because `_client_ip`
+    reads the socket and never `X-Forwarded-For`, so a header cannot spread the flood.
+    """
+    monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 3)
+
+    def refuse(address: str) -> None:
+        signed_out.get(
+            "/auth/callback?code=x&state=forged",
+            headers={"X-Repeat-Tag": hostile},
+            environ_base={"REMOTE_ADDR": address},
+        )
+
+    for number in range(10):
+        refuse(f"198.51.100.{number}")
+    #: Past the budget, so the overflow is non-empty and the roll below has something to
+    #: report. Without this the flood row is never composed and the assertion is vacuous.
+    assert refusals._budget.refusals_over, "nothing overflowed, so no flood row is composed"
+    refusals._budget.started -= refusals.WINDOW_SECONDS + 1
+    refuse("198.51.100.200")
+
+    chain = signed_out.application.extensions["complyops_chain"]
+    flood = [entry for entry in chain.entries if entry.action == "LOGIN_FAILED_FLOOD"]
+
+    assert flood, "no flood row was written, so this proves nothing"
+    for entry in flood:
+        assert MARKER.fullmatch(entry.new_state), (
+            f"{entry.new_state!r} reached `new_state` on the flood path. The marker must be "
+            "composed from a counted integer, and nothing a caller sends may reach it."
+        )
+        #: And the address count beside it, which is the same shape of value from the same
+        #: decision and reaches an audit field through an f-string the same way.
+        assert re.fullmatch(r"addresses-(atleast-)?\d+", entry.resource_id), (
+            f"{entry.resource_id!r} reached `resource_id` on the flood path"
         )
 
 

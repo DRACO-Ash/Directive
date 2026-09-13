@@ -107,7 +107,11 @@ def check_fields(
             clean["state"] = check_state(value, register=register)
             continue
         if not isinstance(value, str):
-            raise RecordError(f"{name!r} must be text")
+            # Capped for the same reason the unknown-name echo below is, and reached
+            # BEFORE the cap lookup: an unknown name carrying a non-string value never
+            # gets as far as `FIELD_CAPS`, so the truncation has to happen here too.
+            # `str(name)` because a JSON object key is not guaranteed to be text either.
+            raise RecordError(f"{str(name)[:64]!r} must be text")
         cap = FIELD_CAPS.get(name)
         if cap is None:
             # The name is truncated before it is echoed. It is attacker-supplied and

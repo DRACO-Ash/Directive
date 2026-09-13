@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import threading
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -896,3 +897,45 @@ def test_the_session_cookie_policy_is_the_one_that_shipped(
     assert config["SESSION_COOKIE_SAMESITE"] == "Lax"
     assert config["SESSION_COOKIE_NAME"] == "complyops_session"
     assert config["SESSION_COOKIE_SECURE"] is auth.is_production()
+
+
+def test_the_session_timeouts_are_the_ones_that_shipped(client: FlaskClient) -> None:
+    """Two figures that bound an attacker's window, held by nothing.
+
+    `SESSION_LIFETIME` is the flight plan's eight-hour idle timeout and it is what limits a
+    stolen session cookie; raising it to 400 days was green across the whole suite, and so
+    was dropping the assignment onto `permanent_session_lifetime` entirely, which leaves
+    Flask's 31-day default. `TOKEN_TIMEOUT_SECONDS` bounds the back-channel exchange, and it
+    is the only thing stopping one stalled Entra call from holding a worker thread for as
+    long as the socket stays open, which `docs/DEPLOYMENT.md` records as a live amplifier.
+
+    Written out rather than read back from the module, because a pin that imports its own
+    subject moves with it.
+    """
+    assert timedelta(hours=8) == auth.SESSION_LIFETIME
+    assert auth.TOKEN_TIMEOUT_SECONDS == 10
+    #: And the lifetime reaches the application, which the pin alone does not say.
+    assert client.application.permanent_session_lifetime == timedelta(hours=8)
+
+
+def test_the_session_cookie_is_secure_in_production(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The flag that matters, in the posture where it matters.
+
+    The pin above compares `SESSION_COOKIE_SECURE` against `is_production()`, and the client
+    fixture is development-only, so both sides were `False` and setting the flag to a
+    literal `False` was green across the whole suite. The live control was correct, and the
+    test was vacuous in the one posture where a session cookie can leak.
+    """
+    monkeypatch.setenv("COMPLYOPS_ENV", "production")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TENANT_ID", "t")
+    monkeypatch.setenv("CLIENT_ID", "c")
+    monkeypatch.setenv("CLIENT_SECRET", "s" * 40)
+    monkeypatch.setenv("REDIRECT_URI", "https://comply-ops.apps.bluestaq.com/auth/callback")
+    monkeypatch.setenv("SESSION_KEY", "k" * 64)
+    monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+
+    assert create_app().config["SESSION_COOKIE_SECURE"] is True
