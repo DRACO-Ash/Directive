@@ -18,10 +18,31 @@ import re
 from pathlib import Path
 
 import pytest
+from flask.testing import FlaskClient
 
-from complyops import records
+from complyops import create_app, records
+from complyops.views import refusals
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "complyops"
+
+#: Real key material, published on purpose: it is not a credential. Same value the rest of
+#: the suite uses.
+SUITE_KEY = bytes(range(32)).hex()
+
+#: What a caller might try to smuggle into the collapsed count. Each is a shape that would
+#: satisfy an unguarded f-string and none is a counted integer.
+HOSTILE_TAGS = ("ADMIN", "0 OR 1", "ASH_HIGGINS", "1; DROP")
+
+
+@pytest.fixture
+def signed_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
+    """Return an unauthenticated client on a fresh volume."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
+    monkeypatch.setenv("AUDIT_KEY_ID", "k1")
+    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    return create_app().test_client()
+
 
 #: The one writer of a state field that does not reach `records.check_state`. Declared, so
 #: a second one is a red test rather than a silent widening of the exception.
@@ -33,16 +54,51 @@ MARKER = re.compile(r"\AREPEATED_\d+\Z")
 
 #: The modules that reach a state field THROUGH the closed vocabulary. The larger of the two
 #: allowances, and the one that was left unpinned.
-THROUGH_THE_VOCABULARY = frozenset({"records.py", "audit/validation.py", "audit/hashing.py"})
+THROUGH_THE_VOCABULARY = frozenset(
+    {
+        "records.py",
+        "audit/validation.py",
+        "audit/hashing.py",
+        #: Visible only once the reader learned to see an annotation: the entry dataclass
+        #: declares both fields. It reaches them through `normalise_fields`, which is the
+        #: vocabulary's own boundary, so it belongs on this side rather than in the
+        #: exception list.
+        "audit/chain.py",
+    }
+)
+
+
+#: Every syntactic place a state field can be NAMED. A string constant was the whole of the
+#: first version, and a gate walked past it: a module calling `chain.append(dict(...,
+#: new_state=caller_value))` names the field as a keyword argument, is invisible to a
+#: constant scan, and writes a raw caller value to the chain past `check_state`. The dict
+#: literal form of the same module was caught, which is what made it a detection gap rather
+#: than a design choice, and `audit/chain.py` was escaping the scan the same way.
+STATE_FIELDS = frozenset({"old_state", "new_state"})
+
+
+def _names_a_state_field(node: ast.AST) -> bool:
+    """Report whether this node names a state field, in any form a writer can use."""
+    if isinstance(node, ast.Constant):
+        return node.value in STATE_FIELDS
+    if isinstance(node, ast.keyword):
+        return node.arg in STATE_FIELDS
+    if isinstance(node, ast.arg):
+        return node.arg in STATE_FIELDS
+    if isinstance(node, ast.Attribute):
+        return node.attr in STATE_FIELDS
+    if isinstance(node, ast.Name):
+        return node.id in STATE_FIELDS
+    return False
 
 
 def _writers_of_a_state_field() -> set[str]:
-    """Return every module under `src/` that names `old_state` or `new_state` in a literal."""
+    """Return every module under `src/` that names `old_state` or `new_state`, any form."""
     found = set()
     for path in sorted(SRC.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and node.value in {"old_state", "new_state"}:
+            if _names_a_state_field(node):
                 found.add(str(path.relative_to(SRC)))
     return found
 
@@ -114,9 +170,9 @@ def test_every_state_writer_is_the_vocabulary_or_a_declared_exception() -> None:
     writers = _writers_of_a_state_field()
     #: Pinned, because it is the LARGER allowance of the two and only the smaller one was
     #: held: widening it to `writers` made the assertion vacuous and was green.
-    assert frozenset({"records.py", "audit/validation.py", "audit/hashing.py"}) == (
-        THROUGH_THE_VOCABULARY
-    )
+    assert frozenset(
+        {"records.py", "audit/validation.py", "audit/hashing.py", "audit/chain.py"}
+    ) == (THROUGH_THE_VOCABULARY)
     undeclared = _undeclared(writers)
     #: And the subtraction still discriminates. Pinning the two allowances does not stop the
     #: EXPRESSION being made vacuous: `writers - writers` was green, because nothing asked
@@ -147,7 +203,53 @@ def test_a_register_state_comes_from_the_closed_vocabulary(register: str) -> Non
         records.check_state("REPEATED_5", register=register)
 
 
-def test_the_refusal_marker_carries_no_caller_value() -> None:
+@pytest.mark.parametrize("hostile", HOSTILE_TAGS)
+def test_the_refusal_marker_written_to_the_chain_carries_no_caller_value(
+    signed_out: FlaskClient, hostile: str
+) -> None:
+    """The ENTRY, not the source.
+
+    The first version asserted a substring and then a tautology: it matched the marker
+    pattern against strings the test itself built from integers, so it never asserted
+    `collapsed` was a counted integer at all.
+
+    A gate widened that parameter to `int | str` and fed it from a request header, leaving
+    `ruff`, `mypy --strict` and the whole suite green, after which an unauthenticated caller
+    wrote `REPEATED_ADMIN` into `new_state` of an audit entry. The AST check added the round
+    after inspects the f-string and sees a plain name, so it did not catch it either. This
+    drives the real path with a hostile header and reads what landed on the volume.
+    """
+
+    def refuse() -> None:
+        #: A forged callback state, which is the refusable unauthenticated request the rest
+        #: of the suite uses. A sign-in POST is not refusable in the development posture,
+        #: which is why the first version of this drive produced no refusal rows at all.
+        signed_out.get(
+            "/auth/callback?code=x&state=forged",
+            headers={"X-Repeat-Tag": hostile, "X-Forwarded-For": "198.51.100.7"},
+        )
+
+    for _ in range(20):
+        refuse()
+    #: Force the window closed the way time would, so the suppressed count is banked and
+    #: written. Without this the collapse never fires inside a test and the assertion below
+    #: passes over an empty set, which is how the first version of this proved nothing.
+    for window in refusals._windows.values():
+        window.started -= refusals.WINDOW_SECONDS + 1
+    refuse()
+
+    chain = signed_out.application.extensions["complyops_chain"]
+    states = {entry.new_state for entry in chain.entries if entry.new_state}
+
+    assert states, "no refusal entry carried a state, so this proves nothing"
+    for state in states:
+        assert MARKER.fullmatch(state), (
+            f"{state!r} reached `new_state` on the refusal path. The marker must be composed "
+            "from a counted integer, and nothing a caller sends may reach it."
+        )
+
+
+def test_the_refusal_marker_source_is_still_server_composed() -> None:
     """The one value written outside the vocabulary is a count, not a caller's text.
 
     That is what makes the exception defensible: it is composed server-side from an integer

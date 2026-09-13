@@ -278,6 +278,10 @@ def test_a_valid_utc_timestamp_is_accepted(good: str) -> None:
         #: widening the class by one character was green across the whole suite. The
         #: leading-character component IS held, by `1TASK`, which is the asymmetry closed.
         "TASK COMPLETE",
+        #: The character class beyond the space, held by nothing: admitting a hyphen was
+        #: green across the whole suite. `action` is composed server-side from register
+        #: prefixes and literals, so this is regression cover rather than a live hole.
+        "TASK-COMPLETE",
     ],
 )
 def test_an_action_outside_the_naming_shape_is_rejected(bad_action: str) -> None:

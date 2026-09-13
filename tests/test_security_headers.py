@@ -359,3 +359,46 @@ def test_a_duplicate_added_after_a_tighten_is_replaced() -> None:
 
     served = app.test_client().get("/dupe").headers.getlist("Content-Security-Policy")
     assert served == [security_headers.CONTENT_SECURITY_POLICY]
+
+
+#: Every header this application serves, written out again on purpose. The rest of this
+#: module compares the wire against `security_headers.SECURITY_HEADERS`, which is the value
+#: under test, so it moves with any edit: `connect-src 'self'` widened to `*` was green
+#: across the whole suite, and so were `object-src`, `base-uri`, `form-action`, `img-src`,
+#: the opener policy and the resource policy. That is the defect `PINNED_LIMITS` closed for
+#: the audit caps, one module along, and CSP is named by AMD-001 section 10.6.
+PINNED_POLICY = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "form-action 'self'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'; "
+    "object-src 'none'"
+)
+
+PINNED_HEADERS = {
+    "Content-Security-Policy": PINNED_POLICY,
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+}
+
+
+def test_every_header_is_the_one_that_shipped() -> None:
+    """The values, not the names, and written out rather than read from the source."""
+    assert PINNED_HEADERS == security_headers.SECURITY_HEADERS
+
+
+def test_every_pinned_header_reaches_the_wire_verbatim(client: FlaskClient) -> None:
+    """And the pin is worth nothing if the served value is not the pinned one."""
+    served = client.get("/").headers
+
+    for name, value in PINNED_HEADERS.items():
+        assert served[name] == value, f"{name} is served as {served[name]!r}"
