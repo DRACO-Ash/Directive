@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from flask import Flask
+from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -869,3 +870,29 @@ def test_no_actor_shape_suppresses_its_own_refusal(
     entries = app.extensions["complyops_chain"].entries
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"], actor
     assert entries[0].actor == "unknown"
+
+
+def test_the_register_size_guard_is_the_one_that_shipped() -> None:
+    """A cap read from the value under test moves with it, so it is written out here.
+
+    `journal.MAXIMUM_LOG_BYTES` is caught by its own assertion; this sibling was not, and
+    widening it a thousandfold was green across the whole suite.
+    """
+    assert store.MAXIMUM_REGISTER_BYTES == 32 * 1024 * 1024
+
+
+def test_the_session_cookie_policy_is_the_one_that_shipped(
+    client: FlaskClient,
+) -> None:
+    """Three flags held by nothing: flipping each was green across the whole suite.
+
+    `csrf.py` states `SameSite=Lax` as a premise of the token design, so the flag is part of
+    that control rather than decoration. `Secure` is production-only by design, because a
+    local session over plain HTTP would never be sent back.
+    """
+    config = client.application.config
+
+    assert config["SESSION_COOKIE_HTTPONLY"] is True
+    assert config["SESSION_COOKIE_SAMESITE"] == "Lax"
+    assert config["SESSION_COOKIE_NAME"] == "complyops_session"
+    assert config["SESSION_COOKIE_SECURE"] is auth.is_production()

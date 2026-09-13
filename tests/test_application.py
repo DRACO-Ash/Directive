@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from complyops import (
     create_app,
+    csrf,
     records,
     store,
 )
@@ -160,6 +161,54 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
 
     assert walked, "no rules were walked, so this proves nothing"
     assert not open_to_anyone, f"these answer an anonymous caller: {open_to_anyone}"
+
+
+#: The unsafe routes a SIGNED-IN caller may reach without a token. Both are the sign-in
+#: flow itself, which mints the token it would otherwise have to present.
+CSRF_EXEMPT_ROUTES = frozenset({("POST", "/sign-in"), ("POST", "/sign-out")})
+
+
+def test_every_unsafe_route_refuses_a_signed_in_caller_without_a_token(
+    signed_in: FlaskClient,
+) -> None:
+    """The CSRF decorator, walked mechanically, the way `@auth.required` already is.
+
+    It was held on one route. `@csrf.required` could be deleted from `update_record` or from
+    `verify` with the whole suite green, while `docs/OWASP-TOP-10-TEST.md` ships "every
+    mutating route also needs the cross-site request forgery (CSRF) token" to an assessor.
+    The auth walk beside this one catches a deleted decorator because it walks the map; this
+    one now does the same, so a new unsafe route is covered the day it is added.
+    """
+    adapter = signed_in.application.url_map.bind("localhost")
+    walked = []
+    for rule in signed_in.application.url_map.iter_rules():
+        for method in sorted(rule.methods & csrf.UNSAFE_METHODS):
+            if (method, rule.rule) in CSRF_EXEMPT_ROUTES:
+                continue
+            path = rule.rule.replace("<register>", "tasks").replace("<record_id>", "TSK-0001")
+            reached, _ = adapter.match(path, method=method)
+            assert reached == rule.endpoint, (
+                f"{method} {path} reaches {reached}, not {rule.endpoint}"
+            )
+            response = signed_in.open(path, method=method, json={"title": "x"})
+            walked.append((method, rule.rule, response.status_code))
+
+    assert walked, "no unsafe rule was walked, so this proves nothing"
+    untokened = [entry for entry in walked if entry[2] != 403]
+    assert not untokened, f"these accept a signed-in caller with no token: {untokened}"
+
+
+def test_the_csrf_exemptions_are_routes_the_application_serves(app: Flask) -> None:
+    """An exemption for a route that no longer exists is an exemption nobody reviews."""
+    served = {
+        (method, rule.rule)
+        for rule in app.url_map.iter_rules()
+        for method in rule.methods - {"HEAD", "OPTIONS"}
+    }
+
+    assert served >= CSRF_EXEMPT_ROUTES, (
+        f"exempted but not served: {sorted(CSRF_EXEMPT_ROUTES - served)}"
+    )
 
 
 def test_no_rule_is_served_by_head_alone(app: Flask) -> None:

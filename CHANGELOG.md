@@ -59,8 +59,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 22 findings
-  on 22 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 23 findings
+  on 23 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

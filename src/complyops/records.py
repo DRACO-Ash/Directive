@@ -142,7 +142,13 @@ def check_state(value: object, *, register: str) -> str:
     """
     states = REGISTERS[register]["states"]
     if value not in states:
-        raise RecordError(f"{value!r} is not a {register} state. One of: {', '.join(states)}")
+        #: Capped at 64 the way `check_fields` caps its field-name echo, and for the same
+        #: reason it gives there: a client error is not a mirror. Uncapped, a 200,000
+        #: character state came back verbatim in the 400 body, bounded only by the request
+        #: cap two layers out.
+        raise RecordError(
+            f"{str(value)[:64]!r} is not a {register} state. One of: {', '.join(states)}"
+        )
     return str(value)
 
 
