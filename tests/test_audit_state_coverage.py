@@ -608,6 +608,39 @@ def _assigned_at_module_and_function_scope(  # noqa: PLR0912 - one branch per bi
     return bound
 
 
+#: The fields an audit entry carries, from `audit/hashing.FIELD_ORDER`. Written out so the
+#: shape check does not import the value it reasons about.
+AUDIT_ENTRY_FIELDS = frozenset(
+    {
+        "timestamp",
+        "actor",
+        "action",
+        "resource",
+        "resource_id",
+        "outcome",
+        "source_ip",
+        "user_agent",
+        "fields_changed",
+        "old_state",
+        "new_state",
+    }
+)
+
+
+def _is_an_audit_entry(node: ast.Dict) -> bool:
+    """Report whether this dict literal is shaped like an audit entry.
+
+    Two or more constant keys naming audit fields. One is too loose, since a register
+    record legitimately carries a `resource_id`; two together is the entry shape.
+    """
+    named = {
+        key.value
+        for key in node.keys
+        if isinstance(key, ast.Constant) and key.value in AUDIT_ENTRY_FIELDS
+    }
+    return len(named) >= 2
+
+
 def _source_address_values(tree: ast.AST) -> list[ast.AST]:
     """Return every expression that can reach `source_ip`, in every form a view writes it.
 
@@ -643,6 +676,18 @@ def _source_address_values(tree: ast.AST) -> list[ast.AST]:
         if isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values, strict=True):
                 if isinstance(key, ast.Constant) and key.value == ADDRESS_KEYWORD:
+                    take(value)
+                #: A non-Constant key, or a `**` unpacking, is UNRESOLVABLE rather than
+                #: absent. A gate rebuilt the entry as `{**snapshot, _ADDRESS_FIELD: peer}`
+                #: in `audit/chain.py`, so no constant key named the field, the module never
+                #: joined the writing set, and the tripwire never noticed. CLAUDE.md says a
+                #: control that cannot be verified is treated as failed, so an unresolvable
+                #: write is collected and fails the whitelist on whatever it names.
+                #: Scoped by SHAPE. The unscoped version swept every non-constant-keyed
+                #: dict in the package and red on `audit/anchor.py`, `records.py` and
+                #: `views/api.py`, none of which is an entry. A dict naming two or more
+                #: audit fields as constants is one, and nothing else in the package is.
+                if (key is None or not isinstance(key, ast.Constant)) and _is_an_audit_entry(node):
                     take(value)
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -1081,33 +1126,100 @@ def test_no_channel_at_all_reaches_a_recorded_address_on_either_path(
     )
 
 
-#: Modules that must never see a request at all, and why each is sound without one. A
-#: structural complement to the channel matrix, and the reason it is worth more than another
-#: header name: a drive can only send names somebody thought of, and this needs none.
-NO_REQUEST_CONTEXT = {
-    "views/refusals.py": (
-        "a pure counting module. Its address arrives as an argument from a caller that is "
-        "pinned, so reading a request there is how a forged value enters a row no source "
-        "pin covers: it defines no `_client_ip` and writes no `source_ip`, so neither "
-        "structural pin inspects it. A gate read `X-Real-IP` there and forged a durable "
-        "`LOGIN_FAILED_REPEATED` entry with the whole loop green."
-    ),
-}
+#: The modules that legitimately hold a request context. EVERY other module in the package
+#: is pinned, derived rather than listed, which is the fifth time this project has had to
+#: make that move and the first time in this file: a hand-kept `NO_REQUEST_CONTEXT` named
+#: `views/refusals.py` alone, and a gate then forged every durable row through
+#: `audit/chain.py`, which was in exactly the same position. It measured that 17 of 21
+#: modules were reached by neither source pin.
+#:
+#: Declaring the allowed side rather than the forbidden one puts a NEW module on the pinned
+#: side by default, which is the safe direction: adding a module that needs a request is a
+#: deliberate line here, and adding one that does not is held automatically.
+HOLDS_A_REQUEST_CONTEXT = frozenset(
+    {
+        "__init__.py",
+        "auth.py",
+        "csrf.py",
+        "security_headers.py",
+        "views/api.py",
+        "views/auth_routes.py",
+        "views/console.py",
+        "views/health.py",
+    }
+)
+
+#: What a module with no request context may import. A WHITELIST, because the first version
+#: asserted `flask` was absent from the import names and `request` from the loaded names,
+#: and a gate reached the live request with neither: `sys.modules.get("flask")` puts no
+#: flask in the imports, and `.globals.request` is an Attribute rather than a Name. A
+#: blacklist has to enumerate the spellings of what it forbids, which is the same lesson
+#: `ADDRESS_VALUE_NAMES` learnt two commits ago.
+PERMITTED_IMPORTS = frozenset(
+    {
+        "__future__",
+        "abc",
+        "base64",
+        "binascii",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "datetime",
+        "errno",
+        "fcntl",
+        "hashlib",
+        "hmac",
+        "json",
+        "logging",
+        "os",
+        "pathlib",
+        "re",
+        "secrets",
+        "shutil",
+        "stat",
+        "string",
+        "tempfile",
+        "threading",
+        "time",
+        "typing",
+        "unicodedata",
+        "urllib",
+        "uuid",
+        "complyops",
+    }
+)
+
+#: Names that reach a module the import statements do not name. `sys` is not on the
+#: whitelist above, so `sys.modules` is already refused; these close the rest of the class
+#: in one line rather than waiting for each to be demonstrated.
+DYNAMIC_IMPORT_NAMES = frozenset({"__import__", "eval", "exec", "globals", "vars", "compile"})
 
 
-@pytest.mark.parametrize("module", sorted(NO_REQUEST_CONTEXT))
-def test_a_counting_module_never_reaches_for_the_request(module: str) -> None:
-    """No Flask import, no request object, no header by any name anybody thinks of.
+def _modules_without_a_request_context() -> list[str]:
+    """Return every module in the package that must never reach for a request."""
+    return [
+        str(path.relative_to(SRC))
+        for path in sorted(SRC.rglob("*.py"))
+        if str(path.relative_to(SRC)) not in HOLDS_A_REQUEST_CONTEXT
+    ]
 
-    The channel matrix drives names. This asserts the module cannot read one, which is the
-    complement that does not grow a list every time a gate thinks of another spelling.
+
+@pytest.mark.parametrize("module", _modules_without_a_request_context())
+def test_a_module_with_no_request_context_cannot_reach_one(module: str) -> None:
+    """A whitelist of imports, which needs no spelling of the thing it forbids.
+
+    Be exact about what this asserts, because the sentence it replaces said the module
+    "cannot read one" and a gate read one with it green. It asserts that every import is on
+    a list of modules that cannot produce a request, and that no dynamic-import name is
+    loaded. Those two together leave no route to a request object that does not add an
+    import, which is the property; the previous version asserted two SPELLINGS instead.
     """
     tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
     imported = sorted(
         {
             node.module.split(".")[0]
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module
+            if isinstance(node, ast.ImportFrom) and node.module and node.level == 0
         }
         | {
             alias.name.split(".")[0]
@@ -1116,14 +1228,54 @@ def test_a_counting_module_never_reaches_for_the_request(module: str) -> None:
             for alias in node.names
         }
     )
-
-    assert "flask" not in imported, (
-        f"{module} imports flask, and it is {NO_REQUEST_CONTEXT[module]} Its imports are "
-        f"{imported}."
+    outside = [name for name in imported if name not in PERMITTED_IMPORTS]
+    assert not outside, (
+        f"{module} imports {outside}, which is not on `PERMITTED_IMPORTS`. A module outside "
+        f"`HOLDS_A_REQUEST_CONTEXT` must not be able to reach a request at all: its address "
+        "and its fields arrive as arguments from callers that are pinned. Add the import "
+        "here with its reason, or move the module to the allowed set deliberately."
     )
-    named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    assert "request" not in named, (
-        f"{module} names `request`, and it is {NO_REQUEST_CONTEXT[module]}"
+
+    loaded = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    dynamic = sorted(loaded & DYNAMIC_IMPORT_NAMES)
+    assert not dynamic, (
+        f"{module} loads {dynamic}, which reaches a module the import statements do not "
+        'name. A gate used `sys.modules.get("flask")` to read the live request with no '
+        "flask import and no `request` name anywhere."
+    )
+
+
+def test_the_request_context_allowance_is_the_one_that_shipped() -> None:
+    """The allowed set is the smaller half, so it is pinned rather than merely honoured.
+
+    Derived pins need a tripwire beside them, per the rule in `docs/GATE-RECORDS.md`: the
+    derivation subtracts, so widening `HOLDS_A_REQUEST_CONTEXT` silently shrinks what is
+    checked and reds nowhere.
+    """
+    holding = {
+        str(path.relative_to(SRC))
+        for path in sorted(SRC.rglob("*.py"))
+        if any(
+            (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] in {"flask", "werkzeug"}
+            )
+            or (
+                isinstance(node, ast.Import)
+                and any(alias.name.split(".")[0] in {"flask", "werkzeug"} for alias in node.names)
+            )
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        )
+    }
+    assert holding == HOLDS_A_REQUEST_CONTEXT, (
+        f"the modules importing flask or werkzeug are now {sorted(holding)}, and the "
+        f"declared allowance is {sorted(HOLDS_A_REQUEST_CONTEXT)}. A module joining or "
+        "leaving that set has to be a deliberate line, because everything outside it is "
+        "pinned by subtraction."
     )
 
 
@@ -1180,12 +1332,21 @@ def _hook_registries(bare: flask.Flask) -> list[str]:
         #: `isinstance(..., dict)` alone was tried and is far too wide: `blueprints`,
         #: `config` and `extensions` are all dicts a real application legitimately fills,
         #: so the comparison would red on every correct build. The suffix set is therefore
-        #: the filter, with `_processors` added because `template_context_processors` fell
-        #: out of the original four for ending in that rather than `_preprocessors`. The
-        #: residual is stated rather than hidden: a registry Flask adds under a suffix
-        #: outside this set leaves the comparison in silence, and
-        #: `test_the_address_a_view_reads_is_the_one_the_socket_reported` is the backstop
-        #: for that, since it asserts the outcome and needs no registry name at all.
+        #: the filter, and it is the ORIGINAL four. `_processors` was added to it and then
+        #: removed, and this comment described the version that did not ship for a commit,
+        #: which is the promise-without-implementation class this file has now been caught
+        #: on twice. `template_context_processors` is declared OUT, for a reason stronger
+        #: than render-time ordering: no audit-writing view renders at all. `render_template`
+        #: appears in `views/auth_routes.py` and `views/console.py` and neither writes an
+        #: entry, measured, so a context-processor forge reaches nothing.
+        #:
+        #: The residual is bounded rather than vague. Enumerating `vars(flask.Flask(...))`,
+        #: the only dict-valued members outside this suffix set are
+        #: `template_context_processors`, `blueprints`, `config` and `extensions`, and none
+        #: of them runs before a view on this Flask version. So the residual is EMPTY today,
+        #: and the backstop for a future one is the channel matrix rather than
+        #: `test_the_address_a_view_reads_is_the_one_the_socket_reported`, which drives two
+        #: header names at one socket and so backstops an unconditional forge only.
         if name.endswith(("_funcs", "_preprocessors", "_functions", "_handlers"))
         and isinstance(getattr(bare, name), dict)
         #: Only what runs BEFORE the view. `after_request_funcs` legitimately carries the
@@ -1243,9 +1404,28 @@ def test_nothing_between_the_socket_and_the_view_is_wired_to_rewrite_the_address
         #: put an unauthenticated caller's arbitrary string into three durable signed
         #: entries with format, lint, strict types, bandit and all 1304 tests clean. One
         #: assertion, no header name and no channel: the attribute must not be shadowed.
-        assert "remote_addr" not in vars(application.request_class), (
-            f"{label}: `remote_addr` is shadowed on {application.request_class!r} itself. A "
-            "class-level property rewrites the address for every request while the class "
+        #: The whole MRO, not one class, and the reason is measurable rather than
+        #: cautious: at HEAD `remote_addr` is on NO class in the chain, because the sansio
+        #: `__init__` sets it as an instance attribute. Reading `vars(request_class)` alone
+        #: therefore guarded one empty slot of three, and a gate patched
+        #: `werkzeug.sansio.request.Request` with a data descriptor and forged all seven
+        #: durable rows with the loop green. `__getattribute__` is in the set because
+        #: installing one on the base is the same escape by another name.
+        #:
+        #: A metaclass and a class-level `__getattr__` are NOT vectors and are deliberately
+        #: not asserted: instance attribute lookup never consults the metaclass, and
+        #: `__getattr__` only fires when normal lookup fails, which it does not because the
+        #: attribute is set in `__init__`. Recorded so nobody adds two assertions that
+        #: cannot fail.
+        shadowed = [
+            f"{klass.__module__}.{klass.__qualname__}.{name}"
+            for klass in application.request_class.__mro__
+            for name in ("remote_addr", "__getattribute__", "__getattr__")
+            if name in vars(klass) and klass is not object
+        ]
+        assert not shadowed, (
+            f"{label}: {shadowed} shadows the address on the request class chain. A "
+            "descriptor anywhere in the MRO rewrites it for every request while the class "
             "identity, the hook registries and both `_client_ip` bodies stay untouched."
         )
         assert application.request_class is bare.request_class, (
