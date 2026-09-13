@@ -746,6 +746,27 @@ def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST]]:
     return found
 
 
+def _parameters_of(tree: ast.AST, node: ast.AST) -> set[str]:
+    """Return every parameter name of every function in this module.
+
+    Module-wide rather than scoped to the enclosing function, because `ast` carries no
+    parent links and the precision is not needed: a name that is a parameter ANYWHERE in a
+    module and is passed to the audit sink is a pass-through in the only shape this package
+    has, and `test_the_seam_assertion_covers_every_module_that_reaches_it` pins which three
+    modules reach the sink at all.
+    """
+    return {
+        argument.arg
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+        for argument in [
+            *function.args.args,
+            *function.args.posonlyargs,
+            *function.args.kwonlyargs,
+        ]
+    }
+
+
 def _mutated_after_binding(tree: ast.AST, name: str) -> list[ast.AST]:
     """Return every post-construction write to `name`, by subscript or by `update`."""
     written: list[ast.AST] = []
@@ -769,7 +790,30 @@ def _mutated_after_binding(tree: ast.AST, name: str) -> list[ast.AST]:
     return written
 
 
-@pytest.mark.parametrize("module", _views_writing_a_source_address())
+def _modules_reaching_the_audit_boundary() -> list[str]:
+    """Return every module in the package that calls the audit sink."""
+    return [
+        str(path.relative_to(SRC))
+        for path in sorted(SRC.rglob("*.py"))
+        if _entry_arguments(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+
+
+def test_the_seam_assertion_covers_every_module_that_reaches_it() -> None:
+    """The parametrisation is derived, so an empty one collects nothing and reds nowhere.
+
+    Named rather than left to the derivation for the same reason as its two siblings: this
+    is the tripwire half of the rule in `docs/GATE-RECORDS.md`, and a derived corpus without
+    one retires in silence.
+    """
+    reaching = _modules_reaching_the_audit_boundary()
+    assert sorted(reaching) == ["audit/journal.py", "records.py", "views/auth_routes.py"], (
+        f"the modules reaching the audit boundary are now {sorted(reaching)}. Each is "
+        "pinned by the test below; a module joining or leaving that set is a deliberate line."
+    )
+
+
+@pytest.mark.parametrize("module", _modules_reaching_the_audit_boundary())
 def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
     """The positive assertion over the one seam, which needs no shape heuristic at all.
 
@@ -790,13 +834,23 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
     """
     tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
     bound = _assigned_at_module_and_function_scope(tree)
+    #: Parametrised over the modules that REACH the sink, rather than over every writer
+    #: with a skip for the rest. Two honest skips are still two entries `verify.sh` reads as
+    #: passes, in a suite where an emptied corpus has retired a control before. The tripwire
+    #: above is what stops an empty derivation collecting nothing at all.
     arguments = _entry_arguments(tree)
-    if not arguments:
-        pytest.skip(f"{module} reaches the audit boundary nowhere")
+    assert arguments, f"{module} reaches the audit boundary nowhere, so this proves nothing"
 
     for receiver, argument in arguments:
         literal = argument
         if isinstance(argument, ast.Name):
+            #: A PARAMETER is a pass-through, not an entry this module builds. `JournalChain
+            #: .append` forwards its caller's literal, and every caller is itself pinned by
+            #: this same test, so verifying here would be verifying the wrong expression.
+            #: The distinction is the one `source_ip` already turns on: a parameter is a
+            #: seam a pinned caller fills, a local is something this module composed.
+            if argument.id in _parameters_of(tree, argument):
+                continue
             assignments = bound.get(argument.id, [])
             assert len(assignments) == 1, (
                 f"{module}: `{receiver}.{AUDIT_SINK}` is passed `{argument.id}`, bound "
