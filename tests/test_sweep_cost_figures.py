@@ -31,7 +31,13 @@ from sweep_rules import keyword_group, load_case_sensitive, load_rules, tracked_
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: What each widening costs, measured at `1bdbdb8`. Each entry is (findings, lines).
+#: What each widening costs. Each entry is (findings, lines).
+#:
+#: No commit hash on this line any more. It carried one, and the figures were re-measured
+#: twice afterwards without it being updated, so it named a tree the numbers no longer came
+#: from: provenance that goes stale silently is worse than none. It does not need one,
+#: because `test_the_cost_of_each_widening_is_what_the_records_say` re-runs the sweep and
+#: compares against this dict on every run. The provenance IS the run.
 EXPECTED = {
     "prose rule folded to ignore case": (27, 19),
     "unquoted rule with spaces around the equals": (23, 23),

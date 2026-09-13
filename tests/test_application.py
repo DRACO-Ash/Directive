@@ -23,6 +23,8 @@ from complyops import (
 )
 from complyops.audit import AuditFieldError, normalise_fields
 from complyops.audit.journal import JournalError
+from complyops.views.api import DEFAULT_AUDIT_PAGE, MAXIMUM_AUDIT_PAGE
+from conftest import fixed_entry
 
 #: Real key material, published here on purpose: it is not a credential.
 SUITE_KEY = bytes(range(32)).hex()
@@ -167,6 +169,35 @@ def test_every_route_the_application_serves_is_gated_or_declared_public(
 #: flow itself, which mints the token it would otherwise have to present.
 CSRF_EXEMPT_ROUTES = frozenset({("POST", "/sign-in"), ("POST", "/sign-out")})
 
+#: Written out rather than imported, because the walk below drove itself from
+#: `csrf.UNSAFE_METHODS` and that is the value under test: dropping `"PATCH"` from
+#: `src/complyops/csrf.py` narrowed the walk to match, left the suite green, and gave a
+#: signed-in caller a live `PATCH` with no token. A set the test states itself is the only
+#: thing that can notice.
+PINNED_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def test_the_unsafe_method_set_is_the_one_that_shipped() -> None:
+    """The walk's subject, pinned, so narrowing it is red at the definition as well."""
+    assert csrf.UNSAFE_METHODS == PINNED_UNSAFE_METHODS
+
+
+def test_no_exempt_route_is_a_register_write() -> None:
+    """The exemption is an allowance, so it is bounded by a rule rather than by its length.
+
+    Adding `("POST", "/api/registers/<register>")` to the list above dropped a live register
+    write out of the walk and stayed green: the walk asked only whether the list and the
+    routes it skipped agreed, and they did. What the exemption is FOR is the sign-in flow,
+    which mints the token it would otherwise present, and nothing under `/api/` qualifies.
+    """
+    assert CSRF_EXEMPT_ROUTES, "an empty exemption list would make this vacuous"
+    for method, path in sorted(CSRF_EXEMPT_ROUTES):
+        assert method == "POST", f"{method} {path} is exempt, and only a POST can be"
+        assert not path.startswith("/api/"), (
+            f"{path} is exempt from the CSRF token and is an API route. Only the sign-in "
+            "flow may be exempt, because it mints the token it would otherwise present."
+        )
+
 
 def test_every_unsafe_route_refuses_a_signed_in_caller_without_a_token(
     signed_in: FlaskClient,
@@ -180,10 +211,12 @@ def test_every_unsafe_route_refuses_a_signed_in_caller_without_a_token(
     one now does the same, so a new unsafe route is covered the day it is added.
     """
     adapter = signed_in.application.url_map.bind("localhost")
-    walked = []
+    walked: list[tuple[str, str, int]] = []
+    exempted: list[tuple[str, str]] = []
     for rule in signed_in.application.url_map.iter_rules():
-        for method in sorted(rule.methods & csrf.UNSAFE_METHODS):
+        for method in sorted(rule.methods & PINNED_UNSAFE_METHODS):
             if (method, rule.rule) in CSRF_EXEMPT_ROUTES:
+                exempted.append((method, rule.rule))
                 continue
             path = rule.rule.replace("<register>", "tasks").replace("<record_id>", "TSK-0001")
             reached, _ = adapter.match(path, method=method)
@@ -194,6 +227,13 @@ def test_every_unsafe_route_refuses_a_signed_in_caller_without_a_token(
             walked.append((method, rule.rule, response.status_code))
 
     assert walked, "no unsafe rule was walked, so this proves nothing"
+    #: And the exemption list is exact in both directions. An entry naming a route that no
+    #: longer exists is dead allowance nobody notices, and a route added to the list is
+    #: dropped from the walk silently, which is how an exemption widens.
+    assert set(exempted) == CSRF_EXEMPT_ROUTES, (
+        f"the exemption list and the routes actually exempted differ by "
+        f"{sorted(set(exempted) ^ CSRF_EXEMPT_ROUTES)}"
+    )
     untokened = [entry for entry in walked if entry[2] != 403]
     assert not untokened, f"these accept a signed-in caller with no token: {untokened}"
 
@@ -734,6 +774,44 @@ def test_the_audit_page_size_is_capped(signed_in: FlaskClient) -> None:
         assert signed_in.get(f"/api/audit?limit={limit}").status_code == 200
 
 
+def test_the_audit_page_clamp_holds_at_a_log_longer_than_the_cap(signed_in: FlaskClient) -> None:
+    """The clamp above asserted only a 200, which the route returns with no clamp at all.
+
+    With five entries in the log every limit in that loop returns five, so raising
+    `MAXIMUM_AUDIT_PAGE` to `10**9`, or deleting the `min` outright, was green across the
+    whole suite while `GET /api/audit?limit=999999` served a 24-month log in one response.
+    A log longer than the cap is what makes the three bounds distinguishable, so this
+    appends past it directly on the chain rather than over HTTP.
+    """
+    chain = signed_in.application.extensions["complyops_chain"]
+    for number in range(MAXIMUM_AUDIT_PAGE + 100):
+        chain.append(fixed_entry(resource_id=f"D-{number}"))
+
+    served = {
+        limit: len(signed_in.get(f"/api/audit?limit={limit}").get_json()["entries"])
+        for limit in ("", "0", "-5", "999999", "banana")
+    }
+
+    #: The ceiling, which is the control. Anything above it is served the cap, not the log.
+    assert served["999999"] == MAXIMUM_AUDIT_PAGE
+    #: The floor. A negative limit is one entry rather than `entries[5:]`, which is a slice
+    #: from the wrong end of the log.
+    assert served["-5"] == 1
+    #: Zero reaches the DEFAULT rather than the floor, and that is the measured behaviour
+    #: rather than the obvious one: `0 or DEFAULT_AUDIT_PAGE` is the default, so `max` never
+    #: sees the zero. Stated as it is because the alternative reading, `entries[-0:]`, is
+    #: the whole log, and the row that matters is that neither happens.
+    assert served["0"] == DEFAULT_AUDIT_PAGE
+    #: And an absent or unparseable limit takes the default, not the ceiling.
+    assert served[""] == DEFAULT_AUDIT_PAGE
+    assert served["banana"] == DEFAULT_AUDIT_PAGE
+
+
+def test_the_audit_page_bounds_are_the_ones_that_shipped() -> None:
+    """Written out, because the test above drives itself from the value it is checking."""
+    assert (DEFAULT_AUDIT_PAGE, MAXIMUM_AUDIT_PAGE) == (200, 2000)
+
+
 def test_diagnostics_reports_a_healthy_log(signed_in: FlaskClient) -> None:
     """The read-out names the state of the log, which is what an operator needs first."""
     assert "chain intact" in signed_in.get("/api/diagnostics").get_json()["auditLog"]
@@ -839,15 +917,36 @@ def test_an_over_long_request_body_is_refused(signed_in: FlaskClient) -> None:
     assert oversized.status_code == 413
 
 
-def test_an_unknown_field_name_is_not_mirrored_back(signed_in: FlaskClient) -> None:
-    """A client error is not a mirror. The name is attacker-supplied and unbounded."""
-    refused = signed_in.post(
-        "/api/registers/tasks",
-        json={"title": "Access review", "z" * 4000: "x"},
-        headers=token_for(signed_in),
-    )
-    assert refused.status_code == 400
-    assert len(refused.get_json()["error"]) < 200
+#: Every `RecordError` echo that can carry caller-supplied text, driven at a size that
+#: fits inside `MAXIMUM_REQUEST_BYTES` so the 413 does not answer first and hide the cap.
+#: One case per echo, because each was capped in a different commit and two of the three
+#: were green with the cap deleted. `check_fields` tests `isinstance(value, str)` BEFORE it
+#: looks the name up in `FIELD_CAPS`, so an unknown name carrying a non-string value takes
+#: the "must be text" branch and never reaches the field-name cap below it.
+UNBOUNDED_ECHOES = (
+    ("the state", {"title": "Access review", "state": "N" * 200_000}),
+    ("an unknown field name", {"title": "Access review", "z" * 200_000: "x"}),
+    ("an unknown field name carrying a non-string value", {"title": "x", "z" * 200_000: 7}),
+)
+
+
+@pytest.mark.parametrize(
+    ("echo", "payload"), UNBOUNDED_ECHOES, ids=[c[0] for c in UNBOUNDED_ECHOES]
+)
+def test_no_record_error_mirrors_the_caller_back(
+    signed_in: FlaskClient, echo: str, payload: dict[str, Any]
+) -> None:
+    """A client error is not a mirror. Each of these is attacker-supplied and unbounded.
+
+    The third case is the one that shipped: the type check runs before the cap lookup, so
+    an unknown name with a non-string value was echoed verbatim and a 200,000-character key
+    came back in a 200,028-byte 400 body. The other two had the cap and no test, which is
+    the same defect one step earlier: deleting either cap was green across the whole suite.
+    """
+    refused = signed_in.post("/api/registers/tasks", json=payload, headers=token_for(signed_in))
+
+    assert refused.status_code == 400, echo
+    assert len(refused.get_json()["error"]) < 200, echo
 
 
 def test_a_no_op_state_change_claims_no_transition(signed_in: FlaskClient) -> None:

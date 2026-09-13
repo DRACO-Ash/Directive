@@ -282,6 +282,11 @@ def test_a_valid_utc_timestamp_is_accepted(good: str) -> None:
         #: green across the whole suite. `action` is composed server-side from register
         #: prefixes and literals, so this is regression cover rather than a live hole.
         "TASK-COMPLETE",
+        #: A lower-case LEADING character with a conforming body. `task_complete` above is
+        #: lower case throughout, so the body class rejects it whatever the leading class
+        #: does, and widening the leading class alone to `[A-Za-z]` was green across the
+        #: whole suite. Same asymmetry as `_STATE` and `_FIELD_NAMES`, third rule of three.
+        "tASK_COMPLETE",
     ],
 )
 def test_an_action_outside_the_naming_shape_is_rejected(bad_action: str) -> None:
@@ -349,6 +354,12 @@ def test_an_enumerated_workflow_state_is_accepted(state: str) -> None:
         #: produced the over-claim one round earlier, and correcting the wording did not
         #: widen the corpus that caused it.
         ("a lower-case single token", "closed"),
+        #: And the BODY position, which the case above does not reach. `_STATE` anchors the
+        #: first character separately, so widening only the repeated class to
+        #: `[A-Z][A-Za-z0-9_]{0,31}` left every case above red and the suite green, while
+        #: accepting `Ashley_Higgins` and `Flat_2_Acacia_Ave`. A leading-character rule is
+        #: not a case rule, and this is the case that says so.
+        ("a lower-case body", "CLOSED_by_jane"),
         #: The LEADING character and the separators, each held by nothing until now. A state
         #: opening with a digit or an underscore, and one carrying a dot or a hyphen, were
         #: each accepted under a one-character widening with the suite green. Not reachable
@@ -426,6 +437,12 @@ def test_a_list_of_changed_field_names_is_accepted(names: str) -> None:
         #: whole suite. Third and fourth components of this one rule found by a gate.
         ("a leading digit", "12_high_street"),
         ("a hyphenated token", "home-address"),
+        #: And camel case, which is neither of those two. `STATUS` above is red on its
+        #: LEADING character, so widening only the repeated class to `[a-zA-Z0-9_]` left
+        #: every case above red and the suite green, while admitting `reporterName` and
+        #: `homeAddress`. Fifth component of the same rule, and the same asymmetry between a
+        #: leading-character rule and a body rule that `_STATE` had.
+        ("camel case", "oldStatus"),
     ],
 )
 def test_fields_changed_takes_names_only(label: str, value: str) -> None:

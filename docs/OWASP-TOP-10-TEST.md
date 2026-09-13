@@ -18,7 +18,7 @@ Bluestaq Ltd, Compliance Operations Console (`comply-ops`). Required by AMD-001 
 
 ## A01:2021 Broken Access Control
 
-Every mutating and every reading API route is behind `auth.required`; every mutating route also needs the cross-site request forgery (CSRF) token, compared in constant time and failing closed on a non-ASCII value. Register and record identifiers that do not exist are refused with 400, and the response body is generic. The `next` parameter after sign-in is constrained to a same-site path and refuses protocol-relative, backslash and scheme forms.
+Every mutating and every reading API route is behind `auth.required`; every mutating route also needs the cross-site request forgery (CSRF) token, compared in constant time and failing closed on a non-ASCII value. That sentence was held on one route when it was written and the table showed one method; both are now walked mechanically over the whole URL map, for every unsafe method, with the sign-in flow the only exemption and no API route permitted in it. Register and record identifiers that do not exist are refused with 400, and the response body is generic. The `next` parameter after sign-in is constrained to a same-site path and refuses protocol-relative, backslash and scheme forms.
 
 **Observation, not a failure.** The application has one role. Any authenticated actor can read and write every register and read the audit log. Least privilege is therefore enforced by WHO can authenticate, which is the Entra ID app registration's user assignment, not by the application. That is adequate for a single-team console operated by the ISM and recorded here so it is not mistaken for role-based access control. User assignment is required on the enterprise application, confirmed by the ISM on 2026-09-10; that assignment list is the access list.
 
@@ -47,6 +47,8 @@ Every mutating and every reading API route is behind `auth.required`; every muta
 | open redirect next='javascript:alert(1)' | redirect stays on-site | `/console` | Passed |
 | open redirect next='\\\\evil.example' | redirect stays on-site | `/console` | Passed |
 | authenticated POST without CSRF token | 403 | `403` | Passed |
+| authenticated PATCH without CSRF token | 403 | `403` | Passed |
+| authenticated POST /api/audit/verify without CSRF token | 403 | `403` | Passed |
 | authenticated POST with wrong CSRF token | 403 | `403` | Passed |
 | CSRF token non-ASCII (compare_digest TypeError path) | 403, no 500 | `403` | Passed |
 
