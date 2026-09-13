@@ -8,17 +8,21 @@ that skips the log.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.wrappers.response import Response
 
 from .. import auth, csrf, records, store
-from ..audit import AuditFieldError, ChainVerdict, verify_log
+from ..audit import AuditEntry, AuditFieldError, ChainVerdict, verify_log
 from ..audit.anchor import (
+    Anchor,
     AnchorError,
     AnchorRollbackError,
     AnchorTamperError,
+    read_anchor,
 )
-from ..audit.journal import JournalChain, JournalError
+from ..audit.journal import JournalChain, JournalError, read_entries
 from ..audit.keys import AuditKeyError
 from ..audit.validation import recordable
 from ..records import RecordError
@@ -275,16 +279,44 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
     The in-memory head is then compared to the stored one, because a volume that verifies
     against a stale anchor while this process holds a longer chain is also a finding.
     """
+    directory = _data_dir()
+    # Appends are paused across BOTH reads. Taken apart, the log and the anchor straddle an
+    # append and disagree by one entry, which verifies as `tampered`: measured at 58 of 100
+    # with a single concurrent unauthenticated caller. Every exception path below is exactly
+    # as it was, which is the point of borrowing the lock rather than returning a pair.
+    with chain.appends_paused():
+        try:
+            entries = read_entries(directory)
+        except JournalError:
+            current_app.logger.exception("verification could not read the log")
+            return ChainVerdict(ok=False, checked=0, reason="the log could not be read"), (
+                "The audit log on the volume could not be read. See /api/diagnostics."
+            )
+        anchor, failure = _stored_anchor(directory, chain, entries)
+        # The in-process head, taken INSIDE the same window. It is the third read of this
+        # comparison and it was outside: by the time it ran, this process had appended
+        # again, so a healthy volume reported "the stored log does not match the chain this
+        # process is appending to" in 49 of 60 verifies under a live appender. Two of the
+        # three reads serialised is not serialised.
+        head = chain.anchor().head
+    if failure is not None:
+        return failure
+    return _verdict_for(entries, anchor, head=head, keys=keys)
+
+
+def _stored_anchor(
+    directory: str, chain: JournalChain, entries: list[AuditEntry]
+) -> tuple[Anchor | None, tuple[ChainVerdict, str] | None]:
+    """Read the stored anchor, returning either it or the verdict its failure calls for.
+
+    Split out so the three anchor outcomes keep their own handlers while the read stays
+    inside the caller's paused window. Each reports `checked=len(entries)`, which is why
+    the entries have to be read first and passed in: an earlier shape returned the pair
+    from one expression, so an anchor failure left `entries` unbound and every one of these
+    paths answered 500 instead of its verdict.
+    """
     try:
-        # ONE atomic pair. Read separately, the log and the anchor can straddle an append
-        # and disagree by one entry, which verifies as `tampered`: measured at 58 of 100
-        # with a single concurrent unauthenticated caller. See `JournalChain.volume_snapshot`.
-        entries, anchor = chain.volume_snapshot()
-    except JournalError:
-        current_app.logger.exception("verification could not read the log")
-        return ChainVerdict(ok=False, checked=0, reason="the log could not be read"), (
-            "The audit log on the volume could not be read. See /api/diagnostics."
-        )
+        return read_anchor(directory, chain.signing_key), None
     except AnchorTamperError as error:
         # The anchor's STATE says interference: a genuine older anchor put back, an anchor
         # signed by a key this server does not hold, or an anchor deleted beside a marker
@@ -300,28 +332,45 @@ def _verify_the_volume(chain: JournalChain, keys: dict[str, bytes]) -> tuple[Cha
             if isinstance(error, AnchorRollbackError)
             else "the anchor is not authenticated under the current key, or was removed"
         )
-        return ChainVerdict(ok=False, checked=len(entries), reason=reason), (
-            "The anchor on the volume shows interference. See /api/diagnostics."
+        return None, (
+            ChainVerdict(ok=False, checked=len(entries), reason=reason),
+            "The anchor on the volume shows interference. See /api/diagnostics.",
         )
     except AnchorError:
         # An I/O error, a parse failure, an implausible size or an unreadable field. A fault
         # to diagnose, reported as its own class rather than as a tightened field rule,
         # which is a statement about an ENTRY and would be false here.
         current_app.logger.exception("verification could not read the stored anchor")
-        return ChainVerdict(
-            ok=False,
-            checked=len(entries),
-            anchor_unusable=True,
-            reason="the anchor file could not be read",
-        ), "The anchor on the volume could not be read. See /api/diagnostics."
+        return None, (
+            ChainVerdict(
+                ok=False,
+                checked=len(entries),
+                anchor_unusable=True,
+                reason="the anchor file could not be read",
+            ),
+            "The anchor on the volume could not be read. See /api/diagnostics.",
+        )
 
+
+def _verdict_for(
+    entries: list[AuditEntry],
+    anchor: Anchor | None,
+    *,
+    head: str,
+    keys: Mapping[str, bytes],
+) -> tuple[ChainVerdict, str]:
+    """Return the verdict for a log, anchor and in-process head read as one consistent set.
+
+    `head` is passed in rather than read here, because reading it here is what made this
+    comparison straddle an append.
+    """
     if anchor is None:
         return ChainVerdict(
             ok=False, checked=len(entries), reason="this volume holds no anchor"
         ), "The volume holds no anchor, so nothing can be verified against it."
 
     verdict = verify_log(entries, keys, anchor)
-    if verdict.ok and anchor.head != chain.anchor().head:
+    if verdict.ok and anchor.head != head:
         return ChainVerdict(
             ok=False,
             checked=len(entries),
@@ -342,10 +391,12 @@ def export() -> Response:
     """
     directory = _data_dir()
     chain = _chain()
-    # One atomic pair, for the reason `volume_snapshot` gives: a pack whose anchor does not
-    # match its own entries fails its own verification later, off the volume, with nothing
-    # left to compare against. Measured at 28 of 40 packs before the snapshot existed.
-    stored_entries, stored_anchor = chain.volume_snapshot()
+    # Appends paused across both reads, for the reason `appends_paused` gives: a pack whose
+    # anchor does not match its own entries fails its own verification later, off the
+    # volume, with nothing left to compare against. Measured at 28 of 40 packs before this.
+    with chain.appends_paused():
+        stored_entries = read_entries(directory)
+        stored_anchor = read_anchor(directory, chain.signing_key)
     pack = {
         "exported": records.now(),
         "exportedBy": auth.audit_actor(),
