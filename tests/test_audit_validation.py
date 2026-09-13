@@ -99,6 +99,27 @@ def test_every_cap_is_the_one_that_shipped() -> None:
     assert validation.FIELD_LIMITS == PINNED_LIMITS
 
 
+def test_an_unknown_field_name_is_a_programming_error_not_a_blank() -> None:
+    """The guard the comment beside it calls load-bearing, held by nothing until now.
+
+    `FIELD_LIMITS[name]`, never `.get(name, 0)`: a typo at a call site would slice the value
+    to nothing, the empty string would pass as an optional field, and the AUD-001-required
+    address or user agent would be blanked on every entry written thereafter, irreversibly,
+    with a green suite. Restoring the `.get` was green, which is what this closes.
+    """
+    with pytest.raises(KeyError):
+        validation.recordable("actorr", "ash.higgins@bluestaq.uk")
+
+
+def test_the_outcome_set_is_the_one_that_shipped() -> None:
+    """A closed set is a figure like any other: adding a member was green.
+
+    `FIELD_LIMITS` was pinned against a written-out twin for this reason and the closed set
+    beside it was missed.
+    """
+    assert validation.OUTCOMES == frozenset({"SUCCESS", "FAILURE"})
+
+
 @pytest.mark.parametrize("field", ["actor", "resource", "resource_id"])
 def test_the_cap_is_enforced_at_the_boundary_in_both_directions(field: str) -> None:
     """A cap of N must accept N and reject N plus one, or it asserts nothing."""
@@ -141,7 +162,9 @@ def test_a_leading_formula_character_is_rejected_however_it_is_spelled(hostile: 
         validation.normalise_fields(fields)
 
 
-@pytest.mark.parametrize("hostile", ["=cmd", "k 1", "k:1", "k" * 33, "kéy"])
+#: `k.1` is the character class, which the length bound above masked: admitting a dot was
+#: green across the whole suite while the cap stayed red.
+@pytest.mark.parametrize("hostile", ["=cmd", "k 1", "k:1", "k.1", "k" * 33, "kéy"])
 def test_a_hostile_key_identifier_is_rejected(hostile: str) -> None:
     """The identifier reaches the digest and every stored row without the field rules."""
     with pytest.raises(validation.AuditFieldError, match="signing key identifier"):
@@ -221,6 +244,10 @@ def test_a_leading_formula_character_is_rejected_for_the_evidence_export(lead: s
         "2026-08-20T09:01:00+01:00",
         "20260820T090100Z",
         "2026-13-40T09:01:00Z",
+        #: Seven fractional digits, which is not RFC 3339 and which the 32-byte cap does not
+        #: catch: widening the fraction bound from six to twelve was green across the whole
+        #: suite, so the cap masked the rule rather than holding it.
+        "2026-08-20T09:01:00.1234567Z",
     ],
 )
 def test_a_timestamp_that_is_not_rfc_3339_utc_is_rejected(bad_timestamp: str) -> None:
@@ -387,6 +414,14 @@ def test_a_list_of_changed_field_names_is_accepted(names: str) -> None:
         ("a space", "status, phase"),
         ("a trailing comma", "status,"),
         ("free text", "the reporter field changed"),
+        #: The LEADING class and the body class, each held by nothing until now. Every case
+        #: above is already red on a space, upper case, an `@`, an `=` or a trailing comma,
+        #: so neither component was isolated: `[a-z]` widened to `[a-z0-9]` admits
+        #: `12_high_street`, and the body widened by a hyphen admits `home-address` and
+        #: `ash-higgins`. Both are one-character widenings and both were green across the
+        #: whole suite. Third and fourth components of this one rule found by a gate.
+        ("a leading digit", "12_high_street"),
+        ("a hyphenated token", "home-address"),
     ],
 )
 def test_fields_changed_takes_names_only(label: str, value: str) -> None:

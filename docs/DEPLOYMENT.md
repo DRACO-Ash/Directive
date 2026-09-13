@@ -387,10 +387,14 @@ Recorded plainly because the figure in this row has now been wrong twice: first 
 Closed since V2.0, each with the test that holds it closed:
 
 ● **A closed vocabulary of workflow states.** `records.check_state` holds every transition
-  to an enumerated set per register, so no route in this application can put record content
-  in `old_state` or `new_state`. Precisely: the audit boundary itself still accepts any
-  token satisfying its character rule, so this is a property of the live path rather than
-  of the audit module, and a future caller reaching `AuditChain.append` directly is still
+  on every REGISTER route to an enumerated set per register. Be exact about the bound,
+  because three earlier versions of this claim were not: the authentication and refusal
+  path writes a server-composed count (`REPEATED_<n>`) into `new_state` without reaching
+  `check_state` at all, under the audit boundary's character rule only, and it is the one
+  declared exception, held by `tests/test_audit_state_coverage.py`. The audit boundary
+  itself still accepts any token satisfying its character rule, so this is a property of
+  the register routes rather than of the audit module, and a caller reaching
+  `AuditChain.append` directly is still
   on caller discipline. `test_the_boundary_rejects_bad_input`.
 ● **Anchor corroboration against an off-volume store, in mechanism.** `/api/export` emits
   the registers, the entries and the anchor as one pack, which is the copy an actor with
