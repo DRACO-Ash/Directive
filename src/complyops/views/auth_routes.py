@@ -68,7 +68,13 @@ def _record_authentication(
     sign-in proceeds, loudly logged, and the session can still change nothing: every
     mutating route already fails closed without a chain.
     """
-    chain = current_app.extensions.get("complyops_chain")
+    #: Typed rather than left as the `Any` that `extensions.get` returns, and the type is
+    #: load-bearing rather than documentation. The audit-entry pin exempts a receiver that is
+    #: annotated `list[...]`, because a list is not the chain; `Any` made that exemption
+    #: claimable by writing `written: list[dict[str, str]] = chain`, which mypy accepted and
+    #: which then carried a computed key to the boundary unchecked. With the protocol here,
+    #: the same line is an assignment error on the type leg of the verification loop.
+    chain: records.AppendsAudit | None = current_app.extensions.get("complyops_chain")
     if chain is None:
         current_app.logger.error("authentication event not recorded: no audit chain")
         return True

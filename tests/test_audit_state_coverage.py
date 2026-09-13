@@ -14,9 +14,11 @@ vocabulary, the refusal path is the one declared exception, and it carries no ca
 from __future__ import annotations
 
 import ast
+import importlib
 import random
 import re
 import string
+from collections.abc import Iterator
 from pathlib import Path
 from types import MappingProxyType
 
@@ -721,24 +723,130 @@ def _views_writing_a_source_address() -> list[str]:
     ]
 
 
-#: The call every audit entry in the package reaches the boundary through, and the receivers
-#: it is called on. Scoped by RECEIVER as well as by name: `append` alone matched
-#: `rows.append(record)` in `records.py`, which is a list of register rows and not an entry
-#: at all, so the check red on correct source.
+#: The call every audit entry in the package reaches the boundary through. Scoped by
+#: RECEIVER as well as by name: `append` alone matched `rows.append(record)` in
+#: `records.py`, which is a list of register rows and not an entry at all, so the check red
+#: on correct source.
 AUDIT_SINK = "append"
 
-#: Receivers of `.append` that are NOT the audit boundary, whitelisted so every other
-#: receiver has to satisfy the entry rule. The first version whitelisted the two audit
-#: receivers instead, and a gate bound `journal = chain` and put an attacker-chosen ACTOR
-#: into a durable signed row with the whole suite green. A list of the audit receivers has
-#: to enumerate every alias somebody might use; a list of the non-audit ones is four names
-#: this package actually has, and a new alias lands on the checked side by default.
-NOT_THE_AUDIT_SINK = frozenset({"rows", "entries", "parts", "admitted", "collapsed", "written"})
+
+def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    """Return a child-to-parent map, because `ast` carries no parent links.
+
+    Needed to scope a name to the FUNCTION it is bound in. Resolving a name module-wide was
+    the fiftieth pass's BLOCKER on the seam carve-out, and the same mistake one control
+    along would let a `list[...]` annotation in one function exempt an alias in another:
+    `entries` is annotated in `read_entries` and would otherwise exempt `entries = chain`
+    anywhere else in `audit/journal.py`.
+    """
+    return {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
 
 
-def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST]]:
+def _enclosing(
+    parents: dict[ast.AST, ast.AST], node: ast.AST, kinds: tuple[type[ast.AST], ...]
+) -> ast.AST | None:
+    """Return the nearest ancestor of one of these kinds, or None."""
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, kinds):
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _is_list_annotation(annotation: ast.expr | None) -> bool:
+    """Report whether this annotation is exactly a list, rather than merely mentioning one.
+
+    A `Subscript` of `list` or the bare name. `list[AuditEntry] | None` is a `BinOp` and is
+    deliberately refused: an optional is not a list, and matching on the unparsed text would
+    have admitted it on a prefix.
+    """
+    if isinstance(annotation, ast.Name):
+        return annotation.id == "list"
+    if isinstance(annotation, ast.Subscript):
+        return isinstance(annotation.value, ast.Name) and annotation.value.id == "list"
+    return False
+
+
+def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Walk this scope without descending into a nested function or class body."""
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        yield child
+        yield from _own_nodes(child)
+
+
+def _list_names_bound_in(scope: ast.AST) -> set[str]:
+    """Return every name this scope itself annotates as a list, parameters included."""
+    found: set[str] = set()
+    if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+        found |= {
+            argument.arg
+            for argument in [
+                *scope.args.args,
+                *scope.args.posonlyargs,
+                *scope.args.kwonlyargs,
+            ]
+            if _is_list_annotation(argument.annotation)
+        }
+    for node in _own_nodes(scope):
+        if isinstance(node, ast.AnnAssign) and _is_list_annotation(node.annotation):
+            if isinstance(node.target, ast.Name):
+                found.add(node.target.id)
+            elif isinstance(node.target, ast.Attribute):
+                found.add(node.target.attr)
+    return found
+
+
+def _is_a_local_list(parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: str) -> bool:
+    """Report whether this receiver is a list in its own scope, so `.append` is not the sink.
+
+    The exemption is DERIVED from a `list[...]` annotation rather than from a list of names
+    that are not the audit boundary. Two versions of that list were defeated by choosing a
+    name: first the two audit receivers, so `journal = chain` was invisible, then the
+    non-audit receivers, so `written = chain` was invisible because `written` happened to be
+    on it and `.lstrip("_")` multiplied every member by its underscore variants.
+
+    An annotation is not a comment here, but be exact about WHY, because the first version
+    of this docstring claimed more than it had. `mypy --strict` runs in the same verification
+    loop, and it now refuses `written: list[dict[str, str]] = chain` in all three modules
+    that reach the boundary, so claiming this exemption costs the type leg of the loop a
+    forge is trying to keep green. That was not true when the rule was written: measured
+    here, the forged annotation passed mypy in `views/auth_routes.py` and the bypass survived
+    a full run, because `current_app.extensions.get` returns `Any` and `Any` satisfies any
+    annotation. `records.py` and `audit/journal.py` were already safe, having a typed
+    parameter and a typed attribute. So the line that actually closes this is in the SOURCE,
+    not here: `views/auth_routes.py` now types its chain as `records.AppendsAudit | None`.
+    A test cannot hold a control the source does not give it.
+
+    An unannotated alias lands on the CHECKED side, which is the default this rule exists to
+    make safe. What remains is a committer who writes `cast(Any, chain)` to launder the type,
+    and that is the out-of-scope adversary in CLAUDE.md rather than a hole in this rule.
+    """
+    name = receiver.split(".")[-1]
+    scope = _enclosing(parents, node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    while scope is not None:
+        if name in _list_names_bound_in(scope):
+            return True
+        scope = _enclosing(parents, scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+    #: An attribute receiver, `self._entries`, is annotated in `__init__` and appended to in
+    #: another method, so its binding scope is the CLASS rather than any one function.
+    if "." in receiver:
+        owner = _enclosing(parents, node, (ast.ClassDef,))
+        if owner is not None and any(
+            name in _list_names_bound_in(member)
+            for member in ast.walk(owner)
+            if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef)
+        ):
+            return True
+    return False
+
+
+def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST | None]]:
     """Return the argument passed to every call reaching the audit boundary."""
-    found = []
+    parents = _parent_map(tree)
+    found: list[tuple[str, ast.AST | None]] = []
     for node in ast.walk(tree):
         if not (
             isinstance(node, ast.Call)
@@ -747,7 +855,7 @@ def _entry_arguments(tree: ast.AST) -> list[tuple[str, ast.AST]]:
         ):
             continue
         receiver = ast.unparse(node.func.value)
-        if receiver.split(".")[-1].lstrip("_") in NOT_THE_AUDIT_SINK:
+        if _is_a_local_list(parents, node, receiver):
             continue
         #: FAIL CLOSED on a call with no positional argument. The first version required
         #: `node.args` to be non-empty and skipped silently otherwise, so
@@ -880,7 +988,14 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
             #: this same test, so verifying here would be verifying the wrong expression.
             #: The distinction is the one `source_ip` already turns on: a parameter is a
             #: seam a pinned caller fills, a local is something this module composed.
-            if argument.id in PASS_THROUGH_SEAMS.get(module, ()):
+            #: A declared seam waives a PARAMETER, and the test of that is that the name is
+            #: never bound in the module. The first version waived the NAME, so rebinding
+            #: the parameter to a local of the same name, `entry_fields = {**entry_fields,
+            #: _field: forged}`, carried a `**` unpack and a computed key straight to the
+            #: boundary with the whole rule skipped. That is the module-wide inference
+            #: narrowed to one module and one name, not closed, so the binding check is what
+            #: actually closes it. Free at HEAD: a genuine pass-through is assigned nowhere.
+            if argument.id in PASS_THROUGH_SEAMS.get(module, ()) and not bound.get(argument.id):
                 continue
             assignments = bound.get(argument.id, [])
             assert len(assignments) == 1, (
@@ -1470,12 +1585,118 @@ MODULE_REGISTRY_ATTRIBUTES = frozenset(
     }
 )
 
-#: The dunder attributes a pinned module may read, which is the near-closed rule that does
-#: not depend on enumerating routes. Measured across every pinned module: the whole
-#: legitimate usage is two names, `__name__` in `audit/journal.py` and `audit/validation.py`
-#: and `__setattr__` in `audit/anchor.py`. Refusing the SHAPE covers `__builtins__`,
-#: `__loader__`, `__spec__`, `__class__`, `__subclasses__` and `__code__` in one rule.
+#: The dunder names a pinned module may read, which is the near-closed rule that does not
+#: depend on enumerating routes. Measured AT THIS COMMIT rather than asserted as a standing
+#: fact: the whole legitimate usage is two names, `__name__` in `audit/journal.py` and
+#: `audit/validation.py` and `__setattr__` in `audit/anchor.py`. It reds on ordinary Python
+#: a maintainer could reasonably add to a pinned module, `super().__init__(...)` being the
+#: obvious one, and that is the intended direction: it fails closed and says why.
+#:
+#: Applied to BOTH spellings, which is the correction this commit carries. The first version
+#: inspected `ast.Attribute` only, and `__builtins__`, `__loader__` and `__spec__` are module
+#: GLOBALS: inside a module's own source you write them as a bare NAME, of nothing. Both
+#: gates reached the live request through that gap, one of them driving
+#: `__builtins__["__import__"]("flask")` from `audit/chain.py` to a signed entry with no
+#: import statement and no attribute read at all.
 PERMITTED_DUNDER_READS = frozenset({"__name__", "__setattr__"})
+
+#: The calls that read an attribute by a name computed at runtime. This is the escape hatch
+#: under EVERY attribute-keyed rule in this file: `MODULE_REGISTRY_ATTRIBUTES` and
+#: `PERMITTED_DUNDER_READS` both inspect `ast.Attribute` syntax, and a gate walked past both
+#: with `getattr(os, _hop[0])`, chaining to `sys.modules["flask"].request.headers` with no
+#: `sys`, `modules`, `request` or dunder ever appearing as an attribute node, then folding a
+#: caller-supplied header into the signed `actor` of a durable entry.
+#:
+#: A rule that named `getattr` alongside the others would be the same blacklist one step
+#: along, so this one resolves instead: the attribute NAME must be a constant, or a name
+#: bound to a constant collection of strings, and then it goes through the same two checks
+#: an attribute read does. Anything unresolvable is refused, because a control that cannot
+#: be verified is treated as failed.
+DYNAMIC_ATTRIBUTE_CALLS = frozenset(
+    {
+        "getattr",
+        "setattr",
+        "delattr",
+        "hasattr",
+        "__getattribute__",
+        "__getattr__",
+        "__setattr__",
+        "__delattr__",
+    }
+)
+
+
+def _resolved_attribute_name(
+    module: str, parents: dict[ast.AST, ast.AST], argument: ast.expr
+) -> set[str] | None:
+    """Resolve a computed attribute name to the literal strings it can be, or None.
+
+    Three forms resolve and nothing else does. A string constant is itself. A name bound by
+    a comprehension or a `for` over a module-level constant resolves to that constant's
+    members, which is what `audit/chain.py` does: `{name: getattr(self, name) for name in
+    FIELD_ORDER}`, the one legitimate computed read in the package. A name that IS such a
+    constant resolves the same way.
+
+    The constant is read from the imported module rather than re-parsed, so the values are
+    the ones the application actually runs, and it must be a non-empty collection of strings
+    or it does not resolve. Everything else, a subscript, a call, an attribute, a parameter,
+    returns None and the caller fails closed.
+    """
+    if isinstance(argument, ast.Constant):
+        return {argument.value} if isinstance(argument.value, str) else None
+    if not isinstance(argument, ast.Name):
+        return None
+    source: ast.expr = argument
+    current = parents.get(argument)
+    while current is not None:
+        if isinstance(current, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp):
+            for generator in current.generators:
+                if isinstance(generator.target, ast.Name) and generator.target.id == argument.id:
+                    source = generator.iter
+        if (
+            isinstance(current, ast.For | ast.AsyncFor)
+            and isinstance(current.target, ast.Name)
+            and current.target.id == argument.id
+        ):
+            source = current.iter
+        current = parents.get(current)
+    if not isinstance(source, ast.Name):
+        return None
+    dotted = module.removesuffix(".py").removesuffix("/__init__").replace("/", ".")
+    value = getattr(importlib.import_module(f"complyops.{dotted}"), source.id, None)
+    if not isinstance(value, tuple | list | frozenset | set):
+        return None
+    if not value or not all(isinstance(member, str) for member in value):
+        return None
+    return set(value)
+
+
+def _dynamic_attribute_reads(module: str, tree: ast.AST) -> list[tuple[str, set[str] | None]]:
+    """Return every computed attribute read in this module, with what its name resolves to."""
+    parents = _parent_map(tree)
+    found: list[tuple[str, set[str] | None]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else None
+        )
+        if called not in DYNAMIC_ATTRIBUTE_CALLS:
+            continue
+        rendered = ast.unparse(node)
+        #: The attribute name is the second argument in every one of these calls, the
+        #: builtins taking `(object, name)` and the dunders `(self, name)`. A call without
+        #: one cannot be checked, so it resolves to nothing and the caller refuses it.
+        argument = node.args[1] if len(node.args) > 1 else None
+        if argument is None:
+            found.append((rendered, None))
+            continue
+        found.append((rendered, _resolved_attribute_name(module, parents, argument)))
+    return found
 
 
 def _modules_without_a_request_context() -> list[str]:
@@ -1585,11 +1806,40 @@ def test_a_module_with_no_request_context_cannot_reach_one(module: str) -> None:
             and node.attr not in PERMITTED_DUNDER_READS
         }
     )
-    assert not dunders, (
-        f"{module} reads {dunders}. A pinned module may read only "
-        f"{sorted(PERMITTED_DUNDER_READS)}, because a dunder reaches the import machinery "
-        "and the object graph without naming a module."
+    #: BOTH spellings. `__builtins__`, `__loader__` and `__spec__` are module globals, so
+    #: inside the module's own source they are bare NAMES and no attribute node ever carries
+    #: them. Measured cost of adding this: zero, because no pinned module loads a bare dunder
+    #: today.
+    dunders += sorted(
+        {name for name in loaded if name.startswith("__") and name not in PERMITTED_DUNDER_READS}
     )
+    assert not dunders, (
+        f"{module} reads {sorted(set(dunders))}. A pinned module may read only "
+        f"{sorted(PERMITTED_DUNDER_READS)}, as an attribute or as a bare name, because a "
+        "dunder reaches the import machinery and the object graph without naming a module."
+    )
+
+    for call, resolved in _dynamic_attribute_reads(module, tree):
+        assert resolved is not None, (
+            f"{module} computes an attribute name in `{call}`, which reaches any attribute "
+            "of any object without one of them appearing in the source. It cannot be "
+            "checked against the rules above, so it fails closed. Read the attribute "
+            "directly, or iterate a module-level constant of literal names."
+        )
+        reached = sorted(resolved & MODULE_REGISTRY_ATTRIBUTES)
+        assert not reached, (
+            f"{module} reaches {reached} through `{call}`, which is the module table by "
+            "another spelling."
+        )
+        hidden = sorted(
+            name
+            for name in resolved
+            if name.startswith("__") and name not in PERMITTED_DUNDER_READS
+        )
+        assert not hidden, (
+            f"{module} reads the dunder {hidden} through `{call}`. Computing the name does "
+            "not exempt it from the rule above."
+        )
 
     dynamic = sorted(loaded & DYNAMIC_IMPORT_NAMES)
     assert not dynamic, (
