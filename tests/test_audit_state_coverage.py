@@ -777,8 +777,37 @@ def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
         yield from _own_nodes(child)
 
 
+def _constructs_a_list(value: ast.expr | None) -> bool:
+    """Report whether this expression BUILDS a list, rather than claiming to be one.
+
+    A display, a comprehension, or a `list(...)` call. Nothing else, and the exclusion is
+    the entire point: an annotation is a claim about a value, and on a value of type `Any`
+    it is a claim nobody checks. Both gates reached the audit chain through
+    `current_app.extensions[...]`, which is `dict[str, Any]`, annotated the result
+    `list[dict[str, str]]`, and mypy accepted it because `Any` satisfies any annotation.
+    """
+    if isinstance(value, ast.List | ast.ListComp):
+        return True
+    return (
+        isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "list"
+    )
+
+
 def _list_names_bound_in(scope: ast.AST) -> set[str]:
-    """Return every name this scope itself annotates as a list, parameters included."""
+    """Return every name this scope binds to a list it can actually see being made.
+
+    Two admissible forms and no third. A PARAMETER annotated `list[...]`, where the caller
+    supplies the value and mypy checks the argument at every call site against a type that
+    is not `Any`. Or a name annotated `list[...]` AND bound to an expression that constructs
+    one, which is what the five list receivers in this package do.
+
+    The first version took the annotation alone and both gates walked through it in the same
+    round: `written: list[dict[str, str]] = current_app.extensions["complyops_chain"]` passed
+    mypy, took the exemption, and put an unauthenticated caller's header into the signed
+    `actor` of a durable chained entry with the loop green at identical counts. Requiring the
+    construction refuses that shape without naming it, and costs nothing: all five shipped
+    receivers bind `[]` or `list(...)`, and the sixth is a parameter.
+    """
     found: set[str] = set()
     if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
         found |= {
@@ -791,7 +820,11 @@ def _list_names_bound_in(scope: ast.AST) -> set[str]:
             if _is_list_annotation(argument.annotation)
         }
     for node in _own_nodes(scope):
-        if isinstance(node, ast.AnnAssign) and _is_list_annotation(node.annotation):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and _is_list_annotation(node.annotation)
+            and _constructs_a_list(node.value)
+        ):
             if isinstance(node.target, ast.Name):
                 found.add(node.target.id)
             elif isinstance(node.target, ast.Attribute):
@@ -808,21 +841,30 @@ def _is_a_local_list(parents: dict[ast.AST, ast.AST], node: ast.AST, receiver: s
     non-audit receivers, so `written = chain` was invisible because `written` happened to be
     on it and `.lstrip("_")` multiplied every member by its underscore variants.
 
-    An annotation is not a comment here, but be exact about WHY, because the first version
-    of this docstring claimed more than it had. `mypy --strict` runs in the same verification
-    loop, and it now refuses `written: list[dict[str, str]] = chain` in all three modules
-    that reach the boundary, so claiming this exemption costs the type leg of the loop a
-    forge is trying to keep green. That was not true when the rule was written: measured
-    here, the forged annotation passed mypy in `views/auth_routes.py` and the bypass survived
-    a full run, because `current_app.extensions.get` returns `Any` and `Any` satisfies any
-    annotation. `records.py` and `audit/journal.py` were already safe, having a typed
-    parameter and a typed attribute. So the line that actually closes this is in the SOURCE,
-    not here: `views/auth_routes.py` now types its chain as `records.AppendsAudit | None`.
-    A test cannot hold a control the source does not give it.
+    Be exact about what a type buys here, because two versions of this docstring in two
+    commits both claimed more than they had, and both gates measured the gap each time.
 
-    An unannotated alias lands on the CHECKED side, which is the default this rule exists to
-    make safe. What remains is a committer who writes `cast(Any, chain)` to launder the type,
-    and that is the out-of-scope adversary in CLAUDE.md rather than a hole in this rule.
+    The FIRST claimed the annotation alone was safe because mypy would refuse a false one.
+    It refuses `written: list[dict[str, str]] = chain`, where `chain` carries a real type in
+    all three boundary modules. It does not refuse the same annotation on a FRESH read:
+    `current_app.extensions` is `dict[str, Any]`, and `Any` satisfies any annotation, so
+    both gates annotated a new `extensions[...]` read as a list, took the exemption, and put
+    an unauthenticated caller's header into the signed `actor` of a durable chained entry
+    with the whole loop green at identical counts. Typing the `chain` VARIABLE, which was
+    the second version's fix, closed the alias and left the fresh read wide open.
+
+    So the rule no longer trusts an annotation at all. An exempt receiver must be a list this
+    function can SEE being made: a display, a comprehension, or `list(...)`. A parameter is
+    the one exception, because there the caller supplies the value and mypy checks the
+    argument at every call site against a type that is not `Any`. An annotation over any
+    other expression is a claim about a value rather than a value, and this file has now paid
+    twice for treating the two as the same thing.
+
+    The second layer is `test_the_audit_chain_has_exactly_one_retrieval_shape`, which stops
+    the untyped value existing rather than catching the claim about it. They are genuinely
+    independent and each was measured alone: the construction rule reds on a computed-key
+    forge whose receiver never names the extension key, and the retrieval pin reds on the
+    key read by subscript, by an unannotated `.get`, and through a variable.
     """
     name = receiver.split(".")[-1]
     scope = _enclosing(parents, node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -1626,6 +1668,19 @@ DYNAMIC_ATTRIBUTE_CALLS = frozenset(
 )
 
 
+def _shadowed_inside_a_function(parents: dict[ast.AST, ast.AST], node: ast.AST, name: str) -> bool:
+    """Report whether any function in this module binds `name`, shadowing the global."""
+    root: ast.AST = node
+    while (above := parents.get(root)) is not None:
+        root = above
+    return any(
+        isinstance(found, ast.Name) and found.id == name and isinstance(found.ctx, ast.Store)
+        for scope in ast.walk(root)
+        if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef)
+        for found in ast.walk(scope)
+    )
+
+
 def _resolved_attribute_name(
     module: str, parents: dict[ast.AST, ast.AST], argument: ast.expr
 ) -> set[str] | None:
@@ -1662,13 +1717,25 @@ def _resolved_attribute_name(
         current = parents.get(current)
     if not isinstance(source, ast.Name):
         return None
+    #: FAIL CLOSED when the name is also bound inside a function. The constant is read from
+    #: the imported module below, which is the module GLOBAL, and a function-local of the
+    #: same name shadows it at runtime while the resolution still reports the global. Both
+    #: gates found that, and it made the resolver fail OPEN against its own stated contract:
+    #: a benign module-level collection could cover a dangerous local one. Contrived to
+    #: write, and cheap to refuse, so it is refused rather than reasoned about.
+    if _shadowed_inside_a_function(parents, argument, source.id):
+        return None
     dotted = module.removesuffix(".py").removesuffix("/__init__").replace("/", ".")
     value = getattr(importlib.import_module(f"complyops.{dotted}"), source.id, None)
-    if not isinstance(value, tuple | list | frozenset | set):
-        return None
-    if not value or not all(isinstance(member, str) for member in value):
-        return None
-    return set(value)
+    #: A non-empty collection of strings, or it does not resolve. One condition rather than
+    #: three returns: every failure here means the same thing, that the name does not name a
+    #: constant set of attribute names, and the caller refuses it.
+    usable = (
+        isinstance(value, tuple | list | frozenset | set)
+        and bool(value)
+        and all(isinstance(member, str) for member in value)
+    )
+    return {str(member) for member in value} if usable else None
 
 
 def _dynamic_attribute_reads(module: str, tree: ast.AST) -> list[tuple[str, set[str] | None]]:
@@ -1870,6 +1937,64 @@ def test_every_declared_intra_package_import_is_one_the_module_makes() -> None:
             "import and does not make it. The allowance has to match the code, or it "
             "pre-authorises an import somebody adds later."
         )
+
+
+#: The Flask extension key the audit chain is stored under. The chain is the only object in
+#: this application whose retrieval TYPE is a security control, which is why it gets a pin of
+#: its own rather than being left to convention.
+CHAIN_EXTENSION_NAME = "complyops_chain"
+
+
+def test_the_audit_chain_has_exactly_one_retrieval_shape() -> None:
+    """`current_app.extensions` is `dict[str, Any]`, and `Any` satisfies any annotation.
+
+    That is the whole defect this closes, and it took both gates two rounds to bound it.
+    A read of this key returns a value mypy will not argue with, so annotating it
+    `list[dict[str, str]]` is accepted, and the audit-entry pin above then treats the chain
+    as an ordinary list and never inspects what is appended to it. Measured twice, by both
+    gates independently: an unauthenticated caller's header reached the signed `actor` of a
+    durable chained entry with format, lint, types, bandit and the whole suite green.
+
+    The entry pin now refuses that shape directly, by requiring an exempt receiver to be a
+    list it can SEE being constructed. This is the second layer and it fails in the other
+    direction: rather than catching the annotation, it stops the untyped value existing.
+    Two forms are legal and there is no third. The factory WRITES the key, which is a store
+    and not a read. Every other mention must be a `.get()` bound by an annotation that is not
+    a list, so the name carries a real type from its first line and any later `list[...]`
+    claim about it is an assignment error rather than an accepted `Any`.
+
+    Refused by construction, because the rule is about the key's use and not about a list of
+    bad spellings: the subscript read, which is what both gates used; an unannotated `.get`,
+    which is where the `Any` used to escape; a `list[...]`-annotated `.get`; the key held in
+    a variable; and a `dict()` copy of the extension table.
+    """
+    for module in sorted(path.relative_to(SRC).as_posix() for path in SRC.rglob("*.py")):
+        tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
+        parents = _parent_map(tree)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and node.value == CHAIN_EXTENSION_NAME):
+                continue
+            holder = parents.get(node)
+            #: The factory's write. A `Store` subscript puts the chain IN, so it is the one
+            #: mention that is not a retrieval at all.
+            if isinstance(holder, ast.Subscript) and isinstance(holder.ctx, ast.Store):
+                continue
+            bound = parents.get(holder) if holder is not None else None
+            assert (
+                isinstance(holder, ast.Call)
+                and isinstance(holder.func, ast.Attribute)
+                and holder.func.attr == "get"
+                and holder.args
+                and holder.args[0] is node
+                and isinstance(bound, ast.AnnAssign)
+                and not _is_list_annotation(bound.annotation)
+            ), (
+                f"{module}:{node.lineno} reaches the audit chain as "
+                f"`{ast.unparse(holder) if holder else node.value}`. The chain may only be "
+                "written by the factory or read as `.get()` bound to an annotation that is "
+                "not a list, because `extensions` is `dict[str, Any]` and an unannotated "
+                "read hands out a value that satisfies any later claim about its type."
+            )
 
 
 def test_the_request_context_allowance_is_the_one_that_shipped() -> None:

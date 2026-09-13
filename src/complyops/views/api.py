@@ -43,7 +43,7 @@ def _data_dir() -> str:
 
 def _chain() -> JournalChain:
     """Return the process's audit chain, or raise if the audit path is unavailable."""
-    chain = current_app.extensions.get("complyops_chain")
+    chain: JournalChain | None = current_app.extensions.get("complyops_chain")
     if chain is None:
         # Fail closed: without a chain no mutation can be evidenced, and a change that
         # cannot be evidenced must not happen. A JournalError rather than a RecordError so
@@ -52,7 +52,7 @@ def _chain() -> JournalChain:
             "the audit chain is unavailable, so nothing can be read or changed. The reason "
             "is on /api/diagnostics under auditLog."
         )
-    return chain  # type: ignore[no-any-return]
+    return chain
 
 
 def _client_ip() -> str:

@@ -316,7 +316,7 @@ def _audit_line() -> str:
     report the fault it is named in is not one.
     """
     status = str(current_app.extensions.get("complyops_audit_status", "not installed"))
-    chain = current_app.extensions.get("complyops_chain")
+    chain: object = current_app.extensions.get("complyops_chain")
     wedged = getattr(chain, "wedged", None)
     if wedged:
         # The TYPE only. The full message carries the log's absolute path and the OS error
