@@ -472,46 +472,98 @@ def test_a_register_entry_records_the_socket_address_not_a_header(
 #: seven-header drive, and passed the whole suite, after which 40 requests from one socket
 #: address wrote 40 durable rows with 40 forged `source_ip` values. A helper-function
 #: indirection evaded it the same way.
-#: The audit-entry keyword whose value must be a bare call to the reader, and the modules
-#: that pass it. A pin on the reader alone is not enough: the value can be composed AFTER
-#: it returns, and `source_ip=recordable("source_ip", request.environ.get(...) or
-#: _client_ip())` at the call site needs no change to `_client_ip` at all and was green
-#: across the whole suite.
+#: The audit-entry field whose value may never be built from anything a caller sends, and
+#: the two shapes a view can write it in: a keyword argument, and a dict value. Both forms
+#: are live, and a pin keyed only on the keyword misses `auth_routes.py`'s dict entirely.
 ADDRESS_KEYWORD = "source_ip"
-COMPOSED_SOURCE_ADDRESS = ("views/api.py",)
+
+#: What a `source_ip` value may be made of. A whitelist of CALLS plus a ban on `request`,
+#: rather than a list of admissible expressions, because the shipped forms differ per module
+#: (`_client_ip()`, a literal, `collapsed.address`, and a conditional over two of those) and
+#: enumerating them would have to change every time one does. What must never differ is that
+#: no caller-supplied value reaches the field.
+ADDRESS_VALUE_CALLS = frozenset({"recordable", "_client_ip"})
+REQUEST_OBJECT = "request"
 
 
-@pytest.mark.parametrize("module", COMPOSED_SOURCE_ADDRESS)
-def test_no_caller_composes_the_source_address_at_the_call_site(module: str) -> None:
-    """`source_ip=` takes a bare `_client_ip()` and nothing else.
+def _source_address_values(tree: ast.AST) -> list[ast.AST]:
+    """Return every expression assigned to `source_ip`, in either form a view writes it."""
+    values: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == ADDRESS_KEYWORD:
+            values.append(node.value)
+        if isinstance(node, ast.Dict):
+            values += [
+                value
+                for key, value in zip(node.keys, node.values, strict=True)
+                if isinstance(key, ast.Constant) and key.value == ADDRESS_KEYWORD
+            ]
+    return values
 
-    `views/auth_routes.py` is deliberately absent from the list above: its refusal path
-    passes `source_ip="multiple"` and `source_ip=collapsed.address`, both server-composed
-    from values the refusal tracker owns, and neither is a call to the reader. A pin
-    demanding a bare `_client_ip()` there would be asserting something untrue about a path
-    that is already held by `test_the_refusal_marker_source_is_still_server_composed` and
-    by the drive over the seven headers.
+
+@pytest.mark.parametrize(
+    "module",
+    sorted(path.name for path in (SRC / "views").glob("*.py")),
+)
+def test_no_view_builds_the_source_address_from_anything_a_caller_sends(module: str) -> None:
+    """Derived over EVERY view, because the hand-kept version left the live gap.
+
+    The first version of this pin ranged over a one-element tuple naming `views/api.py`, and
+    excused excluding `views/auth_routes.py` with a docstring claiming that path was held by
+    `test_the_refusal_marker_source_is_still_server_composed`. That test holds `new_state`
+    and says nothing about `source_ip`. Two mutations on the excluded module each folded
+    `X-Forwarded-For` into the source address of a durable entry, on the UNAUTHENTICATED
+    `/auth/callback` path, with the whole suite green: one at the `source_ip=` keyword of
+    the collapsed row, one at the dict value in `_record_authentication`.
+
+    This is the obligation the same commit wrote into `docs/GATE-RECORDS.md` and did not
+    apply here: derive the set rather than writing the members down, because a hand-kept
+    list leaves the next member unheld by default. `auth_routes.py` was already that member.
+
+    The rule is structural rather than a list of admissible expressions: a `source_ip` value
+    may call only `recordable` or `_client_ip`, and may not mention `request` at all. That
+    accepts every shipped form, `_client_ip()`, the literal `"multiple"`,
+    `collapsed.address`, and the conditional over the first and a validated argument, and it
+    refuses a header by any spelling without needing to know which spellings exist.
     """
-    source = (SRC / module).read_text(encoding="utf-8")
-    passed = [
-        node.value
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.keyword) and node.arg == ADDRESS_KEYWORD
-    ]
+    values = _source_address_values(ast.parse((SRC / "views" / module).read_text("utf-8")))
+    if not values:
+        pytest.skip(f"{module} writes no {ADDRESS_KEYWORD}")
 
-    assert passed, f"{module} passes no `{ADDRESS_KEYWORD}`, so this proves nothing"
-    for value in passed:
-        assert (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "_client_ip"
-            and not value.args
-            and not value.keywords
-        ), (
-            f"{module}: `{ADDRESS_KEYWORD}=` is composed rather than taken from a bare "
-            "`_client_ip()`. The reader can be correct and the entry still carry a header, "
-            "if the header is folded in here."
+    for value in values:
+        named = {node.id for node in ast.walk(value) if isinstance(node, ast.Name)}
+        assert REQUEST_OBJECT not in named, (
+            f"views/{module}: a `{ADDRESS_KEYWORD}` value mentions `{REQUEST_OBJECT}`. The "
+            "recorded source address comes from the socket, and a header is not evidence "
+            "by any spelling."
         )
+        called = {
+            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+            for node in ast.walk(value)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute | ast.Name)
+        }
+        assert called <= ADDRESS_VALUE_CALLS, (
+            f"views/{module}: a `{ADDRESS_KEYWORD}` value calls "
+            f"{sorted(called - ADDRESS_VALUE_CALLS)}. Only `recordable` and `_client_ip` "
+            "may contribute to it; anything else can reach a request header."
+        )
+
+
+def test_the_source_address_pin_covers_every_view_that_writes_one() -> None:
+    """The parametrisation skips a module that writes none, so count what it actually held.
+
+    A skip reads as a pass to `verify.sh`, which reads no skip count, so a rename or a move
+    that emptied every view of `source_ip` would retire this pin in silence.
+    """
+    writing = [
+        path.name
+        for path in sorted((SRC / "views").glob("*.py"))
+        if _source_address_values(ast.parse(path.read_text("utf-8")))
+    ]
+    assert sorted(writing) == ["api.py", "auth_routes.py"], (
+        f"the views writing a source address are now {writing}. Each is pinned by the test "
+        "above; this assertion exists so a module leaving the set is deliberate."
+    )
 
 
 #: Every ATTRIBUTE the reader's body may name, and every NAME it may load. Both are
@@ -548,17 +600,27 @@ def test_neither_client_address_reader_reaches_past_the_socket() -> None:
     """
     for module in ("views/auth_routes.py", "views/api.py"):
         source = (SRC / module).read_text(encoding="utf-8")
-        reader = next(
+        defined = [
             node
             for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.FunctionDef) and node.name == "_client_ip"
+        ]
+        #: Exactly one. The lookup was `next(...)`, so a SECOND definition later in the
+        #: module shadowed the first at import time and was inspected by nothing.
+        assert len(defined) == 1, (
+            f"{module} defines `_client_ip` {len(defined)} times. The last definition wins "
+            "at import and a pin that reads the first holds nothing."
+        )
+        reader = defined[0]
+
+        #: The decorators and the signature as well as the body. Walking the body alone left
+        #: a decorator free to wrap the reader and return a header: measured, a forged
+        #: address landed in a durable entry with the whole loop at `LOOP: PASS`.
+        inspected = ast.Module(
+            body=[*reader.decorator_list, *reader.body, reader.args], type_ignores=[]
         )
 
-        touched = {
-            node.attr
-            for node in ast.walk(ast.Module(body=reader.body, type_ignores=[]))
-            if isinstance(node, ast.Attribute)
-        }
+        touched = {node.attr for node in ast.walk(inspected) if isinstance(node, ast.Attribute)}
         assert touched <= ADDRESS_ATTRIBUTES, (
             f"{module}: `_client_ip` reads {sorted(touched - ADDRESS_ATTRIBUTES)}, and the "
             f"only attribute it may read is {sorted(ADDRESS_ATTRIBUTES)}. A header is not "
@@ -568,12 +630,45 @@ def test_neither_client_address_reader_reaches_past_the_socket() -> None:
 
         loaded = {
             node.id
-            for node in ast.walk(ast.Module(body=reader.body, type_ignores=[]))
+            for node in ast.walk(inspected)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
         }
         assert loaded <= ADDRESS_NAMES, (
             f"{module}: `_client_ip` loads {sorted(loaded - ADDRESS_NAMES)}. A helper or an "
             "alias is where a header read hides from a pin that inspects only this function."
+        )
+
+        #: And `recordable` must still BE the validator. The whitelist above pins the name,
+        #: not the binding: a module-level `def recordable(...)` shadowing the import folded
+        #: a header in and delegated, with the pin and both drives green.
+        tree = ast.parse(source)
+        #: `node.module` is `audit.validation` with `level` 2 for a `from ..audit.validation`
+        #: import: the leading dots live in `level`, not in the name. Comparing against the
+        #: dotted literal matched nothing and the assertion fired on correct source.
+        imported = [
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("audit.validation")
+            for alias in node.names
+        ]
+        assert "recordable" in imported, (
+            f"{module}: `recordable` is not imported from `..audit.validation`, so the name "
+            "in the whitelist above may not be the validator at all."
+        )
+        rebound = [
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.ClassDef) and node.name == "recordable"
+        ] + [
+            target.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name) and target.id == "recordable"
+        ]
+        assert not rebound, (
+            f"{module}: `recordable` is rebound at module scope, so the reader's call does "
+            "not reach the audit boundary's validator."
         )
 
 

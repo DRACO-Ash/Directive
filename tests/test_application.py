@@ -1724,10 +1724,11 @@ PAUSED_READS = {
 #: so an append there deadlocks the worker permanently, against the hard rule that nothing
 #: may block a request indefinitely. No path does it today and a docstring warning is not
 #: a control.
-#: `appends_paused` is deliberately absent: the window's own opener is one of the `With`
-#: items, so forbidding it means walking the BODY rather than the node, which is what the
-#: helper below does. A NESTED window would still deadlock and is caught, because the
-#: nested opener does appear in the body.
+#: `appends_paused` is deliberately PRESENT, and the comment said "absent" while the set
+#: below contained it, which invites a future reader to "correct" the set and silently lose
+#: nested-window detection. Including it is safe because the check walks the window's BODY
+#: rather than the `With` node, so the window's own opener is not in scope; a NESTED window
+#: is, and would deadlock, which is exactly what this catches.
 FORBIDDEN_INSIDE = frozenset({"append", "mutate", "snapshot", "appends_paused"})
 
 #: Functions that read the pair without a window of their own, and why each is sound.
@@ -1768,10 +1769,22 @@ def _called_names(node: ast.AST) -> set[str]:
     }
 
 
+#: Every view module, not just `api.py`. The derived pin's name says "every function" and
+#: the reader parsed one file, so a reader added to another blueprint was unheld by default,
+#: which is the same class as the hand-kept list this build has now been caught by twice.
+VIEWS = Path(__file__).resolve().parents[1] / "src" / "complyops" / "views"
+
+
 def _api_source() -> str:
-    return (
-        Path(__file__).resolve().parents[1] / "src" / "complyops" / "views" / "api.py"
-    ).read_text(encoding="utf-8")
+    return (VIEWS / "api.py").read_text(encoding="utf-8")
+
+
+def _view_trees() -> dict[str, ast.Module]:
+    """Return the parsed source of every view module, keyed by file name."""
+    return {
+        path.name: ast.parse(path.read_text(encoding="utf-8"))
+        for path in sorted(VIEWS.glob("*.py"))
+    }
 
 
 def test_the_paused_read_list_names_every_function_that_reads_the_pair() -> None:
@@ -1782,8 +1795,9 @@ def test_the_paused_read_list_names_every_function_that_reads_the_pair() -> None
     held by nothing. A route added next month would inherit exactly that.
     """
     readers = {
-        node.name
-        for node in ast.walk(ast.parse(_api_source()))
+        f"{name}:{node.name}" if name != "api.py" else node.name
+        for name, tree in _view_trees().items()
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef)
         and _called_names(node) & {"read_entries", "read_anchor", "snapshot"}
     }
@@ -1956,6 +1970,17 @@ def test_an_export_pack_never_holds_a_register_row_with_no_audit_entry(
         evidenced = {entry["resource_id"] for entry in pack["auditEntries"]}
         for register, rows in pack["registers"].items():
             orphans += [(register, row["id"]) for row in rows if row["id"] not in evidenced]
+
+    #: The drive mutated something. With the bad read order restored AND a mutator whose
+    #: posts never land, this test was green: nothing asserted a row was ever created, so
+    #: any future change that stops the mutator turns it into a silent no-op. Its siblings
+    #: in this file carry exactly this guard.
+    landed = [sum(len(rows) for rows in pack["registers"].values()) for pack in packs]
+    assert landed[0] > 0, "no register row was ever created, so this proves nothing"
+    assert landed[-1] > landed[0], (
+        f"the register did not grow during the run ({landed[0]} to {landed[-1]}), so the "
+        "packs were not read against a live mutator and the order proves nothing"
+    )
 
     assert not orphans, (
         f"{len(orphans)} register rows in these packs have no audit entry: {orphans[:5]}. "
