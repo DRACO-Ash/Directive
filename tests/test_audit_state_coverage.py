@@ -790,21 +790,67 @@ def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
 #: caller's header into the signed `actor` of a durable entry that `verify_log` then
 #: confirmed as sound.
 #:
-#: One entry, because one list parameter in the package receives `.append`. Eight are
-#: annotated `list[...]`; the other seven are never appended to, and a new one lands on the
-#: CHECKED side by default.
-LIST_PARAMETER_SEAMS = MappingProxyType({"records.py": ("rows",)})
+#: Keyed on the FUNCTION and the parameter, not on the module and the name. Keyed on the
+#: name alone, `records.py` holds three `rows: list[...]` parameters and any new function
+#: reusing that name arrived pre-exempt, which is precisely what the tripwire below exists
+#: to prevent and could not catch. One entry, because one list parameter in the package
+#: receives `.append`: eight are annotated `list[...]` and the other seven are never
+#: appended to.
+LIST_PARAMETER_SEAMS = MappingProxyType({"records.py": (("_create", "rows"),)})
 
 
-def _mentions_any(annotation: ast.expr) -> bool:
+def _names_bound_to_any(tree: ast.AST) -> set[str]:
+    """Return every module-level name that is another spelling of `Any`.
+
+    Two forms, both measured as live bypasses: `from typing import Any as Loose`, and
+    `Loose: TypeAlias = Any`. Each gives a second name for the same property, and a predicate
+    that matched one spelling saw neither.
+    """
+    found = {"Any"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"typing", "typing_extensions"}:
+            found |= {alias.asname or alias.name for alias in node.names if alias.name == "Any"}
+        if isinstance(node, ast.AnnAssign | ast.Assign):
+            value = node.value
+            target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0]
+            if isinstance(target, ast.Name) and isinstance(value, ast.Name) and value.id in found:
+                found.add(target.id)
+    return found
+
+
+def _mentions_any(annotation: ast.expr, aliases: frozenset[str] = frozenset({"Any"})) -> bool:
     """Report whether this annotation admits `Any` anywhere inside it.
 
-    `Any`, `Any | None`, `list[Any]`, `Mapping[str, Any]`: all of them hand back a value that
-    satisfies every later claim about its type, which is the exact property this file has now
-    been defeated by three times. Refused by SHAPE rather than by spelling, so the alias and
-    the union are covered without naming them.
+    `Any` satisfies every later claim about a value's type, so any control reasoning about a
+    declared type is void wherever it reaches. That property statement is right and it is the
+    fourth version of this predicate, because the first three refused a SPELLING while
+    claiming to refuse the property.
+
+    Four spellings were measured green against the bare-name version, all of them ordinary
+    Python a maintainer would write without a second thought: the attribute form
+    `typing.Any`; an aliased import; a `TypeAlias` bound to `Any`; and the string annotation
+    `"Any"`, which `ast` stores as a `Constant` and never walks into. Each is handled here by
+    its own clause, because there is no single shape that covers all four, and saying so is
+    better than claiming a generality this has not earned twice already.
     """
-    return any(isinstance(node, ast.Name) and node.id == "Any" for node in ast.walk(annotation))
+    for node in ast.walk(annotation):
+        #: The attribute form. `typing.Any`, `t.Any`, `typing_extensions.Any`: the `Any` is an
+        #: attribute NAME and never appears as an `ast.Name` at all.
+        if isinstance(node, ast.Attribute) and node.attr == "Any":
+            return True
+        if isinstance(node, ast.Name) and node.id in aliases:
+            return True
+        #: A quoted annotation. Parsed rather than string-matched, so `"list[Any]"` is caught
+        #: and a field legitimately called `"Anything"` is not.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                inner = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                #: Unparseable, so unverifiable, so refused.
+                return True
+            if _mentions_any(inner, aliases):
+                return True
+    return False
 
 
 def _constructs_a_list(value: ast.expr | None) -> bool:
@@ -849,6 +895,7 @@ def _list_names_bound_in(scope: ast.AST, declared: tuple[str, ...] = ()) -> set[
             ]
             if _is_list_annotation(argument.annotation) and argument.arg in declared
         }
+    rebound: set[str] = set()
     for node in _own_nodes(scope):
         if (
             isinstance(node, ast.AnnAssign)
@@ -859,7 +906,21 @@ def _list_names_bound_in(scope: ast.AST, declared: tuple[str, ...] = ()) -> set[
                 found.add(node.target.id)
             elif isinstance(node.target, ast.Attribute):
                 found.add(node.target.attr)
-    return found
+        #: A PLAIN reassignment disqualifies the name outright. The exemption is "this is a
+        #: list I watched being made", and it survives only while that stays true. A gate
+        #: wrote `buf: list[...] = []` to earn the exemption and then
+        #: `buf = current_app.extensions[...]` to inherit it, and BOTH layers went silent at
+        #: once: layer one because the name was still on this set, layer two because a split
+        #: key never matches the literal it looks for. One `ast.Assign` check closes it, and
+        #: the idiom is the one `_mutated_after_binding` already uses on the entry dict:
+        #: bound once, never written again.
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    rebound.add(target.id)
+                elif isinstance(target, ast.Attribute):
+                    rebound.add(target.attr)
+    return found - rebound
 
 
 def _is_a_local_list(
@@ -930,7 +991,7 @@ def _is_a_local_list(
 def _entry_arguments(tree: ast.AST, module: str) -> list[tuple[str, ast.AST | None]]:
     """Return the argument passed to every call reaching the audit boundary."""
     parents = _parent_map(tree)
-    declared = LIST_PARAMETER_SEAMS.get(module, ())
+    seams = LIST_PARAMETER_SEAMS.get(module, ())
     found: list[tuple[str, ast.AST | None]] = []
     for node in ast.walk(tree):
         if not (
@@ -940,6 +1001,11 @@ def _entry_arguments(tree: ast.AST, module: str) -> list[tuple[str, ast.AST | No
         ):
             continue
         receiver = ast.unparse(node.func.value)
+        #: The declaration is per FUNCTION, so resolve which one this call sits in before
+        #: asking whether the receiver is exempt.
+        owner = _enclosing(parents, node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        owner_name = owner.name if isinstance(owner, ast.FunctionDef | ast.AsyncFunctionDef) else ""
+        declared = tuple(param for function, param in seams if function == owner_name)
         if _is_a_local_list(parents, node, receiver, declared):
             continue
         #: FAIL CLOSED on a call with no positional argument. The first version required
@@ -1086,7 +1152,9 @@ def test_every_audit_entry_is_a_literal_with_constant_keys(module: str) -> None:
             assert len(assignments) == 1, (
                 f"{module}: `{receiver}.{AUDIT_SINK}` is passed `{argument.id}`, bound "
                 f"{len(assignments)} times. An entry has to trace to one expression or it "
-                "cannot be verified at all."
+                "cannot be verified at all. If this receiver is an ordinary list handed in "
+                "rather than the audit chain, declare it in LIST_PARAMETER_SEAMS as "
+                "(function, parameter)."
             )
             literal = assignments[0]
             after = _mutated_after_binding(tree, argument.id)
@@ -2014,6 +2082,7 @@ def test_the_audit_chain_has_exactly_one_retrieval_shape() -> None:
     for module in sorted(path.relative_to(SRC).as_posix() for path in SRC.rglob("*.py")):
         tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
         parents = _parent_map(tree)
+        aliases = frozenset(_names_bound_to_any(tree))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Constant) and node.value == CHAIN_EXTENSION_NAME):
                 continue
@@ -2031,7 +2100,7 @@ def test_the_audit_chain_has_exactly_one_retrieval_shape() -> None:
                 and holder.args[0] is node
                 and isinstance(bound, ast.AnnAssign)
                 and not _is_list_annotation(bound.annotation)
-                and not _mentions_any(bound.annotation)
+                and not _mentions_any(bound.annotation, aliases)
             ), (
                 f"{module}:{node.lineno} reaches the audit chain as "
                 f"`{ast.unparse(holder) if holder else node.value}`. The chain may only be "
@@ -2052,7 +2121,7 @@ def test_every_declared_list_parameter_seam_is_one_the_module_has() -> None:
     for module, declared in LIST_PARAMETER_SEAMS.items():
         tree = ast.parse((SRC / module).read_text(encoding="utf-8"))
         actual = {
-            argument.arg
+            (function.name, argument.arg)
             for function in ast.walk(tree)
             if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
             for argument in [
@@ -2065,8 +2134,8 @@ def test_every_declared_list_parameter_seam_is_one_the_module_has() -> None:
         missing = sorted(set(declared) - actual)
         assert not missing, (
             f"{module} declares {missing} as a list-parameter seam and has no such "
-            "parameter. The allowance has to match the code, or it pre-authorises a "
-            "receiver somebody adds later."
+            "parameter on that function. The allowance has to match the code, or it "
+            "pre-authorises a receiver somebody adds later."
         )
 
 
