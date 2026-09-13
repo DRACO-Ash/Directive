@@ -192,6 +192,20 @@ def mutate(  # noqa: PLR0913 - each argument is a distinct part of one audit ent
             changed, before, after = sorted(clean), "", record.get("state", "")
         else:
             record, changed, before, after = _update(rows, record_id, clean, register=register)
+            if not changed:
+                # Nothing moved, so nothing is recorded. `_update` already reports an empty
+                # change list for a no-op, and this function used to stage and append
+                # anyway, so a double click on a state button or any repeated identical
+                # PATCH wrote a permanent, signed, chained entry with an empty
+                # `fields_changed` and no transition. An entry is immutable, so that noise
+                # could never be removed from the evidence an assessor reads, and it
+                # contradicted the one claim the whole audit design exists to support: that
+                # every entry describes a change that actually happened.
+                #
+                # Returning here skips the stage and the append. The context manager still
+                # exits cleanly and rewrites the identical rows, which is a wasted write and
+                # not a wrong one.
+                return record
 
         # Stage the register BEFORE the entry, commit it after. The serialisation, the disk
         # space and the flush all happen in the stage, so a full volume refuses the change

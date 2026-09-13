@@ -1030,20 +1030,34 @@ def test_the_unreachable_register_guard_is_also_capped() -> None:
     assert LONG_SEGMENT not in str(raised.value)
 
 
-def test_a_no_op_state_change_claims_no_transition(signed_in: FlaskClient) -> None:
-    """Writing OPEN to OPEN into an immutable entry is a transition that never happened."""
+def test_a_no_op_update_writes_no_audit_entry_at_all(signed_in: FlaskClient) -> None:
+    """A change that did not happen is not an event, so nothing is recorded.
+
+    This test previously asserted the weaker property that a no-op entry claimed no
+    TRANSITION, which quietly held a defect in place: the entry was still written, so a
+    double click on a state button, or any repeated identical PATCH, put a permanent signed
+    row with an empty `fields_changed` into the evidence an assessor reads. An entry is
+    immutable, so that noise could never be removed, and it contradicted the one claim the
+    whole audit design exists to support.
+    """
     created = signed_in.post(
         "/api/registers/tasks", json={"title": "Access review"}, headers=token_for(signed_in)
     ).get_json()["record"]
-    signed_in.patch(
-        f"/api/registers/tasks/{created['id']}",
-        json={"state": created["state"]},
-        headers=token_for(signed_in),
-    )
+    before = len(signed_in.get("/api/audit").get_json()["entries"])
 
-    latest = signed_in.get("/api/audit").get_json()["entries"][0]
-    assert latest["old_state"] == ""
-    assert latest["new_state"] == ""
+    for _ in range(3):
+        response = signed_in.patch(
+            f"/api/registers/tasks/{created['id']}",
+            json={"state": created["state"]},
+            headers=token_for(signed_in),
+        )
+        assert response.status_code == 200
+
+    entries = signed_in.get("/api/audit").get_json()["entries"]
+    assert len(entries) == before, (
+        "a repeated identical update wrote an audit entry. Three no-op PATCHes added "
+        f"{len(entries) - before} permanent rows describing changes that never happened."
+    )
 
 
 def test_verification_reports_a_volume_it_cannot_read(
