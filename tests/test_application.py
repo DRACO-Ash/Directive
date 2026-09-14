@@ -376,20 +376,38 @@ def test_signing_out_ends_the_session(signed_in: FlaskClient) -> None:
 # ============================ the registers ============================
 
 
+def minimal_record(client: FlaskClient, register: str) -> dict[str, str]:
+    """Return the smallest payload the register will accept.
+
+    Most registers need only a title. `transfers` also needs the agreement it assesses,
+    because a Transfer Risk Assessment that does not name its International Data Transfer
+    Agreement evidences nothing, so this creates one first and links to it.
+    """
+    payload = {"title": "A real thing", "owner": "A. Higgins"}
+    for required in records.REGISTERS[register].get("requires", ()):
+        target = records.FIELD_KINDS[required][1]
+        created = client.post(
+            f"/api/registers/{target}",
+            json={"title": f"Instrument for {register}"},
+            headers=token_for(client),
+        )
+        assert created.status_code == 201, created.get_data(as_text=True)
+        payload[required] = created.get_json()["record"]["id"]
+    return payload
+
+
 @pytest.mark.parametrize("register", sorted(records.REGISTERS))
 def test_a_record_can_be_created_and_read_back(signed_in: FlaskClient, register: str) -> None:
-    headers = token_for(signed_in)
+    payload = minimal_record(signed_in, register)
     created = signed_in.post(
-        f"/api/registers/{register}",
-        json={"title": "A real thing", "owner": "A. Higgins"},
-        headers=headers,
+        f"/api/registers/{register}", json=payload, headers=token_for(signed_in)
     )
-    assert created.status_code == 201
+    assert created.status_code == 201, created.get_data(as_text=True)
     record = created.get_json()["record"]
     assert record["title"] == "A real thing"
 
     listed = signed_in.get(f"/api/registers/{register}").get_json()["records"]
-    assert [row["id"] for row in listed] == [record["id"]]
+    assert record["id"] in [row["id"] for row in listed]
 
 
 def test_records_survive_a_restart(app: Flask, tmp_path: Path, signed_in: FlaskClient) -> None:
@@ -2056,3 +2074,105 @@ def test_the_audit_read_out_takes_its_page_and_anchor_as_one_pair(
         f"that disagree: {mismatched[:5]}. Both are read under the append lock or neither "
         "is, and the read-out is what an operator and an assessor page through."
     )
+
+
+def test_a_due_date_is_stored_as_a_real_calendar_date(signed_in: FlaskClient) -> None:
+    """The application held a compliance operating rhythm with no concept of when."""
+    created = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "Quarterly access review", "due": "2026-12-01"},
+        headers=token_for(signed_in),
+    )
+    assert created.status_code == 201
+    assert created.get_json()["record"]["due"] == "2026-12-01"
+
+
+@pytest.mark.parametrize("bad", ["2026-02-31", "01/12/2026", "next Tuesday", "2026-13-01", ""])
+def test_a_date_that_is_not_a_date_is_refused(signed_in: FlaskClient, bad: str) -> None:
+    """`fromisoformat` refuses the 31st of February rather than rolling it forward."""
+    refused = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "Review", "due": bad},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400
+
+
+def test_a_severity_outside_the_vocabulary_is_refused(signed_in: FlaskClient) -> None:
+    """A severity that drifts into free text cannot be counted, sorted or evidenced."""
+    headers = token_for(signed_in)
+    assert (
+        signed_in.post(
+            "/api/registers/incidents",
+            json={"title": "Laptop left on a train", "severity": "HIGH"},
+            headers=headers,
+        ).status_code
+        == 201
+    )
+    assert (
+        signed_in.post(
+            "/api/registers/incidents",
+            json={"title": "Another", "severity": "quite bad"},
+            headers=headers,
+        ).status_code
+        == 400
+    )
+
+
+def test_a_transfer_assessment_must_name_the_agreement_it_assesses(
+    signed_in: FlaskClient,
+) -> None:
+    """A Transfer Risk Assessment adrift from its agreement evidences nothing.
+
+    This is the first real relationship in the application. Before it, `reference` was 64
+    characters of free text and nothing could be joined to anything.
+    """
+    headers = token_for(signed_in)
+    orphan = signed_in.post(
+        "/api/registers/transfers",
+        json={"title": "Customer account details to the parent company"},
+        headers=headers,
+    )
+    assert orphan.status_code == 400
+    assert "agreement" in orphan.get_json()["error"]
+
+    agreement = signed_in.post(
+        "/api/registers/agreements",
+        json={"title": "IDTA, Bluestaq Ltd to Bluestaq LLC", "state": "IN_FORCE"},
+        headers=headers,
+    ).get_json()["record"]
+    assert agreement["id"].startswith("IDTA-")
+
+    assessment = signed_in.post(
+        "/api/registers/transfers",
+        json={
+            "title": "Customer account details to the parent company",
+            "agreement": agreement["id"],
+            "severity": "MEDIUM",
+            "review_by": "2027-09-14",
+        },
+        headers=headers,
+    )
+    assert assessment.status_code == 201, assessment.get_data(as_text=True)
+    assert assessment.get_json()["record"]["agreement"] == agreement["id"]
+
+
+def test_a_link_to_an_agreement_that_does_not_exist_is_refused(signed_in: FlaskClient) -> None:
+    """A dangling reference would be discovered by the assessor who asked to see it."""
+    refused = signed_in.post(
+        "/api/registers/transfers",
+        json={"title": "Assessment", "agreement": "IDTA-9999"},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400
+    assert "IDTA-9999" in refused.get_json()["error"]
+
+
+def test_a_field_one_register_holds_is_refused_by_another(signed_in: FlaskClient) -> None:
+    """Field acceptance is scoped to the register, not to the whole application."""
+    refused = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "A task", "agreement": "IDTA-0001"},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400

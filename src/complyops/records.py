@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
 from . import store
@@ -36,11 +36,85 @@ INCIDENT_STATES = ("TRIAGE", "INVESTIGATING", "CONTAINED", "CLOSED")
 #: Risk treatment progress, from the prototype's `On Track`, `At Risk`, `Planned`.
 RISK_STATES = ("PLANNED", "ON_TRACK", "AT_RISK", "ACCEPTED", "CLOSED")
 
-#: Which register uses which vocabulary, and what an entry calls it.
+#: Transfer agreement lifecycle. An International Data Transfer Agreement (IDTA) is the
+#: instrument, so its states are the instrument's, not a workflow's.
+AGREEMENT_STATES = ("DRAFT", "IN_FORCE", "SUPERSEDED", "TERMINATED")
+
+#: Transfer Risk Assessment (TRA) progress. `REVIEW_DUE` is a real state rather than a
+#: derived one: an assessment whose review date has passed is not the same as one that was
+#: never approved, and an assessor will ask which it is.
+TRANSFER_STATES = ("DRAFT", "ASSESSED", "APPROVED", "REJECTED", "REVIEW_DUE")
+
+#: How severe, on one scale, everywhere. A closed vocabulary for the same reason the state
+#: vocabularies are closed: a severity that drifts into free text cannot be counted, sorted
+#: or evidenced.
+SEVERITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+#: A field's KIND decides how it is validated. Until this existed every field was text with
+#: a length cap, which is why the application could hold a compliance operating rhythm with
+#: no concept of when anything was due.
+#:
+#: ``LINK`` is the interesting one. It names another register, and it is what turns
+#: `reference`, which was 64 characters of free text, into an actual relationship. The
+#: FORMAT is checked here; the EXISTENCE of the target is checked in :func:`mutate`, where
+#: the data directory is already open. Keeping the two apart leaves this function pure.
+TEXT, DATE, CHOICE, LINK = "text", "date", "choice", "link"
+
+#: Every field this application understands, and how. A register declares which of these it
+#: accepts, so a task cannot carry a transfer agreement and an assessment cannot carry a due
+#: date it would never be read from.
+FIELD_KINDS: dict[str, tuple[str, Any]] = {
+    "title": (TEXT, None),
+    "summary": (TEXT, None),
+    "owner": (TEXT, None),
+    "reference": (TEXT, None),
+    "notes": (TEXT, None),
+    "category": (TEXT, None),
+    "due": (DATE, None),
+    "review_by": (DATE, None),
+    "severity": (CHOICE, SEVERITIES),
+    "agreement": (LINK, "agreements"),
+}
+
+#: The fields every register carries.
+COMMON_FIELDS = ("title", "summary", "owner", "reference", "notes", "category")
+
+#: Which register uses which vocabulary, what an entry calls it, and which fields it holds.
 REGISTERS: dict[str, dict[str, Any]] = {
-    "tasks": {"states": TASK_STATES, "prefix": "TSK", "title": "Rhythm tasks"},
-    "incidents": {"states": INCIDENT_STATES, "prefix": "INC", "title": "Incidents"},
-    "risks": {"states": RISK_STATES, "prefix": "RSK", "title": "Risk register"},
+    "tasks": {
+        "states": TASK_STATES,
+        "prefix": "TSK",
+        "title": "Rhythm tasks",
+        "fields": (*COMMON_FIELDS, "due"),
+    },
+    "incidents": {
+        "states": INCIDENT_STATES,
+        "prefix": "INC",
+        "title": "Incidents",
+        "fields": (*COMMON_FIELDS, "severity"),
+    },
+    "risks": {
+        "states": RISK_STATES,
+        "prefix": "RSK",
+        "title": "Risk register",
+        "fields": (*COMMON_FIELDS, "severity", "review_by"),
+    },
+    "agreements": {
+        "states": AGREEMENT_STATES,
+        "prefix": "IDTA",
+        "title": "Transfer agreements",
+        "fields": (*COMMON_FIELDS, "review_by"),
+    },
+    "transfers": {
+        "states": TRANSFER_STATES,
+        "prefix": "TRA",
+        "title": "Transfer risk assessments",
+        #: `agreement` is REQUIRED, not optional. A transfer risk assessment that does not
+        #: name the instrument it assesses is the thing this register exists to stop: the
+        #: assessment and the agreement drift apart and neither evidences the other.
+        "fields": (*COMMON_FIELDS, "severity", "review_by", "agreement"),
+        "requires": ("agreement",),
+    },
 }
 
 #: Free-text fields are capped here as well as in the audit boundary, because a record is
@@ -108,23 +182,61 @@ def check_fields(
             continue
         if not isinstance(value, str):
             # Capped for the same reason the unknown-name echo below is, and reached
-            # BEFORE the cap lookup: an unknown name carrying a non-string value never
-            # gets as far as `FIELD_CAPS`, so the truncation has to happen here too.
+            # BEFORE the kind lookup: an unknown name carrying a non-string value never
+            # gets as far as the schema, so the truncation has to happen here too.
             # `str(name)` because a JSON object key is not guaranteed to be text either.
             raise RecordError(f"{str(name)[:64]!r} must be text")
-        cap = FIELD_CAPS.get(name)
-        if cap is None:
+        if name not in REGISTERS[register]["fields"]:
             # The name is truncated before it is echoed. It is attacker-supplied and
-            # unbounded, and a client error is not a mirror.
+            # unbounded, and a client error is not a mirror. Scoped to the REGISTER now
+            # rather than to the whole application, so a field one register understands is
+            # still refused by a register that would never read it.
             raise RecordError(f"{name[:64]!r} is not a field of the {register} register")
-        if len(value) > cap:
-            raise RecordError(f"{name!r} is {len(value)} characters, over its cap of {cap}")
-        clean[name] = value.strip()
+        clean[name] = check_value(name, value)
     if complete and not clean.get("title"):
         raise RecordError("every record needs a title")
+    for required in REGISTERS[register].get("requires", ()):
+        if complete and not clean.get(required):
+            raise RecordError(f"every {register} record needs {required!r}")
     if not clean:
         raise RecordError("nothing to change")
     return clean
+
+
+def check_value(name: str, value: str) -> str:
+    """Validate one field against its kind, or raise :class:`RecordError`.
+
+    Every kind fails closed. A date that is not a calendar date, a choice outside its
+    vocabulary and a link that is not shaped like a record identifier are all refused rather
+    than stored and interpreted later.
+    """
+    kind, detail = FIELD_KINDS[name]
+    value = value.strip()
+    if kind == DATE:
+        #: An ISO calendar date, and `fromisoformat` is strict about real ones: it refuses
+        #: the 31st of February rather than rolling it forward.
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            raise RecordError(
+                f"{name!r} must be a date as YYYY-MM-DD, not {value[:64]!r}"
+            ) from None
+        return parsed.isoformat()
+    if kind == CHOICE:
+        if value not in detail:
+            raise RecordError(f"{str(value)[:64]!r} is not a {name}. One of: {', '.join(detail)}")
+        return value
+    if kind == LINK:
+        prefix = REGISTERS[detail]["prefix"]
+        if not re.fullmatch(rf"{prefix}-\d{{4,}}", value):
+            raise RecordError(
+                f"{name!r} must name a {detail} record as {prefix}-0001, not {value[:64]!r}"
+            )
+        return value
+    cap = FIELD_CAPS[name]
+    if len(value) > cap:
+        raise RecordError(f"{name!r} is {len(value)} characters, over its cap of {cap}")
+    return value
 
 
 def check_state(value: object, *, register: str) -> str:
@@ -184,6 +296,19 @@ def mutate(  # noqa: PLR0913 - each argument is a distinct part of one audit ent
         if fields is not None
         else {}
     )
+
+    #: Referential integrity, before the register is opened. A link whose target does not
+    #: exist is refused rather than stored: an assessment naming an agreement nobody can
+    #: find evidences nothing, and the dangling reference would only be discovered by the
+    #: assessor who asked to see it. Checked here rather than in `check_fields` because this
+    #: is where the data directory is, and that function stays pure.
+    for name, value in clean.items():
+        #: `state` rides in `clean` alongside the declared fields and is not one of them, so
+        #: it is looked up defensively rather than indexed. Indexing it raised a KeyError
+        #: that reached the client as a 500 on every state transition.
+        kind, target = FIELD_KINDS.get(name, (TEXT, None))
+        if kind == LINK and store.find(store.read(data_dir, target), value) is None:
+            raise RecordError(f"there is no {target} record {value[:64]!r} to link to")
 
     holder = store.register(data_dir, register)
     with holder as rows:
