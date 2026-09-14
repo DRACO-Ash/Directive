@@ -2176,3 +2176,101 @@ def test_a_field_one_register_holds_is_refused_by_another(signed_in: FlaskClient
         headers=token_for(signed_in),
     )
     assert refused.status_code == 400
+
+
+def test_the_transfer_chain_records_the_sub_processor_role(signed_in: FlaskClient) -> None:
+    """Controller to processor to sub-processor, which is the chain that decides the duties.
+
+    The instrument is the CUSTOMER's, so the record has to name who the controller is rather
+    than assume this company is it.
+    """
+    agreement = signed_in.post(
+        "/api/registers/agreements",
+        json={
+            "title": "Customer IDTA, account details to the parent company",
+            "controller": "Customer, contracting authority",
+            "exporter": "Bluestaq Limited",
+            "importer": "Bluestaq LLC",
+            "importer_role": "SUB_PROCESSOR",
+            "contract": "TBC, re-verify",
+            "state": "IN_FORCE",
+        },
+        headers=token_for(signed_in),
+    )
+    assert agreement.status_code == 201, agreement.get_data(as_text=True)
+    record = agreement.get_json()["record"]
+    assert record["importer_role"] == "SUB_PROCESSOR"
+    assert record["controller"] == "Customer, contracting authority"
+
+
+def test_an_importer_role_outside_the_vocabulary_is_refused(signed_in: FlaskClient) -> None:
+    """A role that drifts into free text cannot decide which obligations attach."""
+    refused = signed_in.post(
+        "/api/registers/agreements",
+        json={"title": "IDTA", "importer_role": "parent company"},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400
+
+
+def _approved_assessment_attempt(client: FlaskClient, authorisation: str | None) -> int:
+    """Create an agreement and a transfer assessment, then try to approve it."""
+    headers = token_for(client)
+    agreement = client.post(
+        "/api/registers/agreements",
+        json={"title": "Customer IDTA", "importer_role": "SUB_PROCESSOR"},
+        headers=headers,
+    ).get_json()["record"]
+    payload = {
+        "title": "Customer account details to the parent company",
+        "agreement": agreement["id"],
+        "data_categories": "Customer account details",
+        "destination": "United States",
+    }
+    if authorisation is not None:
+        payload["authorisation"] = authorisation
+    assessment = client.post("/api/registers/transfers", json=payload, headers=headers).get_json()[
+        "record"
+    ]
+    return client.patch(
+        f"/api/registers/transfers/{assessment['id']}",
+        json={"state": "APPROVED"},
+        headers=headers,
+    ).status_code
+
+
+def test_an_assessment_cannot_be_approved_without_the_controllers_authorisation(
+    signed_in: FlaskClient,
+) -> None:
+    """Article 28(2) is the question a one-person function misses under time pressure.
+
+    A processor may not engage a sub-processor without the controller's prior authorisation.
+    An assessment that reaches APPROVED without recording it has skipped the question, so
+    the application refuses rather than letting it through quietly.
+    """
+    assert _approved_assessment_attempt(signed_in, None) == 400
+    assert _approved_assessment_attempt(signed_in, "NOT_OBTAINED") == 400
+    assert _approved_assessment_attempt(signed_in, "SPECIFIC") == 200
+    assert _approved_assessment_attempt(signed_in, "GENERAL") == 200
+    assert _approved_assessment_attempt(signed_in, "NOT_APPLICABLE") == 200
+
+
+def test_the_refusal_says_which_article_and_what_to_do(signed_in: FlaskClient) -> None:
+    """A refusal an operator cannot act on is an obstruction rather than a control."""
+    headers = token_for(signed_in)
+    agreement = signed_in.post(
+        "/api/registers/agreements", json={"title": "IDTA"}, headers=headers
+    ).get_json()["record"]
+    assessment = signed_in.post(
+        "/api/registers/transfers",
+        json={"title": "Assessment", "agreement": agreement["id"]},
+        headers=headers,
+    ).get_json()["record"]
+    refused = signed_in.patch(
+        f"/api/registers/transfers/{assessment['id']}",
+        json={"state": "APPROVED"},
+        headers=headers,
+    )
+    error = refused.get_json()["error"]
+    assert "28(2)" in error
+    assert "SPECIFIC" in error and "GENERAL" in error

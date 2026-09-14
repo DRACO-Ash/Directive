@@ -50,6 +50,20 @@ TRANSFER_STATES = ("DRAFT", "ASSESSED", "APPROVED", "REJECTED", "REVIEW_DUE")
 #: or evidenced.
 SEVERITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 
+#: What the party receiving the data is, in UK GDPR terms. The distinction is not
+#: bookkeeping: a SUB_PROCESSOR carries obligations a CONTROLLER does not, because the
+#: processor that engaged it stays fully liable for it to the controller, and the controller
+#: has to have authorised it in the first place.
+IMPORTER_ROLES = ("CONTROLLER", "PROCESSOR", "SUB_PROCESSOR")
+
+#: Whether the controller has authorised this sub-processor, and how. UK GDPR Article 28(2)
+#: is the reason this is a field rather than an assumption: a processor may not engage
+#: another processor without the controller's prior authorisation, which is either specific
+#: to this sub-processor or general with a right to object. `NOT_OBTAINED` is a real and
+#: recordable state, because the honest answer is sometimes that it has not been obtained
+#: yet, and an assessment that cannot say so is worth less than one that can.
+AUTHORISATIONS = ("SPECIFIC", "GENERAL", "NOT_OBTAINED", "NOT_APPLICABLE")
+
 #: A field's KIND decides how it is validated. Until this existed every field was text with
 #: a length cap, which is why the application could hold a compliance operating rhythm with
 #: no concept of when anything was due.
@@ -74,6 +88,36 @@ FIELD_KINDS: dict[str, tuple[str, Any]] = {
     "review_by": (DATE, None),
     "severity": (CHOICE, SEVERITIES),
     "agreement": (LINK, "agreements"),
+    "controller": (TEXT, None),
+    "exporter": (TEXT, None),
+    "importer": (TEXT, None),
+    "importer_role": (CHOICE, IMPORTER_ROLES),
+    "contract": (TEXT, None),
+    "data_categories": (TEXT, None),
+    "destination": (TEXT, None),
+    "authorisation": (CHOICE, AUTHORISATIONS),
+    "safeguards": (TEXT, None),
+}
+
+#: A state a register may not enter while one of its fields is unset or holds a named value.
+#:
+#: This is the first rule in the application that reasons about a record as a WHOLE rather
+#: than field by field, and it exists because the Article 28(2) authorisation is exactly the
+#: thing a one-person function misses under time pressure. A transfer risk assessment that
+#: reaches APPROVED without recording whether the controller authorised the sub-processor
+#: is an assessment that has skipped the question, and the application should not let it.
+#: Declared here rather than written into a function, so the next rule is a row.
+BLOCKED_STATES: dict[str, tuple[tuple[str, str, tuple[str, ...], str], ...]] = {
+    "transfers": (
+        (
+            "APPROVED",
+            "authorisation",
+            ("", "NOT_OBTAINED"),
+            "UK GDPR Article 28(2): a processor may not engage a sub-processor without the "
+            "controller's prior authorisation. Record it as SPECIFIC or GENERAL, or say why "
+            "it does not apply, before approving this assessment.",
+        ),
+    ),
 }
 
 #: The fields every register carries.
@@ -103,7 +147,18 @@ REGISTERS: dict[str, dict[str, Any]] = {
         "states": AGREEMENT_STATES,
         "prefix": "IDTA",
         "title": "Transfer agreements",
-        "fields": (*COMMON_FIELDS, "review_by"),
+        #: The parties and their ROLES, because the instrument is the customer's rather than
+        #: this company's. The chain that matters runs controller, to exporter, to importer,
+        #: and the importer's role decides which obligations attach.
+        "fields": (
+            *COMMON_FIELDS,
+            "review_by",
+            "controller",
+            "exporter",
+            "importer",
+            "importer_role",
+            "contract",
+        ),
     },
     "transfers": {
         "states": TRANSFER_STATES,
@@ -112,7 +167,16 @@ REGISTERS: dict[str, dict[str, Any]] = {
         #: `agreement` is REQUIRED, not optional. A transfer risk assessment that does not
         #: name the instrument it assesses is the thing this register exists to stop: the
         #: assessment and the agreement drift apart and neither evidences the other.
-        "fields": (*COMMON_FIELDS, "severity", "review_by", "agreement"),
+        "fields": (
+            *COMMON_FIELDS,
+            "severity",
+            "review_by",
+            "agreement",
+            "data_categories",
+            "destination",
+            "authorisation",
+            "safeguards",
+        ),
         "requires": ("agreement",),
     },
 }
@@ -127,6 +191,13 @@ FIELD_CAPS: dict[str, int] = {
     "reference": 64,
     "notes": 4000,
     "category": 64,
+    "controller": 200,
+    "exporter": 200,
+    "importer": 200,
+    "contract": 120,
+    "data_categories": 500,
+    "destination": 120,
+    "safeguards": 2000,
 }
 
 _ID = re.compile(r"\A[A-Z]{3}-[0-9]{4}\Z")
@@ -239,6 +310,17 @@ def check_value(name: str, value: str) -> str:
     return value
 
 
+def check_invariants(record: Mapping[str, Any], *, register: str) -> None:
+    """Refuse a record whose fields are each valid and jointly wrong.
+
+    Field validation cannot see this: `state` and `authorisation` are both individually
+    legitimate values, and it is the combination that is not.
+    """
+    for state, field, blocked, why in BLOCKED_STATES.get(register, ()):
+        if record.get("state") == state and str(record.get(field, "")) in blocked:
+            raise RecordError(f"this record cannot be {state} yet. {why}")
+
+
 def check_state(value: object, *, register: str) -> str:
     """Validate a workflow state against the register's closed vocabulary.
 
@@ -337,6 +419,8 @@ def mutate(  # noqa: PLR0913 - each argument is a distinct part of one audit ent
         # with nothing yet recorded; only the rename is left for the exit. That narrows the
         # window in which an immutable entry could describe a change that never landed, and
         # it does not close it: see `store.register` and `docs/DEPLOYMENT.md`.
+        check_invariants(record, register=register)
+
         holder.stage()
 
         # The audit entry, before the register is committed. `store.register` commits on a
