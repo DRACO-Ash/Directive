@@ -7,16 +7,22 @@
       <div class="brand-sub">Bluestaq Limited</div>
     </div>
     <ul class="nav">
-      <li><button type="button" data-view="dashboard" aria-current="page">Dashboard</button></li>
+      <li><button type="button" data-view="dashboard" aria-current="page"
+                  data-title="Dashboard"
+                  data-sub="The compliance operating rhythm, its registers, and the audit trail.">Dashboard</button></li>
       {% for name, spec in registers.items() %}
       <li>
-        <button type="button" data-view="{{ name }}">
+        <button type="button" data-view="{{ name }}" data-title="{{ spec.title }}"
+                data-sub="Select a row to open the record. Every change writes one audit entry.">
           <span>{{ spec.title }}</span>
           <span class="count" data-count="{{ name }}">0</span>
         </button>
       </li>
       {% endfor %}
-      <li><button type="button" data-view="audit">Audit log</button></li>
+      <li><button type="button" data-view="audit" data-title="Audit log"
+                  data-sub="Every entry is signed, chained to the one before it, and anchored on the volume.">Audit log</button></li>
+      <li><button type="button" data-view="system" data-title="Diagnostics"
+                  data-sub="What the application can see of its own configuration and storage.">Diagnostics</button></li>
     </ul>
     <div class="who">
       <div class="who-actor">{{ actor }}</div>
@@ -52,45 +58,54 @@
     </section>
 
     {% for name, spec in registers.items() %}
-    <section id="panel-{{ name }}" class="hidden">
+    <section id="panel-{{ name }}" class="hidden" aria-labelledby="h-{{ name }}">
+      <h2 id="h-{{ name }}" class="section-heading">Add to {{ spec.title|lower }}</h2>
       <form class="record" data-register="{{ name }}">
         <div class="fields">
-          <div>
-            <label for="{{ name }}-title">Title</label>
-            <input id="{{ name }}-title" name="title" maxlength="200" required>
+          {% for field in spec.schema if field.required %}
+          <div class="field{% if field.long %} field-wide{% endif %}">
+            <label for="{{ name }}-{{ field.name }}">
+              {{ field.label }}{% if field.required %} <span class="req" aria-hidden="true">*</span><span class="sr-only">required</span>{% endif %}
+            </label>
+            {% if field.kind == "choice" %}
+            <select id="{{ name }}-{{ field.name }}" name="{{ field.name }}">
+              <option value="">Not set</option>
+              {% for choice in field.choices %}<option value="{{ choice }}">{{ choice.replace('_', ' ') }}</option>{% endfor %}
+            </select>
+            {% elif field.kind == "link" %}
+            <select id="{{ name }}-{{ field.name }}" name="{{ field.name }}"
+                    data-link="{{ field.target }}"{% if field.required %} required{% endif %}>
+              <option value="">Choose a record</option>
+            </select>
+            {% elif field.kind == "date" %}
+            <input type="date" id="{{ name }}-{{ field.name }}" name="{{ field.name }}">
+            {% elif field.long %}
+            <textarea id="{{ name }}-{{ field.name }}" name="{{ field.name }}" maxlength="{{ field.cap }}"></textarea>
+            {% else %}
+            <input id="{{ name }}-{{ field.name }}" name="{{ field.name }}" maxlength="{{ field.cap }}"{% if field.required %} required{% endif %}>
+            {% endif %}
           </div>
-          <div>
-            <label for="{{ name }}-owner">Owner</label>
-            <input id="{{ name }}-owner" name="owner" maxlength="120">
-          </div>
-          <div>
+          {% endfor %}
+          <div class="field">
             <label for="{{ name }}-state">State</label>
             <select id="{{ name }}-state" name="state">
               {% for state in spec.states %}<option value="{{ state }}">{{ state.replace('_', ' ') }}</option>{% endfor %}
             </select>
           </div>
-          <div>
-            <label for="{{ name }}-reference">Reference</label>
-            <input id="{{ name }}-reference" name="reference" maxlength="64">
-          </div>
         </div>
-        <div style="margin-top:14px">
-          <label for="{{ name }}-summary">Summary</label>
-          <textarea id="{{ name }}-summary" name="summary" maxlength="2000"></textarea>
-        </div>
-        <div style="margin-top:14px" class="row-actions">
+        <div class="row-actions form-actions">
           <button type="submit" class="primary">Add to {{ spec.title|lower }}</button>
+          <span class="sub inline-hint">The rest of the record opens when you select its row.</span>
         </div>
       </form>
 
-      <table>
-        <caption>{{ spec.title }}. Newest first.</caption>
-        <thead>
-          <tr><th scope="col">Reference</th><th scope="col">Title</th><th scope="col">Owner</th>
-              <th scope="col">State</th><th scope="col">Updated</th><th scope="col">Move to</th></tr>
-        </thead>
-        <tbody data-rows="{{ name }}"></tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <caption>{{ spec.title }}. Newest first. Select a row to open it.</caption>
+          <thead><tr data-head="{{ name }}"></tr></thead>
+          <tbody data-rows="{{ name }}"></tbody>
+        </table>
+      </div>
       <div class="empty hidden" data-empty="{{ name }}">Nothing recorded yet.</div>
     </section>
     {% endfor %}
@@ -106,7 +121,27 @@
       </table>
       <div class="empty hidden" id="audit-empty">No entries yet. Add a record and it will appear here.</div>
     </section>
+    <section id="panel-system" class="hidden" aria-labelledby="h-system">
+      <h2 id="h-system" class="section-heading">Diagnostics</h2>
+      <p class="sub">What the application can see of its own configuration and storage.</p>
+      <div class="table-scroll"><table><tbody id="system-rows"></tbody></table></div>
+    </section>
   </main>
+
+  <div class="drawer hidden" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-ref mono" id="drawer-ref"></div>
+        <h2 id="drawer-title">Record</h2>
+      </div>
+      <button type="button" class="action" id="drawer-close" aria-label="Close record">Close</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+    <div class="drawer-foot">
+      <span class="sub" id="drawer-hint">Changes save when you leave a field. Each one writes an audit entry.</span>
+    </div>
+  </div>
+  <div class="scrim hidden" id="scrim"></div>
 </div>
 <script src="{{ url_for('static', filename='console.js') }}" defer></script>
 {% endblock %}

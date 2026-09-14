@@ -123,6 +123,10 @@ BLOCKED_STATES: dict[str, tuple[tuple[str, str, tuple[str, ...], str], ...]] = {
 #: The fields every register carries.
 COMMON_FIELDS = ("title", "summary", "owner", "reference", "notes", "category")
 
+#: Above this cap a text field gets a textarea rather than a single line. Measured against
+#: the cap rather than listed by name, so a new long field gets the right control for free.
+TEXTAREA_ABOVE = 500
+
 #: Which register uses which vocabulary, what an entry calls it, and which fields it holds.
 REGISTERS: dict[str, dict[str, Any]] = {
     "tasks": {
@@ -231,6 +235,41 @@ def next_id(rows: list[dict[str, Any]], prefix: str) -> str:
     """Return the next identifier for a register, as PREFIX-0001."""
     used = [int(row["id"].split("-")[1]) for row in rows if _ID.match(str(row.get("id", "")))]
     return f"{prefix}-{max(used, default=0) + 1:04d}"
+
+
+def field_schema(register: str) -> list[dict[str, Any]]:
+    """Describe a register's fields so the console can render them.
+
+    The interface used to hardcode five inputs for every register, which is why a transfer
+    risk assessment could not be created through it at all: `agreement` is required and no
+    form offered it. The schema is derived from `REGISTERS` and `FIELD_KINDS` rather than
+    restated, so a field added to a register appears in the console without a second edit.
+    """
+    if register not in REGISTERS:
+        raise RecordError(f"{str(register)[:64]!r} is not a register")
+    required = REGISTERS[register].get("requires", ())
+    described: list[dict[str, Any]] = []
+    for name in REGISTERS[register]["fields"]:
+        kind, detail = FIELD_KINDS[name]
+        field: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            #: The label is derived, never invented: the field name with its underscores
+            #: opened out. `data_categories` reads "Data categories".
+            "label": name.replace("_", " ").capitalize(),
+            "required": name in required or name == "title",
+        }
+        if kind == CHOICE:
+            field["choices"] = list(detail)
+        if kind == LINK:
+            field["target"] = detail
+        if kind == TEXT:
+            field["cap"] = FIELD_CAPS[name]
+            #: The two long ones get a textarea. Measured against the caps rather than
+            #: listed by name, so a new long field gets the right control for free.
+            field["long"] = FIELD_CAPS[name] >= TEXTAREA_ABOVE
+        described.append(field)
+    return described
 
 
 def check_fields(

@@ -26,5 +26,8 @@ def dashboard() -> str:
         actor=auth.current_actor(),
         verified=auth.actor_is_verified(),
         banner=auth.development_banner(),
-        registers=records.REGISTERS,
+        registers={
+            name: {**spec, "schema": records.field_schema(name)}
+            for name, spec in records.REGISTERS.items()
+        },
     )

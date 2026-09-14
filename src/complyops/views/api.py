@@ -138,6 +138,8 @@ def list_registers() -> Response:
             "registers": {name: records.read(directory, name) for name in records.REGISTERS},
             "counts": records.counts(directory),
             "states": {name: spec["states"] for name, spec in records.REGISTERS.items()},
+            "fields": {name: records.field_schema(name) for name in records.REGISTERS},
+            "titles": {name: spec["title"] for name, spec in records.REGISTERS.items()},
             "actor": auth.current_actor(),
             "actorVerified": auth.actor_is_verified(),
         }

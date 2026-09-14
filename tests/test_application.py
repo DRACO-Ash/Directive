@@ -2274,3 +2274,47 @@ def test_the_refusal_says_which_article_and_what_to_do(signed_in: FlaskClient) -
     error = refused.get_json()["error"]
     assert "28(2)" in error
     assert "SPECIFIC" in error and "GENERAL" in error
+
+
+def test_the_console_offers_every_required_field_of_every_register(
+    signed_in: FlaskClient,
+) -> None:
+    """A required field with no control is a record the interface cannot create.
+
+    This is exactly what shipped: the console hardcoded five inputs, `transfers` requires
+    `agreement`, and no form offered it, so a transfer risk assessment could not be created
+    through the interface at any click count.
+    """
+    page = signed_in.get("/console").get_data(as_text=True)
+    for register, spec in records.REGISTERS.items():
+        for field in records.field_schema(register):
+            if field["required"]:
+                assert f'id="{register}-{field["name"]}"' in page, (
+                    f"the console has no control for {register}.{field['name']}, which is "
+                    f"required, so a {spec['title'].lower()} record cannot be created in it"
+                )
+
+
+def test_a_link_field_renders_a_picker_bound_to_its_target(signed_in: FlaskClient) -> None:
+    """A free-text box for a record identifier invites a dangling reference."""
+    page = signed_in.get("/console").get_data(as_text=True)
+    assert 'data-link="agreements"' in page
+
+
+def test_the_registers_endpoint_carries_the_schema(signed_in: FlaskClient) -> None:
+    """The console builds its controls from this, so its absence is a blank form."""
+    body = signed_in.get("/api/registers").get_json()
+    assert set(body["fields"]) == set(records.REGISTERS)
+    names = {field["name"] for field in body["fields"]["transfers"]}
+    assert {"agreement", "authorisation", "data_categories", "destination"} <= names
+    agreement = next(f for f in body["fields"]["transfers"] if f["name"] == "agreement")
+    assert agreement["kind"] == "link"
+    assert agreement["target"] == "agreements"
+    assert agreement["required"] is True
+
+
+def test_every_nav_entry_carries_its_own_title_and_subtitle(signed_in: FlaskClient) -> None:
+    """Every view used to inherit the dashboard's description, which described none of them."""
+    page = signed_in.get("/console").get_data(as_text=True)
+    assert page.count("data-title=") == len(records.REGISTERS) + 3
+    assert page.count("data-sub=") == len(records.REGISTERS) + 3
