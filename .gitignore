@@ -48,6 +48,13 @@ __pycache__/
 *.py[cod]
 data/
 dist/
+# Node is not a runtime dependency of this application and never will be: the container
+# installs from the Python lockfile and nothing else. It appears here because the UI test
+# harness needs a browser driver, and because an `npm install` run from the repository root
+# rather than a scratchpad put 400 files of `playwright-core` into the working tree, which
+# the stop hook then asked to have committed. A Node tree in a Python package is detritus at
+# best and a second unscanned dependency set at worst.
+node_modules/
 
 # Test and analysis output
 .pytest_cache/
