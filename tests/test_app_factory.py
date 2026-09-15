@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from complyops import create_app
-from complyops.version import __version__
+from directive import create_app
+from directive.version import __version__
 
 
 def test_the_factory_returns_an_app_without_listening(writable_data_dir: Path) -> None:
     app = create_app()
-    assert app.name == "complyops"
+    assert app.name == "directive"
     assert writable_data_dir.is_dir()
 
 
@@ -42,7 +42,7 @@ def test_the_static_route_refuses_traversal(writable_data_dir: Path, traversal: 
     """The cost of re-enabling it, measured rather than assumed."""
     response = create_app().test_client().get(f"/static/{traversal}")
     assert response.status_code in {400, 404}
-    assert b"complyops" not in response.data
+    assert b"directive" not in response.data
 
 
 def test_json_keys_are_not_reordered(writable_data_dir: Path) -> None:
@@ -70,14 +70,14 @@ def test_boot_survives_a_probe_that_raises(monkeypatch: pytest.MonkeyPatch) -> N
     fault while establishing the boot narrative must not take down the one endpoint
     that would explain it.
     """
-    import complyops  # noqa: PLC0415 - patched on the module object
+    import directive  # noqa: PLC0415 - patched on the module object
 
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
 
     def explode(_path: str, *args: object, **kwargs: object) -> None:
         raise RuntimeError("the probe blew up")
 
-    monkeypatch.setattr(complyops, "probe_storage", explode)
+    monkeypatch.setattr(directive, "probe_storage", explode)
     app = create_app()
     with app.test_client() as client:
         assert client.get("/livez").status_code == 200
@@ -96,7 +96,7 @@ def test_boot_warns_loudly_when_storage_is_unusable(
 ) -> None:
     """An unusable mount must leave a narrative, not a bare "listening" line."""
     monkeypatch.setenv("DATA_DIR", "relative/data")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     with caplog.at_level(logging.WARNING):
         create_app()
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]

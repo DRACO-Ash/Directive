@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 from flask.logging import has_level_handler
 
-from complyops import create_app
-from complyops.auth import AuthNotConfiguredError
-from complyops.version import __version__
-from complyops.views import health
+from directive import create_app
+from directive.auth import AuthNotConfiguredError
+from directive.version import __version__
+from directive.views import health
 
 #: A read-only directory does not stop the root user, so the two permission-denied
 #: assertions below are skipped when the suite runs as root and are honest skips, never
@@ -463,11 +463,11 @@ def test_the_boot_log_carries_the_input_presence_map(
             captured.append(record.getMessage())
 
     collector = Collector(level=logging.NOTSET)
-    logging.getLogger("complyops").addHandler(collector)
+    logging.getLogger("directive").addHandler(collector)
     try:
         create_app()
     finally:
-        logging.getLogger("complyops").removeHandler(collector)
+        logging.getLogger("directive").removeHandler(collector)
 
     lines = [line for line in captured if "inputs " in line]
     assert lines, "the boot log must carry the presence map"
@@ -505,7 +505,7 @@ def test_the_presence_map_survives_a_refused_boot(
     names which one the pod actually received.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "production")
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
     for name in ("TENANT_ID", "CLIENT_ID", "REDIRECT_URI"):
         monkeypatch.setenv(name, "x" * 40)
     monkeypatch.delenv("CLIENT_SECRET", raising=False)
@@ -518,12 +518,12 @@ def test_the_presence_map_survives_a_refused_boot(
             captured.append(record.getMessage())
 
     collector = Collector(level=logging.NOTSET)
-    logging.getLogger("complyops").addHandler(collector)
+    logging.getLogger("directive").addHandler(collector)
     try:
         with pytest.raises(AuthNotConfiguredError, match="Entra ID is not configured"):
             create_app()
     finally:
-        logging.getLogger("complyops").removeHandler(collector)
+        logging.getLogger("directive").removeHandler(collector)
 
     lines = [line for line in captured if "inputs " in line]
     assert lines, "the presence map must survive a refused boot"

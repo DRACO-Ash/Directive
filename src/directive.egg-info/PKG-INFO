@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: directive
+Version: 2.2
+Summary: Directive, the Bluestaq Ltd compliance operations console
+Requires-Python: >=3.12

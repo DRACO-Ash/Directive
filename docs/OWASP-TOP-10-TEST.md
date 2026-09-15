@@ -1,6 +1,6 @@
 # OWASP Top 10 test record, V2.1
 
-Bluestaq Ltd, Compliance Operations Console (`comply-ops`). Required by AMD-001 section 10.6: "applications are tested against the OWASP Top 10 before production deployment and annually thereafter". This is the pre-deployment test. The annual external test is AMD-001 11.5, first cycle September 2026, and is separate.
+Bluestaq Ltd, Directive (`directive`). Required by AMD-001 section 10.6: "applications are tested against the OWASP Top 10 before production deployment and annually thereafter". This is the pre-deployment test. The annual external test is AMD-001 11.5, first cycle September 2026, and is separate.
 
 | Item | Value |
 | --- | --- |
@@ -56,16 +56,16 @@ Every mutating and every reading API route is behind `auth.required`; every muta
 
 Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` in production mode; a tampered cookie payload is rejected. Audit entries are HMAC-SHA256 under a server-held key with a keyed anchor (see A08). Strict-Transport-Security is on every response with `includeSubDomains; preload`.
 
-**Not tested here.** Transport Layer Security is terminated by the App Store ingress, outside this process. The protocol and cipher floor (AMD-001 10.4 asks for TLS 1.2 or above) must be verified against `comply-ops.apps.bluestaq.com` after the first deploy, with `testssl.sh` or `nmap --script ssl-enum-ciphers`, and the result attached to the accreditation record.
+**Not tested here.** Transport Layer Security is terminated by the App Store ingress, outside this process. The protocol and cipher floor (AMD-001 10.4 asks for TLS 1.2 or above) must be verified against `directive.apps.bluestaq.com` after the first deploy, with `testssl.sh` or `nmap --script ssl-enum-ciphers`, and the result attached to the accreditation record.
 
 | Test | Expected | Observed | Result |
 | --- | --- | --- | --- |
-| session cookie HttpOnly | HttpOnly present | `complyops_session=eyJjb21wbHlvcHNfYWN0b3IiOiJ0IiwiY29tcGx5b3BzX3ZlcmlmaWVkIjpmYWxzZSwiX...` | Passed |
-| session cookie SameSite | SameSite=Lax | `complyops_session=eyJjb21wbHlvcHNfYWN0b3IiOiJ0IiwiY29tcGx5b3BzX3ZlcmlmaWVkIjpmYWxzZSwiX...` | Passed |
-| session cookie Secure in development mode | absent (HTTP dev), present in production below | `complyops_session=eyJjb21wbHlvcHNfYWN0b3IiOiJ0IiwiY29tcGx5b3BzX3ZlcmlmaWVkIjpmYWxzZSwiX...` | Passed |
+| session cookie HttpOnly | HttpOnly present | `directive_session=eyJjb21wbHlvcHNfYWN0b3IiOiJ0IiwiY29tcGx5b3BzX3ZlcmlmaWVkIjpmYWxzZSwiX...` | Passed |
+| session cookie SameSite | SameSite=Lax | `directive_session=eyJjb21wbHlvcHNfYWN0b3IiOiJ0IiwiY29tcGx5b3BzX3ZlcmlmaWVkIjpmYWxzZSwiX...` | Passed |
+| session cookie Secure in development mode | absent (HTTP dev), present in production below | `directive_session=eyJjb21wbHlvcHNfYWN0b3IiOiJ0IiwiY29tcGx5b3BzX3ZlcmlmaWVkIjpmYWxzZSwiX...` | Passed |
 | tampered session cookie payload | not authenticated | `401` | Passed |
 | HSTS header on every response | Strict-Transport-Security present | `max-age=31536000; includeSubDomains; preload` | Passed |
-| session cookie Secure in production mode (set on the sign-in redirect) | Secure; HttpOnly; SameSite=Lax | `complyops_session=.eJxtjsFSgzAUAP8lZ5mRii16LIVgW0ciKUO5ZEJJEcsjgWAi7fjv1rO97HF3L-ggQbWT...` | Passed |
+| session cookie Secure in production mode (set on the sign-in redirect) | Secure; HttpOnly; SameSite=Lax | `directive_session=.eJxtjsFSgzAUAP8lZ5mRii16LIVgW0ciKUO5ZEJJEcsjgWAi7fjv1rO97HF3L-ggQbWT...` | Passed |
 
 ## A03:2021 Injection
 
@@ -89,7 +89,7 @@ No SQL, no shell, no template string construction: registers are JSON on the vol
 
 ## A04:2021 Insecure Design
 
-Request bodies over 256 KiB are refused with 413. Unauthenticated refusals are collapsed per address and bounded globally at 500 rows per five-minute window, so a flood cannot fill the audit log to its refusal cap in minutes. `COMPLYOPS_ENV` fails closed to production.
+Request bodies over 256 KiB are refused with 413. Unauthenticated refusals are collapsed per address and bounded globally at 500 rows per five-minute window, so a flood cannot fill the audit log to its refusal cap in minutes. `DIRECTIVE_ENV` fails closed to production.
 
 **Residual, recorded.** A sustained flood at the serialised worst case still writes about 202 MiB a day and reaches the 64 MiB refusal cap in about 7.6 hours. Only an edge rate limiter or log rotation bounds the total; the figure is in `docs/DEPLOYMENT.md` for the platform team to size against.
 
@@ -181,7 +181,7 @@ The only outbound call is the token exchange with Entra ID. The host is a consta
 
 | Action | Owner | When |
 | --- | --- | --- |
-| Verify TLS 1.2 or above at `comply-ops.apps.bluestaq.com` and attach the result to the accreditation record | ISM, after first deploy | Before production use |
+| Verify TLS 1.2 or above at `directive.apps.bluestaq.com` and attach the result to the accreditation record | ISM, after first deploy | Before production use |
 | User assignment required on the Entra enterprise application: confirmed by the ISM 2026-09-10; single-role access accepted on that basis | ISM | Done |
 | MFA evidence: Conditional Access export held by the ISM; `amr` claim check added in V2.2 | ISM | Done, V2.2 |
 | Size an edge rate limiter against the A04 residual, or accept it | Platform team, ISM | Before production use |

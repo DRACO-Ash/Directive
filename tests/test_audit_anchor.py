@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from complyops.audit import anchor as anchor_module
-from complyops.audit.anchor import (
+from conftest import TEST_KEY, TEST_KEY_ID
+from directive.audit import anchor as anchor_module
+from directive.audit.anchor import (
     Anchor,
     AnchorError,
     AnchorTamperError,
@@ -18,8 +19,7 @@ from complyops.audit.anchor import (
     read_anchor,
     write_anchor,
 )
-from complyops.audit.hashing import GENESIS_HASH
-from conftest import TEST_KEY, TEST_KEY_ID
+from directive.audit.hashing import GENESIS_HASH
 
 OTHER_KEY = bytes.fromhex("cd" * 32)
 KEYS = {TEST_KEY_ID: TEST_KEY}

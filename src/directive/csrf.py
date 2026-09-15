@@ -28,7 +28,7 @@ from werkzeug.wrappers.response import Response
 #: header name, both of which are public by construction. The actual token is generated per
 #: session by `secrets.token_urlsafe` below. Suppressed at the line with the reason above,
 #: rather than by relaxing either analyser.
-TOKEN_KEY = "complyops_csrf"  # noqa: S105  # nosec B105
+TOKEN_KEY = "directive_csrf"  # noqa: S105  # nosec B105
 TOKEN_HEADER = "X-CSRF-Token"  # noqa: S105  # nosec B105
 
 #: The methods that change state and therefore need a token.

@@ -1,4 +1,4 @@
-# Bluestaq Compliance Operations Console (`comply-ops`)
+# Directive (`directive`)
 
 One authenticated system of record for Bluestaq Ltd's compliance operating rhythm: the task,
 incident and risk registers, held on a persistent volume and evidenced by a tamper-evident,

@@ -15,14 +15,14 @@ Two modes, and the difference between them is enforced, not documented:
 ● **Configured.** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `REDIRECT_URI` are all set,
   and sign-in goes to Entra ID through the OAuth 2.0 authorisation code flow with Proof Key
   for Code Exchange (PKCE).
-● **Local development.** None of them is set and `COMPLYOPS_ENV` is exactly `development`.
+● **Local development.** None of them is set and `DIRECTIVE_ENV` is exactly `development`.
   The operator names themselves at sign-in and every audit entry records that the actor was
   self-asserted. Binding to the loopback address is the OPERATOR's responsibility and is
   not enforced here: `wsgi.py` binds `0.0.0.0` because the platform probe requires it, and
   no handler checks `remote_addr`. Said plainly because this list is otherwise a list of
   things the code enforces.
 
-`COMPLYOPS_ENV` must be set to `development` to get the second mode. Anything else, an
+`DIRECTIVE_ENV` must be set to `development` to get the second mode. Anything else, an
 unset variable included, is production. That default is deliberate and it is the fail-closed
 direction: an unset variable costs a local developer one line, and the other way round it
 silently cost the deployed application its Secure cookie flag and its identity provider.
@@ -52,8 +52,8 @@ from werkzeug.wrappers.response import Response
 from . import config
 
 #: The session keys this module owns.
-ACTOR_KEY = "complyops_actor"
-VERIFIED_KEY = "complyops_verified"
+ACTOR_KEY = "directive_actor"
+VERIFIED_KEY = "directive_verified"
 
 #: How a self-asserted actor is marked, on the session and on every audit entry it causes.
 SELF_ASSERTED_SUFFIX = " (self-asserted)"
@@ -93,7 +93,7 @@ def is_production() -> bool:
     # which strips whitespace, surrounding quotes and control characters. Kept as belt and
     # braces on a security-posture decision, and noted here because a mutation that removes
     # it survives the suite and would otherwise read as a coverage gap.
-    return config.env("COMPLYOPS_ENV", "production").strip().lower() != DEVELOPMENT
+    return config.env("DIRECTIVE_ENV", "production").strip().lower() != DEVELOPMENT
 
 
 def check_startup() -> None:
@@ -104,7 +104,7 @@ def check_startup() -> None:
     """
     if is_production() and not entra_is_configured():
         raise AuthNotConfiguredError(
-            "COMPLYOPS_ENV is production but Entra ID is not configured. Set TENANT_ID, "
+            "DIRECTIVE_ENV is production but Entra ID is not configured. Set TENANT_ID, "
             "CLIENT_ID, CLIENT_SECRET and REDIRECT_URI. Refusing to start rather than "
             "accept a self-asserted actor on audit evidence."
         )
@@ -192,7 +192,7 @@ def configure(app: Flask) -> None:
         # Secure in production only, or a local development session over plain HTTP would
         # never be sent back and the app would appear to reject every sign-in.
         SESSION_COOKIE_SECURE=is_production(),
-        SESSION_COOKIE_NAME="complyops_session",
+        SESSION_COOKIE_NAME="directive_session",
     )
 
 
@@ -207,7 +207,7 @@ def signing_secret() -> bytes:
         return configured.encode("utf-8")
     if is_production():
         raise AuthNotConfiguredError(
-            "SESSION_KEY is not set and COMPLYOPS_ENV is production. Refusing to start with "
+            "SESSION_KEY is not set and DIRECTIVE_ENV is production. Refusing to start with "
             "an ephemeral session key, which would sign every user out on each restart and "
             "differ between workers."
         )

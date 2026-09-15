@@ -11,7 +11,7 @@ from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from complyops import create_app, security_headers
+from directive import create_app, security_headers
 
 #: The four AMD-001 section 10.6 names it against, so a rename cannot pass unnoticed.
 POLICY_HEADERS = (
@@ -26,7 +26,7 @@ POLICY_HEADERS = (
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
     """Return a client. The environment is stated, because there is no safe implicit one."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     return create_app().test_client()
 
 
@@ -120,7 +120,7 @@ def test_a_route_can_tighten_a_header_through_the_explicit_door() -> None:
     response = app.test_client().get("/narrower")
     assert response.headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
     assert response.headers["X-Frame-Options"] == "DENY", "the rest still apply"
-    assert "_complyops_tightened" not in response.headers, "the bookkeeping never ships"
+    assert "_directive_tightened" not in response.headers, "the bookkeeping never ships"
 
 
 def test_tightening_one_header_does_not_release_the_others() -> None:
@@ -187,7 +187,7 @@ def test_a_route_cannot_delete_a_header_by_claiming_it_tightened_one() -> None:
     @app.get("/strip")
     def strip():  # noqa: ANN202 - Flask response object
         response = make_response("", 204)
-        response.headers["_complyops_tightened"] = "Content-Security-Policy,X-Frame-Options"
+        response.headers["_directive_tightened"] = "Content-Security-Policy,X-Frame-Options"
         return response
 
     headers = app.test_client().get("/strip").headers
@@ -209,7 +209,7 @@ def test_a_client_cannot_remove_a_header_through_a_route_that_echoes_one() -> No
         response = make_response("", 204)
         for name, value in request.headers:
             if name.lower().startswith("x-echo"):
-                response.headers["_complyops_tightened"] = value
+                response.headers["_directive_tightened"] = value
         return response
 
     headers = (
@@ -227,9 +227,9 @@ def test_the_blanket_pass_runs_last(monkeypatch: pytest.MonkeyPatch) -> None:
     An app-level after_request registered BEFORE this one runs after it and can serve a
     wider policy. create_app registers headers first, which is correct; this asserts it.
     """
-    from complyops import create_app  # noqa: PLC0415
+    from directive import create_app  # noqa: PLC0415
 
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     app = create_app()
     handlers = app.after_request_funcs[None]
     assert handlers[0] is security_headers.apply_security_headers, (

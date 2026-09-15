@@ -481,8 +481,8 @@ def test_the_simulation_refuses_a_tree_with_a_skip_bit_set(clone: Path) -> None:
     """
     assert _build(clone).returncode == 0
     git = _tool("git")
-    _run([git, "-C", str(clone), "update-index", "--skip-worktree", "src/complyops/records.py"])
-    (clone / "src" / "complyops" / "records.py").write_text("# gutted\n", encoding="utf-8")
+    _run([git, "-C", str(clone), "update-index", "--skip-worktree", "src/directive/records.py"])
+    (clone / "src" / "directive" / "records.py").write_text("# gutted\n", encoding="utf-8")
     result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
 
     assert result.returncode != 0, result.stdout
@@ -541,7 +541,7 @@ def test_a_credential_in_a_directory_name_is_caught(clone: Path) -> None:
 
 def test_a_dirty_tree_stamps_the_package(clone: Path) -> None:
     """The stamp is the artefact's own declaration that it does not match the tree."""
-    (clone / "src" / "complyops" / "records.py").write_text("# edited\n", encoding="utf-8")
+    (clone / "src" / "directive" / "records.py").write_text("# edited\n", encoding="utf-8")
     result = _build(clone)
 
     assert result.returncode == 0, result.stdout
@@ -564,7 +564,7 @@ def test_a_failed_build_leaves_no_pointer(clone: Path) -> None:
 
 def test_the_simulation_refuses_a_dirty_stamped_package(clone: Path) -> None:
     """A package built from a dirty tree is stale the moment anything changes again."""
-    (clone / "src" / "complyops" / "records.py").write_text("# edited\n", encoding="utf-8")
+    (clone / "src" / "directive" / "records.py").write_text("# edited\n", encoding="utf-8")
     assert _build(clone).returncode == 0
     result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
 
@@ -586,7 +586,7 @@ def test_the_simulation_refuses_a_package_from_another_commit(clone: Path) -> No
 def test_the_simulation_refuses_a_tree_edited_after_the_build(clone: Path) -> None:
     """Commit granularity alone admitted a package built before an uncommitted edit."""
     assert _build(clone).returncode == 0
-    (clone / "src" / "complyops" / "records.py").write_text("# gutted\n", encoding="utf-8")
+    (clone / "src" / "directive" / "records.py").write_text("# gutted\n", encoding="utf-8")
     result = _run([_tool("sh"), "scripts/simulate-pipeline.sh"], cwd=clone)
 
     assert result.returncode != 0, result.stdout
@@ -1029,7 +1029,7 @@ def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -
         ),
         (
             "a mid-line container flag",
-            "docker run -e " + _PROBE_NAME + "=" + _PROBE_VALUE + " comply-ops",
+            "docker run -e " + _PROBE_NAME + "=" + _PROBE_VALUE + " directive",
             "Credential written into prose",
         ),
         (
@@ -1039,12 +1039,12 @@ def test_an_unquoted_environment_credential_is_refused(clone: Path, name: str) -
         ),
         (
             "a query string",
-            "https://comply-ops.example/cb?" + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "https://directive.example/cb?" + _PROBE_NAME + "=" + _PROBE_VALUE,
             "Credential written into prose",
         ),
         (
             "a query string after another parameter",
-            "https://comply-ops.example/cb?state=x&" + _PROBE_NAME + "=" + _PROBE_VALUE,
+            "https://directive.example/cb?state=x&" + _PROBE_NAME + "=" + _PROBE_VALUE,
             "Credential written into prose",
         ),
         (

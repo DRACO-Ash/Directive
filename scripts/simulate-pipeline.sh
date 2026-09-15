@@ -55,7 +55,7 @@ fi
 # from the pointer: an explicit argument is a deliberate choice to test that file.
 #
 # The match is on the FILENAME the builder writes, not anywhere in the path. `*$HEAD_SHORT*`
-# accepted `dist/3a0661f/comply-ops-2.2-20260101-deadbee.zip` because the commit appeared in
+# accepted `dist/3a0661f/directive-2.2-20260101-deadbee.zip` because the commit appeared in
 # a directory name, which is looser than the check reads.
 #
 # The commit stamp is NOT sufficient on its own, and saying otherwise was an over-claim
@@ -81,8 +81,8 @@ if [ "$FROM_POINTER" = yes ]; then
     echo "Compensating control: none here. Pass the package explicitly to be sure of it."
   else
     case "${PKG##*/}" in
-      comply-ops-*-"$HEAD_SHORT".zip) ;;
-      comply-ops-*-"$HEAD_SHORT"-dirty.zip)
+      directive-*-"$HEAD_SHORT".zip) ;;
+      directive-*-"$HEAD_SHORT"-dirty.zip)
         echo "FAIL: ${PKG##*/} was built from a dirty tree, so it may already be stale."
         echo "Commit, rebuild, or pass the package explicitly to test it anyway."
         exit 1

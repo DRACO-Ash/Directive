@@ -184,7 +184,7 @@ class Anchor:
       active entry chains to. It is ``GENESIS_HASH`` until the first prune.
 
     So an active log that legitimately starts mid-chain verifies against ``pruned_head``
-    with :func:`~complyops.audit.chain.verify_sample`, while ``total_length`` remains the
+    with :func:`~directive.audit.chain.verify_sample`, while ``total_length`` remains the
     figure a truncation would have to falsify. The annual export carries ``pruned_head``
     forward, which is what makes the chain span the archive boundary rather than restart
     at it.

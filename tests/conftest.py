@@ -39,8 +39,8 @@ TEST_KEY_ID = "test-k1"
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Remove every managed variable and clear process state before each test."""
-    from complyops.audit import anchor  # noqa: PLC0415 - after the sys.path insert
-    from complyops.views import health  # noqa: PLC0415 - after the sys.path insert
+    from directive.audit import anchor  # noqa: PLC0415 - after the sys.path insert
+    from directive.views import health  # noqa: PLC0415 - after the sys.path insert
 
     for name in MANAGED_VARIABLES:
         monkeypatch.delenv(name, raising=False)
@@ -57,7 +57,7 @@ def _fresh_refusal_tracker() -> Iterator[None]:
     The tracker is process-wide by design, so without this one test's refusals collapse
     the next one's and the failures read as unrelated.
     """
-    from complyops.views import refusals  # noqa: PLC0415 - after the sys.path insert
+    from directive.views import refusals  # noqa: PLC0415 - after the sys.path insert
 
     refusals.reset()
     yield
@@ -72,7 +72,7 @@ def writable_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DATA_DIR", str(target))
     # Stated, never inherited. `is_production` defaults to production, so a fixture that
     # said nothing would exercise a posture no test intends and refuse to boot.
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     return target
 
 
@@ -80,7 +80,7 @@ def writable_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def client(writable_data_dir: Path):
     """Return a Flask test client mounted in-process against a writable data directory."""
     # Imported here, not at module scope: the sys.path insert above must run first.
-    from complyops import create_app  # noqa: PLC0415
+    from directive import create_app  # noqa: PLC0415
 
     app = create_app()
     app.config.update(TESTING=True)
@@ -122,7 +122,7 @@ def fixed_entry(index: int = 1, **overrides: str) -> dict[str, str]:
 
 def new_chain(anchor: object = None) -> object:
     """Return a chain signed with the suite's test key."""
-    from complyops.audit import AuditChain  # noqa: PLC0415 - after the sys.path insert
+    from directive.audit import AuditChain  # noqa: PLC0415 - after the sys.path insert
 
     return AuditChain(anchor, key=TEST_KEY, key_id=TEST_KEY_ID)
 

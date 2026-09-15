@@ -99,7 +99,7 @@ class ChainVerdict:
         anchor file that could not be read, which is the false alarm the other THREE flags
         exist to prevent: ``invalid_under_current_rules``, ``key_unavailable`` and
         ``anchor_unusable``. An anchor whose STATE shows interference is a different thing
-        and does report as tampering; see `complyops.audit.anchor.AnchorTamperError`.
+        and does report as tampering; see `directive.audit.anchor.AnchorTamperError`.
         """
         return (
             not self.ok
@@ -189,13 +189,13 @@ class AuditChain:
     def append(self, fields: Mapping[str, object]) -> AuditEntry:
         """Validate, sign, and append one entry, advancing the head.
 
-        Raises :class:`~complyops.audit.validation.AuditFieldError` or
-        :class:`~complyops.audit.hashing.AuditHashError` on anything unfit to record,
+        Raises :class:`~directive.audit.validation.AuditFieldError` or
+        :class:`~directive.audit.hashing.AuditHashError` on anything unfit to record,
         and the head is left untouched, so a rejected write cannot half-advance the
         chain.
 
         The lock makes this atomic within one process, and this method does not persist
-        the entry: :class:`complyops.audit.journal.JournalChain` wraps it and writes the
+        the entry: :class:`directive.audit.journal.JournalChain` wraps it and writes the
         line and the anchor. Across processes the head read and that write would have to
         become one operation under an inter-process lock on the volume, so until that
         exists the container runs a SINGLE worker and no second process appends.

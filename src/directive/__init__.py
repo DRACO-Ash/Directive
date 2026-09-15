@@ -1,4 +1,4 @@
-"""Bluestaq Compliance Operations Console.
+"""Directive.
 
 The application is built by a factory so it can be mounted in-process by the tests
 with injected fakes, and so the listener lives outside the app itself. Configuration
@@ -94,7 +94,7 @@ def _install_application(app: Flask) -> None:
     cannot be evidenced must not happen.
     """
     data_dir = config.data_dir()
-    app.config["COMPLYOPS_DATA_DIR"] = data_dir
+    app.config["DIRECTIVE_DATA_DIR"] = data_dir
 
     auth.install(app)
     csrf.install(app)
@@ -113,12 +113,12 @@ def _install_application(app: Flask) -> None:
         # recovery channel for a bad configuration value and now also for an unreconcilable
         # volume. Every mutating route fails closed until an operator acts.
         app.logger.warning("audit chain unavailable: %s", type(error).__name__)
-        app.extensions["complyops_chain"] = None
-        app.extensions["complyops_audit_status"] = _audit_status(error)
+        app.extensions["directive_chain"] = None
+        app.extensions["directive_audit_status"] = _audit_status(error)
         return
 
-    app.extensions["complyops_chain"] = chain
-    app.extensions["complyops_audit_status"] = verdict.summary()
+    app.extensions["directive_chain"] = chain
+    app.extensions["directive_audit_status"] = verdict.summary()
     app.logger.info("boot: audit log resumed, %s", verdict.summary())
 
 

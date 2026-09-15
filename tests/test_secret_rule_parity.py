@@ -221,7 +221,7 @@ PROBE_PATHS = [
     ".env",
     ".env.production",
     "docs/DEPLOYMENT.md",
-    "src/complyops/auth.py",
+    "src/directive/auth.py",
     "/tmp/scratch.txt",  # noqa: S108
 ]
 

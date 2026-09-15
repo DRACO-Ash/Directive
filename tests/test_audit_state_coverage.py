@@ -26,11 +26,11 @@ import flask
 import pytest
 from flask.testing import FlaskClient
 
-from complyops import create_app, records
-from complyops.audit.journal import read_entries
-from complyops.views import refusals
+from directive import create_app, records
+from directive.audit.journal import read_entries
+from directive.views import refusals
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "complyops"
+SRC = Path(__file__).resolve().parents[1] / "src" / "directive"
 
 #: Real key material, published on purpose: it is not a credential. Same value the rest of
 #: the suite uses.
@@ -57,7 +57,7 @@ def signed_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     return create_app().test_client()
 
 
@@ -317,7 +317,7 @@ def test_the_refusal_marker_written_to_the_chain_carries_no_caller_value(
         window.started -= refusals.WINDOW_SECONDS + 1
     refuse()
 
-    chain = signed_out.application.extensions["complyops_chain"]
+    chain = signed_out.application.extensions["directive_chain"]
     states = {entry.new_state for entry in chain.entries if entry.new_state}
 
     assert states, "no refusal entry carried a state, so this proves nothing"
@@ -365,7 +365,7 @@ def test_the_flood_marker_written_to_the_chain_carries_no_caller_value(
     refusals._budget.started -= refusals.WINDOW_SECONDS + 1
     refuse("198.51.100.200")
 
-    chain = signed_out.application.extensions["complyops_chain"]
+    chain = signed_out.application.extensions["directive_chain"]
     flood = [entry for entry in chain.entries if entry.action == "LOGIN_FAILED_FLOOD"]
 
     assert flood, "no flood row was written, so this proves nothing"
@@ -419,7 +419,7 @@ def test_the_recorded_source_address_comes_from_the_socket_never_a_header(
         environ_base={"REMOTE_ADDR": "198.51.100.4"},
     )
 
-    chain = signed_out.application.extensions["complyops_chain"]
+    chain = signed_out.application.extensions["directive_chain"]
     recorded = {entry.source_ip for entry in chain.entries}
 
     assert recorded, "no entry was written, so this proves nothing"
@@ -447,7 +447,7 @@ def test_a_register_entry_records_the_socket_address_not_a_header(
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     client = create_app().test_client()
     client.post(
         "/sign-in",
@@ -461,7 +461,7 @@ def test_a_register_entry_records_the_socket_address_not_a_header(
     created = client.post("/api/registers/tasks", json={"title": "Access review"}, headers=token)
     assert created.status_code == 201, created.get_data(as_text=True)
 
-    chain = client.application.extensions["complyops_chain"]
+    chain = client.application.extensions["directive_chain"]
     written = [entry for entry in chain.entries if entry.action == "TSK_CREATED"]
 
     assert written, "no register entry was written, so this proves nothing"
@@ -878,7 +878,7 @@ def _list_names_bound_in(scope: ast.AST, declared: tuple[str, ...] = ()) -> set[
     one, which is what the five list receivers in this package do.
 
     The first version took the annotation alone and both gates walked through it in the same
-    round: `written: list[dict[str, str]] = current_app.extensions["complyops_chain"]` passed
+    round: `written: list[dict[str, str]] = current_app.extensions["directive_chain"]` passed
     mypy, took the exemption, and put an unauthenticated caller's header into the signed
     `actor` of a durable chained entry with the loop green at identical counts. Requiring the
     construction refuses that shape without naming it, and costs nothing: all five shipped
@@ -1559,7 +1559,7 @@ def test_no_channel_at_all_reaches_a_recorded_address_on_either_path(
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     client = create_app().test_client()
 
     written = _drive_every_channel(client, channel, socket_address)
@@ -1646,7 +1646,7 @@ PERMITTED_IMPORTS = frozenset(
         "unicodedata",
         "urllib",
         "uuid",
-        "complyops",
+        "directive",
     }
 )
 
@@ -1675,15 +1675,15 @@ def _intra_package_targets(node: ast.ImportFrom | ast.Import, module: str) -> li
     """Return the package modules this import names, relative or absolute.
 
     `node.level` carries the leading dots, so comparing `node.module` against absolute names
-    left every relative import unexamined: `from .. import auth` names no `complyops` at
+    left every relative import unexamined: `from .. import auth` names no `directive` at
     all, and a gate used it to bind the live request proxy in a pinned module.
     """
     if isinstance(node, ast.Import):
-        #: `import complyops.auth` names the module in the alias itself.
+        #: `import directive.auth` names the module in the alias itself.
         found: list[str] = []
         for alias in node.names:
             head, _, rest = alias.name.partition(".")
-            if head != "complyops" or not rest:
+            if head != "directive" or not rest:
                 continue
             stem = rest.replace(".", "/")
             found += [f"{stem}.py", f"{stem}/__init__.py"]
@@ -1695,12 +1695,12 @@ def _intra_package_targets(node: ast.ImportFrom | ast.Import, module: str) -> li
         base = [*parts, *(node.module.split(".") if node.module else [])]
     else:
         head, _, rest = (node.module or "").partition(".")
-        if head != "complyops":
+        if head != "directive":
             return []
         base = rest.split(".") if rest else []
     stem = "/".join(base)
     #: The package `__init__` is a target only when the statement NAMES it. `from . import
-    #: store` binds `store`, not anything from `complyops/__init__.py`, and counting the
+    #: store` binds `store`, not anything from `directive/__init__.py`, and counting the
     #: package itself made this red on `records.py`, which is correct source.
     candidates = [f"{stem}.py", f"{stem}/__init__.py"] if node.module else []
     candidates += [
@@ -1837,7 +1837,7 @@ def _resolved_attribute_name(
     if _shadowed_inside_a_function(parents, argument, source.id):
         return None
     dotted = module.removesuffix(".py").removesuffix("/__init__").replace("/", ".")
-    value = getattr(importlib.import_module(f"complyops.{dotted}"), source.id, None)
+    value = getattr(importlib.import_module(f"directive.{dotted}"), source.id, None)
     #: A non-empty collection of strings, or it does not resolve. One condition rather than
     #: three returns: every failure here means the same thing, that the name does not name a
     #: constant set of attribute names, and the caller refuses it.
@@ -1924,16 +1924,16 @@ def test_a_module_with_no_request_context_cannot_reach_one(module: str) -> None:
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     }
     #: An intra-package import that targets a request-holding sibling. `PERMITTED_IMPORTS`
-    #: admits `complyops` wholesale, and eight modules inside it bind the live request
+    #: admits `directive` wholesale, and eight modules inside it bind the live request
     #: proxy, so the whitelist was closed against the outside world and open against itself.
     #: `from .. import auth` then reaches the proxy by `getattr`, and it names no
-    #: `complyops`, so a check keyed on absolute names never saw it either.
+    #: `directive`, so a check keyed on absolute names never saw it either.
     reaching = sorted(
         {
             target
             for node in ast.walk(tree)
             #: BOTH statement kinds. The first version resolved `ast.ImportFrom` only, so
-            #: `import complyops.auth` passed: its head is `complyops`, which the whitelist
+            #: `import directive.auth` passed: its head is `directive`, which the whitelist
             #: admits, and `auth.request` is then the live proxy. Both gates drove it to a
             #: durable entry. Two spellings of three were closed; this is the third.
             if isinstance(node, ast.ImportFrom | ast.Import)
@@ -2053,7 +2053,7 @@ def test_every_declared_intra_package_import_is_one_the_module_makes() -> None:
 #: The Flask extension key the audit chain is stored under. The chain is the only object in
 #: this application whose retrieval TYPE is a security control, which is why it gets a pin of
 #: its own rather than being left to convention.
-CHAIN_EXTENSION_NAME = "complyops_chain"
+CHAIN_EXTENSION_NAME = "directive_chain"
 
 
 def test_the_audit_chain_has_exactly_one_retrieval_shape() -> None:
@@ -2256,7 +2256,7 @@ def test_the_collapsed_row_records_the_same_address_as_the_rows_it_collapses(
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     client = create_app().test_client()
     socket_address = "198.51.100.4"
     base = {"REMOTE_ADDR": socket_address}
@@ -2305,7 +2305,7 @@ def test_no_caller_input_of_any_name_changes_the_recorded_address(
     """
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
 
     plain_dir = tmp_path / "plain"
     noisy_dir = tmp_path / "noisy"
@@ -2345,7 +2345,7 @@ def test_the_address_a_view_reads_is_the_one_the_socket_reported(
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     application = create_app()
     seen: list[tuple[str | None, str | None]] = []
 

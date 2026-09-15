@@ -255,7 +255,7 @@ def root() -> Response:
     The platform router probes ``GET /`` and treats a redirect as unhealthy, so this
     never redirects to the sign-in route. It touches nothing and needs no session.
     """
-    return Response("Bluestaq Compliance Operations Console\n", mimetype="text/plain")
+    return Response("Directive\n", mimetype="text/plain")
 
 
 @health_bp.get("/healthz")
@@ -315,8 +315,8 @@ def _audit_line() -> str:
     the chain had wedged and nothing could be written. A recovery channel that does not
     report the fault it is named in is not one.
     """
-    status = str(current_app.extensions.get("complyops_audit_status", "not installed"))
-    chain: object = current_app.extensions.get("complyops_chain")
+    status = str(current_app.extensions.get("directive_audit_status", "not installed"))
+    chain: object = current_app.extensions.get("directive_chain")
     wedged = getattr(chain, "wedged", None)
     if wedged:
         # The TYPE only. The full message carries the log's absolute path and the OS error

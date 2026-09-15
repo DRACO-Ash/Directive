@@ -7,8 +7,8 @@ loopback bind is unreachable from outside the container.
 
 from __future__ import annotations
 
-from complyops import create_app
-from complyops.config import port
+from directive import create_app
+from directive.config import port
 
 app = create_app()
 

@@ -2,8 +2,8 @@
 
 ## Reporting a vulnerability
 
-Report a suspected vulnerability in the Bluestaq Compliance Operations Console
-(`comply-ops`) to **dpa@bluestaq.uk**, under the **Bluestaq Vulnerability Disclosure
+Report a suspected vulnerability in the Directive
+(`directive`) to **dpa@bluestaq.uk**, under the **Bluestaq Vulnerability Disclosure
 Policy (POL-006)**. That address reaches the UK Information Security Manager, who is the
 named owner for this application.
 
@@ -17,7 +17,7 @@ Required by AMD-001 section 10.6.
 
 ● The application source in this repository.
 ● The container image built from the `Dockerfile` at the repository root.
-● The deployed instance at `comply-ops.apps.bluestaq.com`.
+● The deployed instance at `directive.apps.bluestaq.com`.
 
 Out of scope: the Bluestaq App Store platform itself, Microsoft Entra ID, and Microsoft
 365, each of which is reported to its own owner.

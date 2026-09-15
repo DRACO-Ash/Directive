@@ -120,9 +120,9 @@ def _tightened() -> set[str]:
     one wraps request handling the mark outlives the request that set it. That is why
     :func:`apply_security_headers` validates the served value rather than trusting the mark.
     """
-    if not hasattr(g, "_complyops_tightened"):
-        g._complyops_tightened = set()
-    tightened: set[str] = g._complyops_tightened
+    if not hasattr(g, "_directive_tightened"):
+        g._directive_tightened = set()
+    tightened: set[str] = g._directive_tightened
     return tightened
 
 

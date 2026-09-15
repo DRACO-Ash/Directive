@@ -46,7 +46,7 @@ COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
   COMMIT="${COMMIT}-dirty"
 fi
-OUT="dist/comply-ops-${VERSION}-${STAMP}-${COMMIT}.zip"
+OUT="dist/directive-${VERSION}-${STAMP}-${COMMIT}.zip"
 # EVERY intermediate is created inside one private directory, and only the finished archive
 # is moved out of it.
 #

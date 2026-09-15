@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from complyops.audit import hashing
 from conftest import TEST_KEY, TEST_KEY_ID, fixed_entry
+from directive.audit import hashing
 
 
 def digest(fields: dict[str, str] | None = None, previous: str | None = None) -> str:
@@ -193,7 +193,7 @@ def test_the_anchor_authentication_tag_is_pinned_by_a_golden_vector() -> None:
     the one failure this module must never produce. Changing the construction below is the
     same irreversible decision as changing FIELD_ORDER and needs the same sign-off.
     """
-    from complyops.audit import Anchor  # noqa: PLC0415
+    from directive.audit import Anchor  # noqa: PLC0415
 
     anchor = Anchor(
         head="a" * 64, length=3, key_id=TEST_KEY_ID, total_length=12, pruned_head="c" * 64

@@ -18,17 +18,17 @@ from werkzeug.test import TestResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from complyops import (
+from conftest import fixed_entry
+from directive import (
     create_app,
     csrf,
     records,
     store,
 )
-from complyops.audit import AuditFieldError, normalise_fields
-from complyops.audit.journal import JournalError, read_entries
-from complyops.views import api as api_module
-from complyops.views.api import DEFAULT_AUDIT_PAGE, MAXIMUM_AUDIT_PAGE
-from conftest import fixed_entry
+from directive.audit import AuditFieldError, normalise_fields
+from directive.audit.journal import JournalError, read_entries
+from directive.views import api as api_module
+from directive.views.api import DEFAULT_AUDIT_PAGE, MAXIMUM_AUDIT_PAGE
 
 #: Real key material, published here on purpose: it is not a credential.
 SUITE_KEY = bytes(range(32)).hex()
@@ -40,7 +40,7 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Flask:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     return create_app()
 
 
@@ -175,7 +175,7 @@ CSRF_EXEMPT_ROUTES = frozenset({("POST", "/sign-in"), ("POST", "/sign-out")})
 
 #: Written out rather than imported, because the walk below drove itself from
 #: `csrf.UNSAFE_METHODS` and that is the value under test: dropping `"PATCH"` from
-#: `src/complyops/csrf.py` narrowed the walk to match, left the suite green, and gave a
+#: `src/directive/csrf.py` narrowed the walk to match, left the suite green, and gave a
 #: signed-in caller a live `PATCH` with no token. A set the test states itself is the only
 #: thing that can notice.
 PINNED_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -335,7 +335,7 @@ def test_a_well_formed_but_wrong_token_is_refused(signed_in: FlaskClient) -> Non
         "/api/registers/tasks", json={"title": "x"}, headers={"X-CSRF-Token": forged}
     )
     assert refused.status_code == 403
-    assert records.read(str(signed_in.application.config["COMPLYOPS_DATA_DIR"]), "tasks") == []
+    assert records.read(str(signed_in.application.config["DIRECTIVE_DATA_DIR"]), "tasks") == []
 
 
 def test_a_non_ascii_token_is_refused_rather_than_raising(signed_in: FlaskClient) -> None:
@@ -599,13 +599,13 @@ def test_the_console_carries_the_security_headers(signed_in: FlaskClient) -> Non
 def entra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
     """Return a client for an app with Entra ID configured."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     for name, value in [
         ("TENANT_ID", "a-tenant"),
         ("CLIENT_ID", "a-client"),
         ("CLIENT_SECRET", "a-secret"),
-        ("REDIRECT_URI", "https://comply-ops.apps.bluestaq.com/auth/callback"),
+        ("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback"),
     ]:
         monkeypatch.setenv(name, value)
     return create_app().test_client()
@@ -639,7 +639,7 @@ def test_a_callback_with_matching_state_still_fails_closed(entra: FlaskClient) -
     """
     entra.get("/sign-in")
     with entra.session_transaction() as stored:
-        state = stored.get("complyops_signin_state")
+        state = stored.get("directive_signin_state")
     assert entra.get(f"/auth/callback?code=x&state={state}").status_code == 302
     assert entra.get("/api/registers").status_code == 401
 
@@ -680,7 +680,7 @@ def test_the_audit_log_survives_a_restart(
     before = signed_in.get("/api/audit").get_json()
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -702,7 +702,7 @@ def test_the_chain_verifies_after_a_restart(
     )
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -731,7 +731,7 @@ def test_a_truncated_log_leaves_the_audit_path_unavailable(
     target.write_text(target.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -759,7 +759,7 @@ def test_a_register_is_untouched_when_the_log_cannot_be_written(
     def refuse(entry_fields: object) -> None:
         raise JournalError("the audit log could not be written")
 
-    chain = app.extensions["complyops_chain"]
+    chain = app.extensions["directive_chain"]
     original = chain.append
     chain.append = refuse  # type: ignore[method-assign]
     try:
@@ -805,7 +805,7 @@ def test_the_audit_page_clamp_holds_at_a_log_longer_than_the_cap(signed_in: Flas
     A log longer than the cap is what makes the three bounds distinguishable, so this
     appends past it directly on the chain rather than over HTTP.
     """
-    chain = signed_in.application.extensions["complyops_chain"]
+    chain = signed_in.application.extensions["directive_chain"]
     for number in range(MAXIMUM_AUDIT_PAGE + 100):
         chain.append(fixed_entry(resource_id=f"D-{number}"))
 
@@ -924,7 +924,7 @@ def test_the_refusal_is_itself_recorded(app: Flask, client: FlaskClient) -> None
     """AUD-001 requires the failed authentication event, and it must be recordable."""
     sign_in_as(client, "renée@bluestaq.uk")
 
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"]
     assert entries[0].outcome == "FAILURE"
 
@@ -1175,7 +1175,7 @@ def test_no_header_shape_can_suppress_the_callback_entry(
     the trimmed value, which is better evidence than a marker. What a caller must never be
     able to do is leave nothing behind.
     """
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     client.get("/auth/callback?code=x&state=forged", headers={"User-Agent": HOSTILE_AGENTS[shape]})
 
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"], shape
@@ -1192,7 +1192,7 @@ def test_no_header_shape_can_deny_a_sign_in(app: Flask, client: FlaskClient, sha
     )
 
     assert landed.headers["Location"].endswith("/console"), shape
-    assert [entry.action for entry in app.extensions["complyops_chain"].entries] == ["LOGIN"]
+    assert [entry.action for entry in app.extensions["directive_chain"].entries] == ["LOGIN"]
 
 
 def test_a_header_cannot_suppress_an_audit_entry_on_the_callback(
@@ -1206,7 +1206,7 @@ def test_a_header_cannot_suppress_an_audit_entry_on_the_callback(
     discarded too. Probing the callback left no record at all, which deletes exactly the
     source address and user agent AUD-001 collects for security monitoring.
     """
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     client.get("/auth/callback?code=x&state=forged", headers=HOSTILE_AGENT)
 
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"]
@@ -1215,7 +1215,7 @@ def test_a_header_cannot_suppress_an_audit_entry_on_the_callback(
 
 def test_a_header_cannot_suppress_a_sign_in_entry(app: Flask, client: FlaskClient) -> None:
     """Same header, the self-asserted path, a successful sign-in."""
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     client.post(
         "/sign-in",
         data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": form_token(client)},
@@ -1228,7 +1228,7 @@ def test_a_header_cannot_suppress_a_sign_in_entry(app: Flask, client: FlaskClien
 
 def test_a_header_cannot_suppress_a_register_entry(app: Flask, signed_in: FlaskClient) -> None:
     """And a mutation, where a suppressed entry would mean an unevidenced record change."""
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     before = len(entries)
     created = signed_in.post(
         "/api/registers/tasks",
@@ -1257,7 +1257,7 @@ def test_a_value_that_cannot_be_brought_inside_the_rules_is_marked(
 ) -> None:
     """And where trimming cannot help, the marker appears rather than a partial value."""
     client.get("/auth/callback?code=x&state=forged", headers={"User-Agent": HOSTILE_AGENTS[shape]})
-    assert app.extensions["complyops_chain"].entries[0].user_agent == "unrecordable", shape
+    assert app.extensions["directive_chain"].entries[0].user_agent == "unrecordable", shape
 
 
 def test_the_marker_is_not_a_transliteration(app: Flask, client: FlaskClient) -> None:
@@ -1267,7 +1267,7 @@ def test_the_marker_is_not_a_transliteration(app: Flask, client: FlaskClient) ->
         data={"actor": "ash.higgins@bluestaq.uk", "csrf_token": form_token(client)},
         headers={"User-Agent": "curl/8 é"},
     )
-    entry = app.extensions["complyops_chain"].entries[-1]
+    entry = app.extensions["directive_chain"].entries[-1]
 
     assert entry.user_agent == "unrecordable"
     assert "curl" not in entry.user_agent, "no partial value survives"
@@ -1281,7 +1281,7 @@ def test_a_recordable_user_agent_is_recorded_verbatim(app: Flask, client: FlaskC
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0)"},
     )
     assert (
-        app.extensions["complyops_chain"].entries[-1].user_agent == "Mozilla/5.0 (Windows NT 10.0)"
+        app.extensions["directive_chain"].entries[-1].user_agent == "Mozilla/5.0 (Windows NT 10.0)"
     )
 
 
@@ -1365,7 +1365,7 @@ def test_the_exported_anchor_comes_from_the_volume(tmp_path: Path, signed_in: Fl
     """
     signed_in.post("/api/registers/tasks", json={"title": "First"}, headers=token_for(signed_in))
     stored = json.loads((Path(tmp_path) / "audit-anchor.json").read_text(encoding="utf-8"))
-    chain = signed_in.application.extensions["complyops_chain"]
+    chain = signed_in.application.extensions["directive_chain"]
     chain._chain.head = "0" * 64
 
     pack = signed_in.get("/api/export").get_json()
@@ -1382,7 +1382,7 @@ def test_a_volume_that_disagrees_with_this_process_is_reported(
     the totals agree and the heads do not, which nothing else would notice.
     """
     signed_in.post("/api/registers/tasks", json={"title": "First"}, headers=token_for(signed_in))
-    chain = signed_in.application.extensions["complyops_chain"]
+    chain = signed_in.application.extensions["directive_chain"]
     entries = list(chain.entries)
     chain.entries.clear()
     chain.entries.extend(entries)
@@ -1421,7 +1421,7 @@ def test_a_refusal_that_cannot_be_recorded_is_logged(
     def refuse(entry_fields: object) -> None:
         raise AuditFieldError("nothing here can be recorded")
 
-    chain = app.extensions["complyops_chain"]
+    chain = app.extensions["directive_chain"]
     original = chain.append
     chain.append = refuse  # type: ignore[method-assign]
     try:
@@ -1525,7 +1525,7 @@ def test_the_diagnostics_read_out_reports_a_wedged_chain(
     The boot status alone was stale by construction: it went on saying "chain intact" while
     the chain had wedged and nothing could be written.
     """
-    chain = app.extensions["complyops_chain"]
+    chain = app.extensions["directive_chain"]
     chain._wedged = "OSError: no space left on device at /data/audit/log.jsonl"
     try:
         line = signed_in.get("/api/diagnostics").get_json()["auditLog"]
@@ -1577,7 +1577,7 @@ def test_a_named_pipe_in_place_of_the_log_does_not_hang_the_boot(
     os.mkfifo(target)
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     restarted = create_app().test_client()
@@ -1639,7 +1639,7 @@ def test_no_audit_file_can_be_replaced_by_something_that_is_not_a_file(
         os.mkfifo(target)
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
 
@@ -1675,7 +1675,7 @@ def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
     unauthenticated `GET /auth/callback`, so any caller could induce this.
     """
     headers = token_for(signed_in)
-    chain = signed_in.application.extensions["complyops_chain"]
+    chain = signed_in.application.extensions["directive_chain"]
     appending = threading.Event()
     failures: list[BaseException] = []
 
@@ -1727,7 +1727,7 @@ def test_verifying_and_exporting_under_a_live_appender_never_reports_tampering(
             #: Failing closed on that uncertainty: if it recurs, the next reader gets the
             #: volume's state instead of `assert 240 == 241`.
             with chain.appends_paused():
-                on_disk = read_entries(str(signed_in.application.config["COMPLYOPS_DATA_DIR"]))
+                on_disk = read_entries(str(signed_in.application.config["DIRECTIVE_DATA_DIR"]))
                 live = len(chain.entries)
                 head = chain.anchor()
             pytest.fail(
@@ -1804,7 +1804,7 @@ def _called_names(node: ast.AST) -> set[str]:
 #: Every view module, not just `api.py`. The derived pin's name says "every function" and
 #: the reader parsed one file, so a reader added to another blueprint was unheld by default,
 #: which is the same class as the hand-kept list this build has now been caught by twice.
-VIEWS = Path(__file__).resolve().parents[1] / "src" / "complyops" / "views"
+VIEWS = Path(__file__).resolve().parents[1] / "src" / "directive" / "views"
 
 
 def _api_source() -> str:
@@ -1893,7 +1893,7 @@ def test_every_read_of_the_pair_sits_inside_the_paused_window(route: str) -> Non
     taken, and only a structural assertion proves how far it reaches.
     """
     source = (
-        Path(__file__).resolve().parents[1] / "src" / "complyops" / "views" / "api.py"
+        Path(__file__).resolve().parents[1] / "src" / "directive" / "views" / "api.py"
     ).read_text(encoding="utf-8")
     function = next(
         node
@@ -2038,7 +2038,7 @@ def test_the_audit_read_out_takes_its_page_and_anchor_as_one_pair(
     site, and reverting `audit_log` to two separate reads left it green. `pageOf` is
     `len(entries)` and not the capped page, so the disagreement IS observable on the wire.
     """
-    chain = signed_in.application.extensions["complyops_chain"]
+    chain = signed_in.application.extensions["directive_chain"]
     headers = token_for(signed_in)
     appending = threading.Event()
     failures: list[BaseException] = []

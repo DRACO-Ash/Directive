@@ -1,7 +1,7 @@
 [project]
-name = "comply-ops"
+name = "directive"
 version = "2.2"
-description = "Bluestaq Compliance Operations Console"
+description = "Directive, the Bluestaq Ltd compliance operations console"
 requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
@@ -23,7 +23,7 @@ timeout = 60
 
 [tool.coverage.run]
 branch = true
-source = ["src/complyops"]
+source = ["src/directive"]
 
 [tool.coverage.report]
 # The App Store SonarQube gate needs at least 80% line coverage. This is the local
@@ -75,7 +75,7 @@ max-statements = 40
 [tool.mypy]
 python_version = "3.12"
 mypy_path = "src"
-packages = ["complyops"]
+packages = ["directive"]
 strict = true
 warn_unreachable = true
 

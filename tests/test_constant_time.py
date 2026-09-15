@@ -37,11 +37,11 @@ ROOT = Path(__file__).resolve().parents[1]
 #: each is what the value is, because "why is this constant-time" is the question a reader
 #: asks and the answer is never in the function name.
 MUST_BE_CONSTANT_TIME = [
-    ("src/complyops/csrf.py", "valid"),  # the cross-site request forgery token
-    ("src/complyops/auth.py", "state_matches"),  # the sign-in state and the nonce
-    ("src/complyops/audit/hashing.py", "hashes_equal"),  # an entry's keyed digest
-    ("src/complyops/audit/anchor.py", "_marker_is_valid"),  # the first-use marker's tag
-    ("src/complyops/audit/anchor.py", "_validate"),  # the anchor MAC, the truncation detector
+    ("src/directive/csrf.py", "valid"),  # the cross-site request forgery token
+    ("src/directive/auth.py", "state_matches"),  # the sign-in state and the nonce
+    ("src/directive/audit/hashing.py", "hashes_equal"),  # an entry's keyed digest
+    ("src/directive/audit/anchor.py", "_marker_is_valid"),  # the first-use marker's tag
+    ("src/directive/audit/anchor.py", "_validate"),  # the anchor MAC, the truncation detector
 ]
 
 

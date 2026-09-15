@@ -1,6 +1,6 @@
 """The Entra ID authorisation code flow, driven end to end against a fake token endpoint.
 
-The back channel is faked at exactly one seam, :func:`complyops.auth._post_form`, so
+The back channel is faked at exactly one seam, :func:`directive.auth._post_form`, so
 everything above it is the real code path: the redirect this application builds, the state
 and nonce it stores, the Proof Key for Code Exchange (PKCE) verifier it holds back, the
 claim checks, and the audit entry the sign-in produces.
@@ -25,8 +25,8 @@ from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from complyops import auth, create_app
-from complyops.views import refusals
+from directive import auth, create_app
+from directive.views import refusals
 
 #: Real key material, published here on purpose: it is not a credential.
 SUITE_KEY = bytes(range(32)).hex()
@@ -68,9 +68,9 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Flask:
     monkeypatch.setenv("TENANT_ID", TENANT)
     monkeypatch.setenv("CLIENT_ID", CLIENT)
     monkeypatch.setenv("CLIENT_SECRET", TEST_SECRET)
-    monkeypatch.setenv("REDIRECT_URI", "https://comply-ops.apps.bluestaq.com/auth/callback")
+    monkeypatch.setenv("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback")
     monkeypatch.setenv("SESSION_KEY", "0" * 48)
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     return create_app()
 
 
@@ -116,7 +116,7 @@ def test_a_signed_in_operator_is_recorded_as_verified(
 
     state = start(client)
     with client.session_transaction() as stored:
-        nonce = stored["complyops_signin_nonce"]
+        nonce = stored["directive_signin_nonce"]
     monkeypatch.setattr(auth, "_post_form", endpoint)
 
     landed = client.get(f"/auth/callback?code=the-code&state={state}")
@@ -138,7 +138,7 @@ def test_the_exchange_sends_the_secret_and_the_verifier_and_nothing_else(
     recorded = Endpoint({"id_token": id_token(nonce="wrong")})
     state = start(client)
     with client.session_transaction() as stored:
-        verifier = stored["complyops_signin_verifier"]
+        verifier = stored["directive_signin_verifier"]
     monkeypatch.setattr(auth, "_post_form", recorded)
 
     client.get(f"/auth/callback?code=the-code&state={state}")
@@ -172,7 +172,7 @@ def test_a_bad_token_signs_nobody_in(
 
     state = start(client)
     with client.session_transaction() as stored:
-        nonce = stored["complyops_signin_nonce"]
+        nonce = stored["directive_signin_nonce"]
     monkeypatch.setattr(auth, "_post_form", endpoint)
 
     landed = client.get(f"/auth/callback?code=the-code&state={state}")
@@ -202,7 +202,7 @@ def test_a_replayed_callback_signs_nobody_in(
 
     state = start(client)
     with client.session_transaction() as stored:
-        nonce = stored["complyops_signin_nonce"]
+        nonce = stored["directive_signin_nonce"]
     monkeypatch.setattr(auth, "_post_form", endpoint)
     client.get(f"/auth/callback?code=the-code&state={state}")
     client.post("/sign-out", data={"csrf_token": client.get("/").headers["X-CSRF-Token"]})
@@ -240,7 +240,7 @@ def test_a_failed_exchange_is_audited(client: FlaskClient, monkeypatch: pytest.M
     state = start(client)
     client.get(f"/auth/callback?code=the-code&state={state}")
 
-    chain = client.application.extensions["complyops_chain"]
+    chain = client.application.extensions["directive_chain"]
     assert [entry.action for entry in chain.entries] == ["LOGIN_FAILED"]
     assert chain.entries[0].outcome == "FAILURE"
 
@@ -317,14 +317,14 @@ def test_a_verified_actor_the_log_cannot_name_is_refused(
 
     state = start(client)
     with client.session_transaction() as stored:
-        nonce = stored["complyops_signin_nonce"]
+        nonce = stored["directive_signin_nonce"]
     monkeypatch.setattr(auth, "_post_form", endpoint)
 
     landed = client.get(f"/auth/callback?code=the-code&state={state}")
     assert landed.headers["Location"].endswith("/sign-in")
     assert client.get("/api/registers").status_code == 401
 
-    chain = client.application.extensions["complyops_chain"]
+    chain = client.application.extensions["directive_chain"]
     assert [entry.action for entry in chain.entries] == ["LOGIN_FAILED"]
 
 
@@ -338,7 +338,7 @@ def test_a_non_ascii_state_is_refused_rather_than_raising(client: FlaskClient) -
 
     assert landed.status_code == 302
     assert landed.headers["Location"].endswith("/sign-in")
-    chain = client.application.extensions["complyops_chain"]
+    chain = client.application.extensions["directive_chain"]
     assert [entry.action for entry in chain.entries] == ["LOGIN_FAILED"]
 
 
@@ -363,7 +363,7 @@ def test_the_refused_self_asserted_sign_in_is_collapsed(client: FlaskClient) -> 
         response = client.post("/sign-in", data={"actor": "anyone", "csrf_token": token})
         assert response.status_code == 302
 
-    chain = client.application.extensions["complyops_chain"]
+    chain = client.application.extensions["directive_chain"]
     failed = [entry for entry in chain.entries if entry.action == "LOGIN_FAILED"]
     assert len(failed) == refusals.RECORDED_PER_WINDOW, f"{len(failed)} rows for 40 refusals"
     assert not [entry for entry in chain.entries if entry.action == "LOGIN"]
@@ -409,11 +409,11 @@ def test_a_password_only_token_signs_nobody_in_and_is_audited(
 
     state = start(client)
     with client.session_transaction() as stored:
-        nonce = stored["complyops_signin_nonce"]
+        nonce = stored["directive_signin_nonce"]
     monkeypatch.setattr(auth, "_post_form", endpoint)
 
     landed = client.get(f"/auth/callback?code=the-code&state={state}")
     assert landed.headers["Location"].endswith("/sign-in")
     assert client.get("/api/registers").status_code in (302, 401, 403)
-    chain = client.application.extensions["complyops_chain"]
+    chain = client.application.extensions["directive_chain"]
     assert chain.entries[-1].action == "LOGIN_FAILED"

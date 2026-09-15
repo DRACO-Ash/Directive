@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from complyops.audit import keys
+from directive.audit import keys
 
 
 def test_signing_fails_closed_when_no_key_is_configured() -> None:

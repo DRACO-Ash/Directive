@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from complyops.audit import (
+from conftest import TEST_KEY, TEST_KEY_ID, fixed_entry, keys_for_verification, new_chain
+from directive.audit import (
     GENESIS_HASH,
     Anchor,
     AuditChain,
@@ -19,11 +20,10 @@ from complyops.audit import (
     verify_sample,
     write_anchor,
 )
-from complyops.audit import anchor as anchor_module
-from complyops.audit import chain as chain_module
-from complyops.audit.hashing import entry_hash
-from complyops.audit.validation import AuditFieldError
-from conftest import TEST_KEY, TEST_KEY_ID, fixed_entry, keys_for_verification, new_chain
+from directive.audit import anchor as anchor_module
+from directive.audit import chain as chain_module
+from directive.audit.hashing import entry_hash
+from directive.audit.validation import AuditFieldError
 
 KEYS = keys_for_verification()
 
@@ -250,7 +250,7 @@ def test_an_entry_invalid_under_todays_rules_is_not_reported_as_tampering() -> N
     verdict = verify_log(entries, KEYS, chain.anchor())
     assert verdict.ok
 
-    from complyops.audit import validation  # noqa: PLC0415 - patched for this assertion
+    from directive.audit import validation  # noqa: PLC0415 - patched for this assertion
 
     original = validation.FIELD_LIMITS["actor"]
     try:
@@ -369,7 +369,7 @@ def test_a_field_missing_altogether_still_fails_closed_in_the_hasher() -> None:
 
     So it stays fail-closed inside the hash path regardless of the required-field rule.
     """
-    from complyops.audit.hashing import AuditHashError, entry_hash  # noqa: PLC0415
+    from directive.audit.hashing import AuditHashError, entry_hash  # noqa: PLC0415
 
     fields = fixed_entry()
     del fields["user_agent"]
@@ -384,7 +384,7 @@ def test_tightening_the_required_set_reports_a_rule_failure_not_tampering() -> N
     legitimately written entries the moment the set grew, and the verifier called that
     "chain broken".
     """
-    from complyops.audit import hashing, validation  # noqa: PLC0415
+    from directive.audit import hashing, validation  # noqa: PLC0415
 
     chain, entries = build(1)
     assert verify_log(entries, KEYS, chain.anchor()).ok

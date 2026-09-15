@@ -4,7 +4,7 @@ Always-true conventions for this project. Procedures live in `.claude/skills/`. 
 
 ## What this project is
 
-The Bluestaq Compliance Operations Console: one authenticated system of record for Bluestaq Ltd's compliance operating rhythm, registers, incident tracking, and IASME and Defence Cyber Certification (DCC) assessor evidence, held in local files on the persistent volume and evidenced by a tamper-evident audit log. Archetype: `server` (a Flask process serves requests, authenticates against Entra ID, and mediates every write). Deployment target: the Bluestaq App Store at `comply-ops.apps.bluestaq.com`, detected template `python` (by `requirements.txt`).
+The Directive: one authenticated system of record for Bluestaq Ltd's compliance operating rhythm, registers, incident tracking, and IASME and Defence Cyber Certification (DCC) assessor evidence, held in local files on the persistent volume and evidenced by a tamper-evident audit log. Archetype: `server` (a Flask process serves requests, authenticates against Entra ID, and mediates every write). Deployment target: the Bluestaq App Store at `directive.apps.bluestaq.com`, detected template `python` (by `requirements.txt`).
 
 **The application does not integrate with SharePoint.** It is the system of record on its own volume and produces standalone files the ISM exports and uploads by hand. Ash's decision, and it removes the Microsoft Graph client, the SharePoint list models, and the platform gateway exemption question from the build. Two consequences follow and neither is optional. AUD-001 rests its delete-and-modify control on SharePoint list versioning and ISC-Owners permission, which no longer sits in the live path, so **the export cadence is a security control rather than housekeeping**: until an export is uploaded, the volume holds the only copy of the log and its anchor. And the corroboration that would have closed the anchor's blind spot (the list holding rows while the volume holds no anchor) has to come from the uploaded export instead. See `docs/DEPLOYMENT.md`.
 
@@ -47,7 +47,7 @@ If a gate finds something outside the model, record it in `docs/GATE-RECORDS.md`
 ● **Listen on `PORT`, default 8080, bound to `0.0.0.0`.** Never add `ENV PORT=` or `ENV DATA_DIR=` to the Dockerfile. Answer `/`, `/healthz`, `/health`, `/readyz`, `/livez`, and `/ping` with HTTP 200, unauthenticated, and never a redirect at the root.
 ● **A probe never raises and never hangs.** The storage probe converts every failure into a verdict and abandons a stalled write inside a bounded time. The diagnostics read-out is the recovery channel for a bad configuration value, so nothing in the probe path may prevent boot or block a request indefinitely.
 ● **Liveness never depends on a downstream.** A liveness path that probes Entra ID or the storage volume restarts a healthy container during a transient outage of either. Dependency reporting belongs on `/readyz`.
-● **Every register mutation writes one chained audit entry** through `complyops.audit` per AUD-001. No code path writes a record without it.
+● **Every register mutation writes one chained audit entry** through `directive.audit` per AUD-001. No code path writes a record without it.
 ● **The audit chain is keyed and anchored, and the chain itself is never broken.** Entries are signed with HMAC-SHA256 under a server-held key, so write access to the log is not enough to re-stamp a row. AUD-001 specifies a SHA-256 hash over timestamp, user, action and resource; this build keys that digest, extends it to the full AUD-001 field set, and chains each entry to its predecessor. Stronger than the letter of the policy on every axis, and recorded as a deviation for Adam Field's sign-off. The trusted anchor on the persistent volume is what detects a truncation or a wholesale rewrite; it is authenticated under the same key, so volume access alone cannot forge one. Verifying the whole log means `verify_log`, which takes the anchor as a required argument: `verify_sample` exists for a mid-log run and cannot detect a truncation, by construction.
 ● **Pruning moves entries out of the active log; it never breaks the chain.** AUD-001 retains 24 months active, exports annually to Library 08, and prunes the active list for query performance. The anchor therefore records the total entries ever written and the digest of the last pruned entry, so the chain runs unbroken across the archive boundary and the annual export carries the link. Verification of the active log alone is a `verify_sample` run starting from the archived link, never a `verify_log` run: an active log that legitimately starts mid-chain is not a truncated one. Changing `FIELD_ORDER`, the digest construction, or the chaining breaks every historical entry and is an irreversible decision requiring the Managing Director's sign-off; a golden test vector pins those three. Tightening a field cap or character rule does NOT break the digests, and is reported as `invalid_under_current_rules` rather than as tampering, but it is still one-way: an entry already written cannot be brought back inside a narrower rule.
 ● **Audit field values are printable ASCII, by allowlist.** A denylist over Unicode leaks: rejecting category `Cc` missed the line and paragraph separators that forge a log line, and the format characters that misrepresent an actor. A value outside the set is rejected, never transliterated, because an entry is evidence.
@@ -64,7 +64,7 @@ sh scripts/build-package.sh                                                # the
 sh scripts/simulate-pipeline.sh                                            # the platform's stage 5
 sh scripts/verify.sh                                                       # the loop
 .venv/bin/flask --app wsgi run --port 8080                                 # local dev
-docker build -t comply-ops .                                               # build
+docker build -t directive .                                               # build
 ```
 
 Every change runs the verification loop, then passes the `engineering-reviewer` and `security-reviewer` gates before it is done. Anything that deploys, publishes, or mutates external state requires the `deploy-gate` verdict and an explicit human confirmation.
@@ -72,7 +72,7 @@ Every change runs the verification loop, then passes the `engineering-reviewer` 
 ## Directory layout
 
 ```
-src/complyops/          the application source (src layout: the platform scopes analysis to src)
+src/directive/          the application source (src layout: the platform scopes analysis to src)
   audit/                the chained audit log, AUD-001
   views/                one Flask blueprint per functional area
 SECURITY.md             the vulnerability disclosure pointer, AMD-001 section 10.6
@@ -101,7 +101,7 @@ Python 3.12, pinned in `.python-version`. Dependencies are exact-pinned and hash
 ## Naming and versioning
 
 ● Releases are `V2.0`, `V2.1`, and so on, held in `pyproject.toml` and surfaced by `/api/diagnostics`.
-● The App Store slug is `comply-ops`: lowercase, hyphenated, a single hyphen only. A double hyphen breaks platform naming and fails the pipeline with zero stages run.
+● The App Store slug is `directive`: lowercase, hyphenated, a single hyphen only. A double hyphen breaks platform naming and fails the pipeline with zero stages run.
 ● Commit messages follow `[MODULE] short imperative summary` per AMD-001 section 10.3.
 
 ## House voice (applies to all prose, UI copy, comments, commits)

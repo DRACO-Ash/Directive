@@ -119,7 +119,7 @@ def canonical_payload(fields: Mapping[str, str], key_id: str) -> bytes:
     no two distinct records share a payload. The key identifier is covered so a signing
     key cannot be swapped for a weaker one after the fact.
 
-    Expects fields already validated by :func:`complyops.audit.validation.normalise_fields`.
+    Expects fields already validated by :func:`directive.audit.validation.normalise_fields`.
     """
     parts: list[bytes] = []
     for name in (*FIELD_ORDER, "\x00key_id"):

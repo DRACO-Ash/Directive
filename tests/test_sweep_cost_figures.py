@@ -802,7 +802,7 @@ def test_the_quoted_rule_split_adds_up_and_names_the_right_modules() -> None:
     )
 
     #: The module basenames the scan gives. Basenames rather than paths, because both
-    #: carriers write them that way and a path would put `src/complyops/` into a sentence
+    #: carriers write them that way and a path would put `src/directive/` into a sentence
     #: that is about which modules hold the names, not where the tree puts them.
     modules = sorted({Path(entry[0]).name for entry in beyond})
 

@@ -17,11 +17,11 @@ from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from complyops import auth, create_app, records, store
-from complyops.audit.journal import read_entries
-from complyops.records import RecordError
-from complyops.store import StoreError
-from complyops.views import refusals
+from directive import auth, create_app, records, store
+from directive.audit.journal import read_entries
+from directive.records import RecordError
+from directive.store import StoreError
+from directive.views import refusals
 
 SUITE_KEY = bytes(range(32)).hex()
 
@@ -219,7 +219,7 @@ def test_counts_report_every_state_in_the_vocabulary(tmp_path: Path) -> None:
 
 def _chain() -> object:
     """Return a real audit chain that also keeps what it wrote."""
-    from complyops.audit import AuditChain  # noqa: PLC0415
+    from directive.audit import AuditChain  # noqa: PLC0415
 
     class Recording(AuditChain):
         """A chain that remembers its entries, so a test can read them back."""
@@ -242,7 +242,7 @@ def _chain() -> object:
 
 def test_production_without_entra_refuses_to_start(monkeypatch: pytest.MonkeyPatch) -> None:
     """A build that degrades quietly to "anybody may be anybody" is worse than one that stops."""
-    monkeypatch.setenv("COMPLYOPS_ENV", "production")
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
     monkeypatch.delenv("TENANT_ID", raising=False)
     with pytest.raises(auth.AuthNotConfiguredError, match="Refusing to start"):
         auth.check_startup()
@@ -252,7 +252,7 @@ def test_production_without_a_session_key_refuses_to_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An ephemeral key differs between workers and signs everybody out on each restart."""
-    monkeypatch.setenv("COMPLYOPS_ENV", "production")
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
     monkeypatch.delenv("SESSION_KEY", raising=False)
     with pytest.raises(auth.AuthNotConfiguredError, match="ephemeral session key"):
         auth.signing_secret()
@@ -265,7 +265,7 @@ def test_a_configured_session_key_is_used_verbatim(monkeypatch: pytest.MonkeyPat
 
 def test_development_generates_an_ephemeral_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SESSION_KEY", raising=False)
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     assert len(auth.signing_secret()) == 32
 
 
@@ -313,7 +313,7 @@ def test_the_post_sign_in_redirect_cannot_leave_this_origin(
 ) -> None:
     """An open redirect would let a phishing link bounce a signed-in user off this origin."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     app = create_app()
     with app.test_request_context("/sign-in"):
@@ -325,7 +325,7 @@ def test_an_entra_authorise_url_carries_the_state(monkeypatch: pytest.MonkeyPatc
         ("TENANT_ID", "tenant"),
         ("CLIENT_ID", "client"),
         ("CLIENT_SECRET", "secret"),
-        ("REDIRECT_URI", "https://comply-ops.apps.bluestaq.com/auth/callback"),
+        ("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback"),
     ]:
         monkeypatch.setenv(name, value)
     verifier = auth.new_verifier()
@@ -345,7 +345,7 @@ def test_the_audit_actor_is_marked_when_self_asserted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     app: Flask = create_app()
     with app.test_request_context("/"):
@@ -363,10 +363,10 @@ def test_an_unusable_signing_key_leaves_the_app_bootable(
     Every mutating route then fails closed, because no entry can be written.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
     app = create_app()
-    assert app.extensions["complyops_chain"] is None
+    assert app.extensions["directive_chain"] is None
     assert app.test_client().get("/api/diagnostics").status_code == 200
 
 
@@ -379,7 +379,7 @@ def test_a_mutation_fails_closed_without_an_audit_chain(
     answer is that this end is at fault and retrying later is worth doing.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
     client = create_app().test_client()
     client.post(
@@ -479,7 +479,7 @@ def test_a_full_volume_answers_503_rather_than_an_unhandled_500(
 ) -> None:
     """A register that cannot be written is this end's fault, and the body says nothing more."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     client = create_app().test_client()
@@ -513,7 +513,7 @@ def test_a_refused_register_write_leaves_the_log_unchanged(
     never received. That is the whole point of staging, so it is the thing to assert.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     client = create_app().test_client()
@@ -587,7 +587,7 @@ def test_a_client_cannot_set_a_server_owned_field(
     rather than an acceptance, but a claim in a signed record needs evidence beneath it.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     client = create_app().test_client()
     client.post(
@@ -780,7 +780,7 @@ def test_an_unset_environment_is_production(monkeypatch: pytest.MonkeyPatch) -> 
     the Secure cookie flag off, Entra ID unenforced and an ephemeral session key, silently.
     A fail-closed control whose default is "off" is not one.
     """
-    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    monkeypatch.delenv("DIRECTIVE_ENV", raising=False)
     assert auth.is_production() is True
 
 
@@ -789,7 +789,7 @@ def test_only_the_exact_word_selects_development(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     """A typo must not silently buy the weaker posture."""
-    monkeypatch.setenv("COMPLYOPS_ENV", value)
+    monkeypatch.setenv("DIRECTIVE_ENV", value)
     assert auth.is_production() is (value.strip().lower() != "development")
 
 
@@ -798,11 +798,11 @@ def test_an_unset_environment_refuses_to_boot_unconfigured(
 ) -> None:
     """Loudly, in both directions. A missing variable is never a silent downgrade."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("COMPLYOPS_ENV", raising=False)
+    monkeypatch.delenv("DIRECTIVE_ENV", raising=False)
     for name in ("TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI", "SESSION_KEY"):
         monkeypatch.delenv(name, raising=False)
 
-    with pytest.raises(auth.AuthNotConfiguredError, match="COMPLYOPS_ENV is production"):
+    with pytest.raises(auth.AuthNotConfiguredError, match="DIRECTIVE_ENV is production"):
         create_app()
 
 
@@ -813,8 +813,8 @@ def test_the_environment_variable_is_documented(monkeypatch: pytest.MonkeyPatch)
     which is how the guards came to be inert in the documented deploy.
     """
     root = Path(__file__).resolve().parents[1]
-    assert "COMPLYOPS_ENV" in (root / ".env.example").read_text(encoding="utf-8")
-    assert "COMPLYOPS_ENV" in (root / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    assert "DIRECTIVE_ENV" in (root / ".env.example").read_text(encoding="utf-8")
+    assert "DIRECTIVE_ENV" in (root / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
 
 
 def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
@@ -826,7 +826,7 @@ def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
     `=`, `-` or `@`, a non-ASCII character or a double quote, and get a 302 with no entry.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     app = create_app()
@@ -846,7 +846,7 @@ def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
             data={"actor": actor, "csrf_token": client.get("/").headers["X-CSRF-Token"]},
         )
 
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     assert len(entries) == refusals.RECORDED_PER_WINDOW, "one refusal recorded per attempt"
     assert all(entry.action == "LOGIN_FAILED" for entry in entries)
     assert all(entry.actor == "unknown" for entry in entries), "never the caller's own value"
@@ -858,7 +858,7 @@ def test_no_actor_shape_suppresses_its_own_refusal(
 ) -> None:
     """Each shape on its own, so the character-class branch is exercised, not just the cap."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     app = create_app()
@@ -868,7 +868,7 @@ def test_no_actor_shape_suppresses_its_own_refusal(
         "/sign-in", data={"actor": actor, "csrf_token": client.get("/").headers["X-CSRF-Token"]}
     )
 
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"], actor
     assert entries[0].actor == "unknown"
 
@@ -895,7 +895,7 @@ def test_the_session_cookie_policy_is_the_one_that_shipped(
 
     assert config["SESSION_COOKIE_HTTPONLY"] is True
     assert config["SESSION_COOKIE_SAMESITE"] == "Lax"
-    assert config["SESSION_COOKIE_NAME"] == "complyops_session"
+    assert config["SESSION_COOKIE_NAME"] == "directive_session"
     assert config["SESSION_COOKIE_SECURE"] is auth.is_production()
 
 
@@ -928,12 +928,12 @@ def test_the_session_cookie_is_secure_in_production(
     literal `False` was green across the whole suite. The live control was correct, and the
     test was vacuous in the one posture where a session cookie can leak.
     """
-    monkeypatch.setenv("COMPLYOPS_ENV", "production")
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TENANT_ID", "t")
     monkeypatch.setenv("CLIENT_ID", "c")
     monkeypatch.setenv("CLIENT_SECRET", "s" * 40)
-    monkeypatch.setenv("REDIRECT_URI", "https://comply-ops.apps.bluestaq.com/auth/callback")
+    monkeypatch.setenv("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback")
     monkeypatch.setenv("SESSION_KEY", "k" * 64)
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")

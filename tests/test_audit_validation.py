@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from complyops.audit import validation
-from complyops.audit.validation import UNRECORDABLE, recordable
 from conftest import fixed_entry
+from directive.audit import validation
+from directive.audit.validation import UNRECORDABLE, recordable
 
 
 def test_a_clean_entry_passes_and_is_returned_as_a_snapshot() -> None:
@@ -178,7 +178,7 @@ def test_a_conforming_key_identifier_is_accepted(good: str) -> None:
 
 def test_the_field_list_and_the_digest_field_order_agree() -> None:
     """Two lists that must not drift: one is validated, the other is hashed."""
-    from complyops.audit.hashing import FIELD_ORDER  # noqa: PLC0415 - for this assertion
+    from directive.audit.hashing import FIELD_ORDER  # noqa: PLC0415 - for this assertion
 
     assert tuple(validation.FIELD_LIMITS) == FIELD_ORDER
 
@@ -539,7 +539,7 @@ def test_the_two_required_field_lists_cannot_drift() -> None:
     Divergence fails closed in one direction and is silently weaker in the other, which is
     the direction that matters.
     """
-    from complyops.audit import hashing  # noqa: PLC0415
+    from directive.audit import hashing  # noqa: PLC0415
 
     assert hashing._REQUIRED_NON_EMPTY - {"\x00key_id"} == set(validation.REQUIRED_FIELDS)
 

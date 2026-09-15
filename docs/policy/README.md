@@ -6,8 +6,8 @@ in application source control.
 
 | Reference | Document | Governs |
 | --- | --- | --- |
-| AUD-001 | Audit and Monitoring Policy addendum, Compliance Operations Console application audit controls. Addendum to POL-001 section 11 and Handbook B.14. | What the audit log captures, its integrity, retention and review. |
-| AMD-001 | Information Security Policy amendment, Compliance Operations Console. Amendment to POL-001. | Change control, accreditation, and the Secure Development Lifecycle in section 10.6. |
+| AUD-001 | Audit and Monitoring Policy addendum, Directive application audit controls. Addendum to POL-001 section 11 and Handbook B.14. | What the audit log captures, its integrity, retention and review. |
+| AMD-001 | Information Security Policy amendment, Directive. Amendment to POL-001. | Change control, accreditation, and the Secure Development Lifecycle in section 10.6. |
 
 Both are prepared by Ash Higgins, Information Security Manager and Data Protection Lead,
 and approved by Adam Field, Managing Director. Both carry an unsigned approval row: Adam

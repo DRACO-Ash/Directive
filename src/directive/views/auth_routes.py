@@ -21,9 +21,9 @@ auth_bp = Blueprint("auth", __name__)
 
 #: Where the sign-in round trip keeps its state. All three are consumed on first use, so a
 #: replayed callback has nothing to match against.
-STATE_KEY = "complyops_signin_state"
-VERIFIER_KEY = "complyops_signin_verifier"
-NONCE_KEY = "complyops_signin_nonce"
+STATE_KEY = "directive_signin_state"
+VERIFIER_KEY = "directive_signin_verifier"
+NONCE_KEY = "directive_signin_nonce"
 
 #: The longest self-asserted actor accepted, well inside the audit field's 320-byte cap.
 MAXIMUM_ACTOR_LENGTH = 200
@@ -74,7 +74,7 @@ def _record_authentication(
     #: claimable by writing `written: list[dict[str, str]] = chain`, which mypy accepted and
     #: which then carried a computed key to the boundary unchecked. With the protocol here,
     #: the same line is an assignment error on the type leg of the verification loop.
-    chain: records.AppendsAudit | None = current_app.extensions.get("complyops_chain")
+    chain: records.AppendsAudit | None = current_app.extensions.get("directive_chain")
     if chain is None:
         current_app.logger.error("authentication event not recorded: no audit chain")
         return True

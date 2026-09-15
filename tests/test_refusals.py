@@ -17,9 +17,9 @@ from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from complyops import create_app
-from complyops.audit import journal, normalise_fields
-from complyops.views import refusals
+from directive import create_app
+from directive.audit import journal, normalise_fields
+from directive.views import refusals
 
 #: Real key material, published here on purpose: it is not a credential.
 SUITE_KEY = bytes(range(32)).hex()
@@ -29,7 +29,7 @@ SUITE_KEY = bytes(range(32)).hex()
 def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Flask:
     """Return an application with a working audit chain on a fresh volume."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("COMPLYOPS_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")
     return create_app()
@@ -171,7 +171,7 @@ def test_a_flood_from_one_address_does_not_write_one_entry_per_request(
     for _ in range(50):
         probe(client)
 
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     assert len(entries) == refusals.RECORDED_PER_WINDOW
 
 
@@ -185,7 +185,7 @@ def test_the_collapsed_count_reaches_the_log(app: Flask, client: FlaskClient) ->
         window.started -= refusals.WINDOW_SECONDS + 1
     probe(client)
 
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     summary = [entry for entry in entries if entry.action == "LOGIN_FAILED_REPEATED"]
     assert summary, "the suppressed count must be recorded"
     assert summary[0].new_state == f"REPEATED_{20 - refusals.RECORDED_PER_WINDOW}"
@@ -202,7 +202,7 @@ def test_a_collapsed_entry_still_satisfies_the_audit_boundary(
         window.started -= refusals.WINDOW_SECONDS + 1
     probe(client)
 
-    for entry in app.extensions["complyops_chain"].entries:
+    for entry in app.extensions["directive_chain"].entries:
         assert normalise_fields(entry.covered_fields())
 
 
@@ -218,7 +218,7 @@ def test_a_successful_sign_in_is_never_collapsed(app: Flask, client: FlaskClient
         },
     )
 
-    entries = app.extensions["complyops_chain"].entries
+    entries = app.extensions["directive_chain"].entries
     assert entries[-1].action == "LOGIN"
     assert entries[-1].actor.startswith("ash.higgins@bluestaq.uk")
 
@@ -237,7 +237,7 @@ def test_a_burst_that_stops_reaches_the_log_through_another_caller(
 
     summary = [
         entry
-        for entry in app.extensions["complyops_chain"].entries
+        for entry in app.extensions["directive_chain"].entries
         if entry.action == "LOGIN_FAILED_REPEATED"
     ]
     assert summary, "another caller's refusal must flush the stopped burst"
@@ -256,7 +256,7 @@ def test_a_summary_entry_is_attributed_to_its_own_address(app: Flask, client: Fl
 
     summaries = {
         entry.source_ip: entry.new_state
-        for entry in app.extensions["complyops_chain"].entries
+        for entry in app.extensions["directive_chain"].entries
         if entry.action == "LOGIN_FAILED_REPEATED"
     }
     assert summaries == {
@@ -322,7 +322,7 @@ def test_the_overflow_reaches_the_log(
 
     flood = [
         entry
-        for entry in app.extensions["complyops_chain"].entries
+        for entry in app.extensions["directive_chain"].entries
         if entry.action == "LOGIN_FAILED_FLOOD"
     ]
     assert flood, "the overflow must be recorded"
@@ -346,7 +346,7 @@ def test_a_flood_entry_satisfies_the_audit_boundary(
     refusals._budget.started -= refusals.WINDOW_SECONDS + 1
     client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.5.5.5"})
 
-    for entry in app.extensions["complyops_chain"].entries:
+    for entry in app.extensions["directive_chain"].entries:
         assert normalise_fields(entry.covered_fields())
 
 
@@ -401,7 +401,7 @@ def test_a_floor_reaches_the_log_as_a_floor(
 
     flood = [
         entry
-        for entry in app.extensions["complyops_chain"].entries
+        for entry in app.extensions["directive_chain"].entries
         if entry.action == "LOGIN_FAILED_FLOOD"
     ]
     assert flood, "the overflow must still be recorded"
@@ -497,7 +497,7 @@ def test_a_folded_summary_is_carried_by_the_flood_row(
         client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": f"10.9.7.{index}"})
     entries = [
         entry
-        for entry in app.extensions["complyops_chain"].entries
+        for entry in app.extensions["directive_chain"].entries
         if entry.action.startswith("LOGIN_FAILED")
     ]
     assert len(entries) <= 6, f"{len(entries)} rows in the chain against a cap of 6"
@@ -540,7 +540,7 @@ def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: Flas
         headers={"User-Agent": "\\" * 512},
     )
     client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": "10.9.9.9"})
-    log = Path(app.config["COMPLYOPS_DATA_DIR"]) / "audit" / "log.jsonl"
+    log = Path(app.config["DIRECTIVE_DATA_DIR"]) / "audit" / "log.jsonl"
     at_caps, friendly = (len(line) + 1 for line in log.read_bytes().splitlines()[-2:])
 
     assert at_caps <= refusals.ROW_BYTES_AT_FIELD_CAPS, f"{at_caps} bytes: re-measure the figure"
@@ -554,7 +554,7 @@ def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: Flas
 #: green while `views/refusals.py` and the assessor-facing runbook went on stating a figure
 #: that was then wrong by the same factor. The mechanism was held; its magnitude was not.
 FLOOD_CARRIERS = (
-    Path(__file__).resolve().parents[1] / "src" / "complyops" / "views" / "refusals.py",
+    Path(__file__).resolve().parents[1] / "src" / "directive" / "views" / "refusals.py",
     Path(__file__).resolve().parents[1] / "docs" / "DEPLOYMENT.md",
 )
 

@@ -1,6 +1,6 @@
 # Changelog
 
-Bluestaq Compliance Operations Console (`comply-ops`). One row per release, recording the
+Directive (`directive`). One row per release, recording the
 version, the commit it shipped from, the binding gate verdicts, and the deviations open at
 that point. AMD-001 section 10.3 governs the commit messages behind each row; this file is
 the release-level record the deploy gate reads.

@@ -38,12 +38,12 @@ MAXIMUM_AUDIT_PAGE = 2000
 
 def _data_dir() -> str:
     """Return the configured data directory."""
-    return str(current_app.config["COMPLYOPS_DATA_DIR"])
+    return str(current_app.config["DIRECTIVE_DATA_DIR"])
 
 
 def _chain() -> JournalChain:
     """Return the process's audit chain, or raise if the audit path is unavailable."""
-    chain: JournalChain | None = current_app.extensions.get("complyops_chain")
+    chain: JournalChain | None = current_app.extensions.get("directive_chain")
     if chain is None:
         # Fail closed: without a chain no mutation can be evidenced, and a change that
         # cannot be evidenced must not happen. A JournalError rather than a RecordError so
@@ -64,7 +64,7 @@ def _user_agent() -> str:
     """Return the caller's user agent, or a marker if it cannot be recorded.
 
     A caller must never be able to veto their own audit entry by choosing a header the
-    audit boundary refuses. See `complyops.audit.validation.recordable`.
+    audit boundary refuses. See `directive.audit.validation.recordable`.
     """
     return recordable("user_agent", request.headers.get("User-Agent") or "unknown")
 
@@ -424,7 +424,7 @@ def export() -> Response:
     }
     response = jsonify(pack)
     response.headers["Content-Disposition"] = (
-        f'attachment; filename="comply-ops-evidence-{records.now()[:10]}.json"'
+        f'attachment; filename="directive-evidence-{records.now()[:10]}.json"'
     )
     return response
 

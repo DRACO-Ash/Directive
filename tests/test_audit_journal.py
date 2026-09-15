@@ -21,11 +21,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from complyops.audit import Anchor, AuditChain, read_anchor, write_anchor
-from complyops.audit import journal as journal_module
-from complyops.audit.anchor import anchor_path, marker_path
-from complyops.audit.chain import verify_log
-from complyops.audit.journal import (
+from conftest import fixed_entry
+from directive.audit import Anchor, AuditChain, read_anchor, write_anchor
+from directive.audit import journal as journal_module
+from directive.audit.anchor import anchor_path, marker_path
+from directive.audit.chain import verify_log
+from directive.audit.journal import (
     JournalChain,
     JournalError,
     append_entry,
@@ -33,7 +34,6 @@ from complyops.audit.journal import (
     read_entries,
     resume,
 )
-from conftest import fixed_entry
 
 #: Real key material, published here on purpose: it is not a credential.
 KEY = bytes(range(32))
@@ -285,7 +285,7 @@ def refuse_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(data_dir: str, entry: object) -> None:
         raise JournalError(f"the audit log at {log_path(data_dir)} could not be written")
 
-    monkeypatch.setattr("complyops.audit.journal.append_entry", refuse)
+    monkeypatch.setattr("directive.audit.journal.append_entry", refuse)
 
 
 def test_a_failed_persist_wedges_the_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,7 +577,7 @@ def test_the_append_holds_one_lock_across_both_writes() -> None:
     different threads.
     """
     source = (
-        Path(__file__).resolve().parents[1] / "src" / "complyops" / "audit" / "journal.py"
+        Path(__file__).resolve().parents[1] / "src" / "directive" / "audit" / "journal.py"
     ).read_text(encoding="utf-8")
     append = next(
         node

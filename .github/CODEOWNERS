@@ -6,7 +6,7 @@
 # assessor tests, so they are called out separately rather than relying on the catch-all.
 * @DRACO-Ash
 
-/src/complyops/audit/       @DRACO-Ash
+/src/directive/audit/       @DRACO-Ash
 /docs/policy/               @DRACO-Ash
 /docs/DEPLOYMENT.md         @DRACO-Ash
 /SECURITY.md                @DRACO-Ash
