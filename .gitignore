@@ -55,6 +55,10 @@ dist/
 # the stop hook then asked to have committed. A Node tree in a Python package is detritus at
 # best and a second unscanned dependency set at worst.
 node_modules/
+# `pip install -e .` writes this beside the package, and a `git add -A` swept it into a
+# release: four files of build metadata shipped inside the upload package, which verifies
+# byte-for-byte against HEAD and so reported itself as correct.
+*.egg-info/
 
 # Test and analysis output
 .pytest_cache/
