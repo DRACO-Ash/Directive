@@ -31,11 +31,14 @@ is in `docs/GATE-RECORDS.md`. A third round at `896ee9f` then took the security 
 **PASS** and the engineering gate to **FAIL** again, on four MAJORs: an identifier grammar
 tightened and held by no test, a comment stating a superseded figure, a deviation row in
 `docs/DEPLOYMENT.md` still recording the old cap, and the OWASP note describing a fix that
-was explicitly not the one taken. A fourth round closed those and found one more, a blank
-line that had been relocated rather than removed and so still split the gate table. Not one
-finding across any of those rounds was in the running application's security controls: the register fixes held under mutation, the Article 28(2)
-invariant held on six routes to APPROVED, and the 27-check evidence record reproduced
-independently.
+was explicitly not the one taken. A fourth round closed those and returned one MAJOR
+and six MINORs, the MAJOR being a blank line that had been relocated rather than removed
+and so still split the gate table. A fifth round closed the
+MAJOR and found four more, every one of them in a shipped record: two counts that the tree
+does not support and two paragraphs whose positional claims about a table no longer matched
+the table. Not one finding across any of those rounds was in the running application's
+security controls. The register fixes held under mutation, the Article 28(2) invariant held
+on six routes to APPROVED, and the 27-check evidence record reproduced independently.
 
 **Changed.**
 
@@ -107,6 +110,22 @@ independently.
   creation and gave no protection afterwards, so a title could be blanked and the record
   left with no name in any list an assessor reads. `agreement` was not exposed: its link
   format rejects an empty string first, so it survived by accident rather than by design.
+● **Table integrity in shipped documents is now held by a test, not by care.** A blank line
+  terminates a Markdown table, so a row below one renders as a paragraph of pipe characters.
+  `docs/GATE-RECORDS.md` had its newest gate verdicts stranded that way twice, and three
+  consecutive careful readings each fixed one instance and missed or created another. The
+  new test walks every shipped document, groups contiguous pipe-delimited lines, and
+  requires each run to open with a header and a delimiter. It found a fourth broken table on
+  its first run, in the `docs/DEPLOYMENT.md` deferred-by-design table, which no gate had
+  reached. A defect that survives three careful readings is a missing test rather than a
+  carelessness problem.
+● **The issuing half of the identifier grammar was inert.** `next_id` matched `[0-9]` and
+  reverting it to Unicode-aware `\d` left the whole suite green, while its sibling in the
+  LINK grammar was pinned, so a test naming the parity of the two halves as its reason could
+  only ever fail on one of them. The difference is real: `int()` parses non-ASCII digits, so
+  under `\d` a row planted on the volume with Arabic-Indic digits counts as a used number
+  and moves the counter. A writer on the persistent volume is the adversary `SECURITY.md`
+  names and the accreditation carries as a condition.
 ● **Verification could raise instead of returning a verdict.** An entry whose `key_id` is
   unhashable, a list or a dict, made the key lookup raise `TypeError` and verification exit
   by exception. The journal's loader type-checks every field before it builds an entry, so
@@ -156,12 +175,14 @@ Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of 
 still describing the pre-split dependency tree and on a test count in this file that had
 never been measured. The verification loop is red at some commits of this release and green
 at others, and `docs/GATE-RECORDS.md` carries the commit, the verdict and the findings for
-each gate run. Neither the V2.2 rows there nor this paragraph carry a test count or a
-coverage figure, because a figure describing a tree does not belong in a release note: this
-one has carried a wrong count three separate ways, most recently in the commit written to
-stop exactly that. Be exact about the scope of that claim, because it was written as though
-it held of the whole file: the V2.3 rows DO quote counts, deliberately, because in that
-release the counts were themselves the finding. The sweep-cost figures in this
+each gate run. THIS PARAGRAPH carries no test count and no coverage figure, because a
+figure describing a tree does not belong in a release note: this one has carried a wrong
+count three separate ways, most recently in the commit written to stop exactly that.
+`docs/GATE-RECORDS.md` does quote them, in the V2.2 rows and the V2.3 rows alike, because in
+both releases a figure was itself the finding. Be exact about the scope, because this
+sentence has now been wrong twice in opposite directions: it first claimed the whole file
+carried none, and the correction then claimed the V2.2 rows carried none, which seven counts
+and a coverage figure in those rows falsify. The sweep-cost figures in this
 file are read back by `tests/test_sweep_cost_figures.py`. The others are measurements
 recorded at the time they were taken, and they are not read back: the 82 pre-deployment
 checks, the image layer count, and the refusal-flood sizing. Saying more than that is how

@@ -2433,6 +2433,33 @@ def test_the_audit_cap_covers_every_registers_widest_possible_entry() -> None:
         )
 
 
+def test_a_stored_identifier_in_non_ascii_digits_does_not_move_the_counter() -> None:
+    r"""`next_id` matches `[0-9]`, and something has to be able to break that.
+
+    Nothing could. The digit class at `records.py:249` was inert: reverting it to the
+    Unicode-aware `\d` left the whole suite green, while its sibling in the LINK grammar was
+    pinned. A test that names the parity of the two halves as the reason for a tightening,
+    while only one half can fail, is half a test.
+
+    The difference is measurable and it is not cosmetic, because `int()` parses non-ASCII
+    digits: the Arabic-Indic form of 0001 parses as 1, and of 9999 as 9999. Under `\d` a row
+    planted on the volume with Arabic-Indic digits would be counted as a used number and
+    could push the next identifier arbitrarily high. Under `[0-9]` it is not a number this
+    application issued, so it is ignored. A writer on the persistent volume is the adversary
+    `SECURITY.md` names and the accreditation carries as a condition, so this is the right
+    direction of failure rather than a curiosity.
+    """
+    planted = [
+        {"id": "IDTA-\u0669\u0669\u0669\u0669", "title": "planted"},
+        {"id": "IDTA-0002", "title": "real"},
+    ]
+
+    assert records.next_id(planted, "IDTA") == "IDTA-0003", (
+        "a stored identifier written in non-ASCII digits was counted as one this "
+        "application issued, so a volume writer can move the identifier counter."
+    )
+
+
 @pytest.mark.parametrize("register", sorted(records.REGISTERS))
 def test_every_register_issues_distinct_identifiers(signed_in: FlaskClient, register: str) -> None:
     """Two records in one register must never share an identifier.
