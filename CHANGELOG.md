@@ -34,9 +34,11 @@ tightened and held by no test, a comment stating a superseded figure, a deviatio
 was explicitly not the one taken. A fourth round closed those and returned one MAJOR
 and six MINORs, the MAJOR being a blank line that had been relocated rather than removed
 and so still split the gate table. A fifth round closed the
-MAJOR and found four more, every one of them in a shipped record: two counts that the tree
-does not support and two paragraphs whose positional claims about a table no longer matched
-the table. Not one finding across any of those rounds was in the running application's
+MAJOR and returned four more with three MINORs, every one in a shipped record: two counts
+the tree does not support, a positional claim about a table a later insertion had moved, and
+a table split by prose. A sixth then found that the test written to close that class did not
+close it, and named four rows losing content to an unescaped pipe that no reading had
+caught. Not one finding across any of those rounds was in the running application's
 security controls. The register fixes held under mutation, the Article 28(2) invariant held
 on six routes to APPROVED, and the 27-check evidence record reproduced independently.
 
@@ -110,15 +112,20 @@ on six routes to APPROVED, and the 27-check evidence record reproduced independe
   creation and gave no protection afterwards, so a title could be blanked and the record
   left with no name in any list an assessor reads. `agreement` was not exposed: its link
   format rejects an empty string first, so it survived by accident rather than by design.
-● **Table integrity in shipped documents is now held by a test, not by care.** A blank line
-  terminates a Markdown table, so a row below one renders as a paragraph of pipe characters.
-  `docs/GATE-RECORDS.md` had its newest gate verdicts stranded that way twice, and three
-  consecutive careful readings each fixed one instance and missed or created another. The
-  new test walks every shipped document, groups contiguous pipe-delimited lines, and
-  requires each run to open with a header and a delimiter. It found a fourth broken table on
-  its first run, in the `docs/DEPLOYMENT.md` deferred-by-design table, which no gate had
-  reached. A defect that survives three careful readings is a missing test rather than a
-  carelessness problem.
+● **A shipped table's STRUCTURE is now held by a test.** Three ways a table silently does
+  not render as written, each found here. A blank line terminates it, so a row below one
+  becomes a paragraph of literal pipe characters. A row with the wrong cell count loses the
+  columns it does not reach, or has its excess discarded. And an unescaped pipe inside a
+  code span splits the cell there, so the rest of the row vanishes from the render while the
+  source still looks complete. That last one was dropping the tails of four V2.2 gate
+  verdicts and about 3,200 characters of one residual row, in the document an assessor reads
+  to see what each binding gate returned. Nothing in the source looked wrong.
+  Be exact about what is held, because the first version of this test claimed to close the
+  class and did not: it read only lines beginning with a pipe and only the first two lines of
+  a run, so it was green with two broken tables in the tree, one of them inside the very
+  table it was written to protect. What is held now is structural, and only that: header and
+  delimiter, cell count, closing pipe. A row can still say something false in a well-formed
+  cell and no test here will notice.
 ● **The issuing half of the identifier grammar was inert.** `next_id` matched `[0-9]` and
   reverting it to Unicode-aware `\d` left the whole suite green, while its sibling in the
   LINK grammar was pinned, so a test naming the parity of the two halves as its reason could
@@ -180,9 +187,11 @@ figure describing a tree does not belong in a release note: this one has carried
 count three separate ways, most recently in the commit written to stop exactly that.
 `docs/GATE-RECORDS.md` does quote them, in the V2.2 rows and the V2.3 rows alike, because in
 both releases a figure was itself the finding. Be exact about the scope, because this
-sentence has now been wrong twice in opposite directions: it first claimed the whole file
-carried none, and the correction then claimed the V2.2 rows carried none, which seven counts
-and a coverage figure in those rows falsify. The sweep-cost figures in this
+sentence has now been wrong three times: it first claimed the whole file carried none, the
+correction then claimed the V2.2 rows carried none, and the correction to THAT said seven
+counts and a coverage figure when those rows carry fourteen count mentions and two coverage
+figures. No number is asserted here now, which is the only version of this sentence that
+cannot go stale. The sweep-cost figures in this
 file are read back by `tests/test_sweep_cost_figures.py`. The others are measurements
 recorded at the time they were taken, and they are not read back: the 82 pre-deployment
 checks, the image layer count, and the refusal-flood sizing. Saying more than that is how
