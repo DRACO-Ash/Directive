@@ -27,8 +27,13 @@ of materials and the lockfile nesting legs never ran. That commit's message asse
 count measured against a different tree, which is the rule the two previous FAILs were
 about. Three shipped records were wrong. And the security gate found that a complete
 transfer risk assessment could not be created at all. Every row, with what each gate found,
-is in `docs/GATE-RECORDS.md`. Not one finding across either run was in the running
-application's security controls: the register fixes held under mutation, the Article 28(2)
+is in `docs/GATE-RECORDS.md`. A third round at `896ee9f` then took the security gate to
+**PASS** and the engineering gate to **FAIL** again, on four MAJORs: an identifier grammar
+tightened and held by no test, a comment stating a superseded figure, a deviation row in
+`docs/DEPLOYMENT.md` still recording the old cap, and the OWASP note describing a fix that
+was explicitly not the one taken. A fourth round closed those and found one more, a blank
+line that had been relocated rather than removed and so still split the gate table. Not one
+finding across any of those rounds was in the running application's security controls: the register fixes held under mutation, the Article 28(2)
 invariant held on six routes to APPROVED, and the 27-check evidence record reproduced
 independently.
 
@@ -102,6 +107,12 @@ independently.
   creation and gave no protection afterwards, so a title could be blanked and the record
   left with no name in any list an assessor reads. `agreement` was not exposed: its link
   format rejects an empty string first, so it survived by accident rather than by design.
+● **Verification could raise instead of returning a verdict.** An entry whose `key_id` is
+  unhashable, a list or a dict, made the key lookup raise `TypeError` and verification exit
+  by exception. The journal's loader type-checks every field before it builds an entry, so
+  nothing untrusted reaches it, and it is fixed anyway: "a verdict, never an exception" is
+  stated with no reachability caveat, the two hash columns beside it were already hardened
+  against the same shape, and an unreachable path is one refactor from being reachable.
 ● **A tightened identifier grammar was held by no test.** The LINK format gate moved from
   Unicode-aware `\d` to `[0-9]`, so both halves of one identifier grammar agree, and the
   whole suite stayed green with the tightening reverted: every existing test sent a
@@ -145,10 +156,12 @@ Engineering review **FAIL** at `c4a33cf`, on the Continuous Integration bill of 
 still describing the pre-split dependency tree and on a test count in this file that had
 never been measured. The verification loop is red at some commits of this release and green
 at others, and `docs/GATE-RECORDS.md` carries the commit, the verdict and the findings for
-each gate run. It records no test count and no coverage figure, and neither does this
-paragraph, because a figure describing a tree does not belong in a release note: this one
-has carried a wrong count three separate ways, most recently in the commit written to stop
-exactly that. The sweep-cost figures in this
+each gate run. Neither the V2.2 rows there nor this paragraph carry a test count or a
+coverage figure, because a figure describing a tree does not belong in a release note: this
+one has carried a wrong count three separate ways, most recently in the commit written to
+stop exactly that. Be exact about the scope of that claim, because it was written as though
+it held of the whole file: the V2.3 rows DO quote counts, deliberately, because in that
+release the counts were themselves the finding. The sweep-cost figures in this
 file are read back by `tests/test_sweep_cost_figures.py`. The others are measurements
 recorded at the time they were taken, and they are not read back: the 82 pre-deployment
 checks, the image layer count, and the refusal-flood sizing. Saying more than that is how

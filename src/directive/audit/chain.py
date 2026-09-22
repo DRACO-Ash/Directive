@@ -301,7 +301,12 @@ def _verify_one(
     linked = _check_link(index, entry, expected_previous)
     if linked is not None:
         return linked
-    key = keys.get(entry.key_id)
+    # `keys.get` raises TypeError on an unhashable key id, which would exit verification by
+    # exception rather than by verdict. The journal's loader type-checks every field before
+    # it builds an entry, so this is not reachable from the untrusted boundary today; the
+    # hard rule is a verdict for EVERY input, with no reachability caveat, and the two hash
+    # columns above are already hardened against exactly this shape.
+    key = keys.get(entry.key_id) if isinstance(entry.key_id, str) else None
     if not key:
         return ChainVerdict(
             ok=False,

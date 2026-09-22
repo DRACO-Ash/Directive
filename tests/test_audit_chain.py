@@ -438,6 +438,27 @@ def test_a_configuration_fault_is_not_reported_as_tampering() -> None:
     assert "configuration fault" in verdict.summary()
 
 
+@pytest.mark.parametrize("key_id", [["k1"], {"k": 1}, {"k1"}, 1, None, b"k1"])
+def test_an_unhashable_key_id_returns_a_verdict_rather_than_raising(key_id: object) -> None:
+    """A verdict for EVERY input, with no reachability caveat.
+
+    `keys.get(entry.key_id)` raises `TypeError: unhashable type` for a list or a dict, so
+    verification would have exited by exception rather than by verdict. The journal's loader
+    type-checks every field before it builds an entry, so nothing untrusted reaches this
+    today, which is exactly why it was worth pinning: an unreachable path is one refactor
+    from being reachable, and the two hash columns beside it were already hardened against
+    the same shape.
+    """
+    chain, entries = build(1)
+    entries[0] = dataclasses.replace(entries[0], key_id=key_id)  # type: ignore[arg-type]
+
+    verdict = verify_log(entries, KEYS, chain.anchor())
+
+    assert not verdict.ok
+    assert verdict.key_unavailable
+    assert not verdict.tampered
+
+
 def test_a_real_break_reports_as_tampering() -> None:
     """The boundary in the other direction: the flag must not swallow a real attack."""
     chain, entries = build(2)

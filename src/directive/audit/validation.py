@@ -130,8 +130,12 @@ NAME_LIMIT = 48
 #: A comma-separated list of field names. Names only, for the reason above. The list as a
 #: whole is capped at 256 bytes by FIELD_LIMITS and each NAME in it at `NAME_LIMIT` bytes.
 #: This pattern constrains the SHAPE; it cannot tell a field name from a sentence written
-#: like one, and it never could. `NAME_LIMIT` is what does that, by refusing a name long
-#: enough to be a sentence. Read both, because neither is the control on its own.
+#: like one, and it never could. `NAME_LIMIT` BOUNDS it rather than solving it, by refusing a
+#: name long enough to be a whole sentence. Be exact, because this comment over-claimed once:
+#: `jane_doe_reported_theft_of_her_laptop` is 37 bytes and passes, and content split across
+#: the comma the grammar requires passes in pieces. What the pair buys is that no single
+#: entry can carry a paragraph; caller discipline carries the rest, as it does for
+#: `old_state` and `new_state` above. Read all three, because none is the control alone.
 _FIELD_NAMES = re.compile(
     r"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(,[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*)*\Z"
 )
