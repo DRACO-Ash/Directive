@@ -17,7 +17,7 @@ than optional, because an assessment that does not name its instrument is exactl
 the register exists to stop: the two drift apart and neither evidences the other.
 
 Every assessment must also record whether the controller authorised the transfer, and the
-application refuses the approving transition until it does. UK GDPR Article 28(2) is the
+application refuses the approving transition while that field is unset or `NOT_OBTAINED`. UK GDPR Article 28(2) is the
 reason: a processor may not engage a sub-processor without the controller's prior
 authorisation. The question is asked of every transfer rather than only of one whose importer
 is recorded as a sub-processor, so the refusal does not depend on the agreement record being

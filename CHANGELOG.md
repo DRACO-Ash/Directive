@@ -102,12 +102,25 @@ independently.
   creation and gave no protection afterwards, so a title could be blanked and the record
   left with no name in any list an assessor reads. `agreement` was not exposed: its link
   format rejects an empty string first, so it survived by accident rather than by design.
+● **A tightened identifier grammar was held by no test.** The LINK format gate moved from
+  Unicode-aware `\d` to `[0-9]`, so both halves of one identifier grammar agree, and the
+  whole suite stayed green with the tightening reverted: every existing test sent a
+  well-formed identifier, which passes the format gate and dies a layer later at
+  referential integrity, so the refusal line never executed. Third finding in a row about a
+  control left unheld, which is the pattern rather than the incident.
 ● **The version bump disarmed the test holding the packaging version guard.** The test
   pinned the literal `version = "2.2"` to spoil the manifest, so bumping to 2.3 made the
   line a no-op and the test died on git's exit code rather than on the control. The guard
   in `scripts/build-package.sh` was left held by no passing test, and the verification loop
   was red. The version is now read out of the manifest and the substitution is asserted to
   have bitten, so the next bump cannot orphan the probe again.
+
+**A note on the figures in this file.** Every count and percentage here was measured on the
+tree it describes. Two were not, earlier in this release, and both were caught by a gate: a
+pass count taken from a run against a different tree, and a coverage figure truncated from
+one run and quoted against another. `docs/GATE-RECORDS.md` carries both. The rule in
+`CLAUDE.md` is to measure a figure before asserting it, and this release broke it twice
+before it held.
 
 **Open at this release.** The Managing Director's sign-off on the App Store target. Four
 submission fields: visibility, category, short description, full description. The

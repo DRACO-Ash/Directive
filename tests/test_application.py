@@ -2320,6 +2320,55 @@ def test_every_nav_entry_carries_its_own_title_and_subtitle(signed_in: FlaskClie
     assert page.count("data-sub=") == len(records.REGISTERS) + 3
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "IDTA-\u0660\u0660\u0660\u0661",
+        "IDTA-\u06f1\u06f2\u06f3\u06f4",
+        "IDTA-1",
+        "IDTA-001",
+        "idta-0001",
+        "TSK-0001",
+        "../agreements/IDTA-0001",
+        "IDTA-0001a",
+    ],
+)
+def test_a_link_that_fails_the_format_gate_is_refused_with_the_format_error(
+    signed_in: FlaskClient, value: str
+) -> None:
+    r"""The LINK format gate is a control, so something has to be able to break it.
+
+    It was not. The grammar was tightened from Unicode-aware `\d` to `[0-9]`, because
+    `next_id` issues `[0-9]` and the two halves of one identifier grammar must agree, and
+    the whole suite stayed green with the tightening reverted: every existing test sent a
+    WELL-FORMED identifier such as `IDTA-9999`, which passes the format gate and dies one
+    layer later at referential integrity. The refusal line itself was never executed.
+
+    That difference is real rather than cosmetic. `re.fullmatch(r"IDTA-\d{4,}", value)` is
+    true of `IDTA-` followed by Arabic-Indic digits and `[0-9]` is not, so the caller got
+    the wrong error from the wrong layer, and the grammar the code claimed was not the
+    grammar it enforced. Not exploitable, because no stored identifier can contain a
+    non-ASCII digit, and pinned here anyway: a control nothing can break is one edit from
+    being wrong.
+
+    `" IDTA-0001"` is deliberately NOT in this list. `check_value` strips the value before
+    it reaches the grammar, so a leading space is normalised rather than refused, and
+    asserting otherwise here would pin a behaviour the code does not have.
+    """
+    agreement = minimal_record(signed_in, "transfers")["agreement"]
+    assert agreement.startswith("IDTA-")
+
+    refused = signed_in.post(
+        "/api/registers/transfers",
+        json={"title": "format gate", "agreement": value},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400, refused.get_data(as_text=True)
+    assert "must name a record in the agreements register" in refused.get_json()["error"], (
+        f"{value!r} was refused, but not by the format gate: {refused.get_json()['error']!r}"
+    )
+
+
 @pytest.mark.parametrize("register", sorted(records.REGISTERS))
 def test_a_record_can_be_created_with_every_field_it_declares(
     signed_in: FlaskClient, register: str

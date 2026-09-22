@@ -115,10 +115,6 @@ OUTCOMES = frozenset({"SUCCESS", "FAILURE"})
 #: this rule without passing that vocabulary. TBC, re-verify the vocabulary with the ISM.
 _STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
 
-#: A comma-separated list of field names. Names only, for the reason above. Capped at 128
-#: bytes by FIELD_LIMITS, down from 512, which is a reduction and not a fix: a 79-byte
-#: snake-case sentence still satisfies both the pattern and the cap. Nothing here can tell
-#: a field name from a sentence written like one.
 #: The longest a single field NAME may be. This is the structural form of what the total
 #: `fields_changed` cap was approximating: a name is an identifier, and an identifier is not
 #: a sentence. The case the total cap was tightened to 128 for was
@@ -131,6 +127,11 @@ _STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
 #: per the rule in CLAUDE.md, so it is set with room rather than at the current maximum.
 NAME_LIMIT = 48
 
+#: A comma-separated list of field names. Names only, for the reason above. The list as a
+#: whole is capped at 256 bytes by FIELD_LIMITS and each NAME in it at `NAME_LIMIT` bytes.
+#: This pattern constrains the SHAPE; it cannot tell a field name from a sentence written
+#: like one, and it never could. `NAME_LIMIT` is what does that, by refusing a name long
+#: enough to be a sentence. Read both, because neither is the control on its own.
 _FIELD_NAMES = re.compile(
     r"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(,[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*)*\Z"
 )
