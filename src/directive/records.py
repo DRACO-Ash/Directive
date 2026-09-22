@@ -204,8 +204,6 @@ FIELD_CAPS: dict[str, int] = {
     "safeguards": 2000,
 }
 
-_ID = re.compile(r"\A[A-Z]{3}-[0-9]{4}\Z")
-
 
 class AppendsAudit(Protocol):
     """Whatever this module writes its entries through.
@@ -232,8 +230,28 @@ def now() -> str:
 
 
 def next_id(rows: list[dict[str, Any]], prefix: str) -> str:
-    """Return the next identifier for a register, as PREFIX-0001."""
-    used = [int(row["id"].split("-")[1]) for row in rows if _ID.match(str(row.get("id", "")))]
+    """Return the next identifier for a register, as PREFIX-0001.
+
+    Matched against the prefix ACTUALLY IN PLAY, never a general identifier shape. The
+    previous version tested every row against `[A-Z]{3}-[0-9]{4}`, which was true of `TSK`,
+    `INC` and `RSK` and false of the four-character `IDTA`. So no existing agreement ever
+    matched, `used` was always empty, and every record in that register was issued
+    `IDTA-0001`.
+
+    Three controls failed together, which is why this is matched on the prefix rather than
+    patched to four letters. An audit entry's `resource_id` is what says which record an
+    action touched, and it said the same thing for every one. `store.find` returns the first
+    match, so records after the first could not be read or corrected through any route the
+    application exposes. And a transfer assessment's link passed referential integrity
+    against an identifier that named several different agreements, which is the drift the
+    link exists to stop.
+    """
+    pattern = re.compile(rf"\A{re.escape(prefix)}-([0-9]{{4,}})\Z")
+    used = [
+        int(found.group(1))
+        for row in rows
+        if (found := pattern.match(str(row.get("id", "")))) is not None
+    ]
     return f"{prefix}-{max(used, default=0) + 1:04d}"
 
 
@@ -303,11 +321,17 @@ def check_fields(
             # still refused by a register that would never read it.
             raise RecordError(f"{name[:64]!r} is not a field of the {register} register")
         clean[name] = check_value(name, value)
-    if complete and not clean.get("title"):
-        raise RecordError("every record needs a title")
-    for required in REGISTERS[register].get("requires", ()):
+    #: A required field must be present on a CREATE, and must not be emptied by an UPDATE
+    #: that names it. The second half was missing, so a partial update carrying a blank
+    #: title returned 200 and stored an empty one: the requirement held only at the moment
+    #: of creation and provided no protection afterwards. `agreement` survived by accident,
+    #: because the link format rejects an empty string before this is reached.
+    for required in ("title", *REGISTERS[register].get("requires", ())):
+        article = "an" if required[0] in "aeiou" else "a"
         if complete and not clean.get(required):
-            raise RecordError(f"every {register} record needs {required!r}")
+            raise RecordError(f"every {register} record needs {article} {required}")
+        if not complete and required in clean and not clean[required]:
+            raise RecordError(f"{required!r} cannot be emptied once a record has one")
     if not clean:
         raise RecordError("nothing to change")
     return clean
@@ -323,8 +347,21 @@ def check_value(name: str, value: str) -> str:
     kind, detail = FIELD_KINDS[name]
     value = value.strip()
     if kind == DATE:
-        #: An ISO calendar date, and `fromisoformat` is strict about real ones: it refuses
-        #: the 31st of February rather than rolling it forward.
+        #: The CANONICAL form first, then the calendar check. `fromisoformat` alone is not
+        #: the strict parser this comment used to claim: since Python 3.11 it accepts the
+        #: whole ISO 8601 grammar, so `2026-W01-1`, `2026W011` and `20260101` were all
+        #: ACCEPTED and silently rewritten to a different-looking date. `2026-W01-1` stored
+        #: as `2025-12-29`, a year earlier than the operator typed.
+        #:
+        #: That broke the hard rule directly: a field is rejected at the boundary, never
+        #: coerced. It was worse in combination with the no-op guard below, because setting
+        #: a review date to a week form that happened to resolve to the stored value
+        #: returned HTTP 200 and wrote no audit entry at all: the operator believed they had
+        #: moved the date, nothing had moved, and no line recorded the attempt.
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            raise RecordError(f"{name!r} must be a date as YYYY-MM-DD, not {value[:64]!r}")
+        #: And `fromisoformat` IS strict about real calendar dates, which is what it is for
+        #: here: it refuses the 31st of February rather than rolling it forward.
         try:
             parsed = date.fromisoformat(value)
         except ValueError:

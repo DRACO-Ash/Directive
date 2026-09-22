@@ -1,6 +1,6 @@
 [project]
 name = "directive"
-version = "2.2"
+version = "2.3"
 description = "Directive, the Bluestaq Ltd compliance operations console"
 requires-python = ">=3.12"
 

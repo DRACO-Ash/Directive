@@ -10,6 +10,15 @@ Each row names the commit the gate actually ran against, which is not always the
 that merged. Where a verdict predates this file and cannot be recovered from the tree, the
 row says so rather than reconstructing it.
 
+**Every commit identifier in the V2.1 and V2.2 sections below names an object that no longer
+exists.** The history was rewritten on 2026-09-13 to excise two COMMERCIAL IN CONFIDENCE
+policy instruments from all 128 commits, which rewrote every commit after the first one
+touched and issued new identifiers for all of them. `git show ee7a1e1` and its siblings now
+return "Not a valid object name". The identifiers are kept rather than renumbered, because
+they are what the gate returned at the time and a reconstructed identifier would be a
+fabrication. Read them as the sequence the gates ran in, not as objects to check out. The
+V2.3 section onward names live objects.
+
 ## V2.2
 
 | Date | Gate | Commit | Verdict | What it found |
@@ -133,6 +142,13 @@ row says so rather than reconstructing it.
 | 2026-09-13 | `engineering-reviewer`, fifty-third pass | `7ff65a6` | **NO VERDICT** | Commissioned in parallel with the run above and killed mid-pass by a container restart, so it returned nothing. Recorded rather than omitted, because a commissioned gate that produced no verdict is not the same as a gate that passed, and the next engineering pass scores `7ff65a6` and this commit together rather than treating the former as reviewed. |
 | 2026-09-13 | `security-reviewer`, fifty-ninth run | `e4b93f2` | **FAIL** | Two BLOCKERs and two MAJORs. `_mentions_any` matched only a bare `ast.Name`, so the ordinary spelling `typing.Any` walked past the pin the commit had just written to refuse `Any` "by shape rather than by spelling". With the chain `Any` again, it added a `records.py` helper whose `rows: list[...]` parameter inherited the declared seam, because the seam was keyed module-and-name rather than module-and-function, and built the entry as `dict(zip(...))` so the source-address backstop, which requires an `ast.Dict`, never looked either. An unauthenticated `GET /auth/callback` then put an attacker-chosen actor into a durable signed entry that `verify_log` confirmed sound at `ok=True`, with format, lint, strict types, bandit and the whole suite green. Its sharpest observation is the one the row below had already half-stated: the two layers are NOT independent, because layer two typing the chain is the only thing that makes mypy reject feeding it to layer one's seam, so defeating layer two defeats both at once. |
 | 2026-09-13 | `engineering-reviewer`, fifty-fourth pass | `df71457..e4b93f2`, both commits | **FAIL** | Two BLOCKERs, two MAJORs, two MINORs, from twenty-one mutations of which it re-placed six for landing red for the wrong reason. It found a simpler defeat than the security run's and one that needs no seam at all: `_list_names_bound_in` inspects only `ast.AnnAssign`, so `buf: list[dict[str, str]] = []` earns the exemption permanently and a later plain `buf = current_app.extensions[_HALF + "chain"]` inherits it. Both layers go silent together, layer one because the name is still on the exempt set and layer two because a split key never matches the literal it looks for. It measured four spellings of `Any` green, including a `TypeAlias` and a quoted annotation, and it disproved this file's claim that layer one covers the split-key gap, twice. It also confirmed the `CHAIN_EXTENSION_NAME` rename was right and measured its true cost at THREE figures rather than the two recorded: the two rule costs and `EXPECTED_BEYOND_THE_DOUBLE`. |
+
+## V2.3
+
+| Date | Gate | Commit | Verdict | What it found |
+| --- | --- | --- | --- | --- |
+| 2026-09-22 | `security-reviewer` | `a3741c8` | **FAIL** | Three defects in the new register code, each reproduced here before it was fixed. The identifier pattern assumed a three-letter prefix, so `next_id` returned `IDTA-0001` on four consecutive calls: two records sharing an identifier cannot be told apart in the audit log, only the first is addressable through `store.find`, and the required assessment-to-agreement link resolves to whichever came first. `check_value("due", "2026-W01-1")` returned `'2025-12-29'`, a coercion to a different day, against the hard rule that a value is rejected at the boundary and never coerced; combined with the no-op guard it answered 200 having written no audit entry, so the log did not record the change the caller believed they had made. And a required field could be emptied by a partial update, because the requirement held only at create. All three fixed, each held by a test that was mutation-proven by restoring the original defect. |
+| 2026-09-22 | `deploy-gate` | `a3741c8` | **FAIL** | Five blockers, all verified independently rather than accepted from the report. The three code defects above. The shipped records described three registers while the tree shipped five: `agreements`, `transfers`, `IDTA` and `Transfer Risk` appeared zero times in the accreditation record, the OWASP record and the changelog. And no version bump: `pyproject.toml` still read V2.2. Two blockers remain with their owners rather than with this build, unchanged since the first deploy-gate run: the Managing Director's sign-off on the App Store target, and the App Store submission fields. |
 
 ## Accepted residual
 

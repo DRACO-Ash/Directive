@@ -1,4 +1,4 @@
-# OWASP Top 10 test record, V2.1
+# OWASP Top 10 test record, V2.1, with a V2.3 addendum
 
 Bluestaq Ltd, Directive (`directive`). Required by AMD-001 section 10.6: "applications are tested against the OWASP Top 10 before production deployment and annually thereafter". This is the pre-deployment test. The annual external test is AMD-001 11.5, first cycle September 2026, and is separate.
 
@@ -177,6 +177,52 @@ The only outbound call is the token exchange with Entra ID. The host is a consta
 | redirect_uri is the configured value, not request-derived | configured REDIRECT_URI | `https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/oauth2/v2.0/auth...` | Passed |
 | Host header spoof does not alter redirect_uri | configured REDIRECT_URI | `https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/oauth2/v2.0/auth...` | Passed |
 
+## Addendum, V2.3: the transfer agreement and transfer risk assessment registers
+
+| Item | Value |
+| --- | --- |
+| Why an addendum | V2.1 tested three registers. V2.3 ships five. The two new ones carry the Article 28(2) invariant, a required cross-register link, and four new closed vocabularies, so the V2.1 result does not cover them and must not be read as though it did. |
+| Commit tested | working tree at `a3741c8` plus the uncommitted V2.3 changes, re-run and re-recorded at the release commit below |
+| Date | 2026-09-22 |
+| Method | As above: real requests over the WSGI interface in development mode. The probe is `owasp_transfer_probe.py`, retained in the session scratchpad. |
+| Result | 27 checks, 27 passed, 0 failed. One observation recorded below; it is not a failure of a control that exists. |
+
+These rows extend A01 (access control and cross-register reference), A03 (injection, coercion and the closed vocabularies), A04 (the Article 28(2) design invariant) and A09 (what reaches the log).
+
+| Test | Expected | Observed | Result |
+| --- | --- | --- | --- |
+| unauthenticated GET /api/registers/agreements | 401/403 or redirect to sign-in | `401` | Passed |
+| unauthenticated POST /api/registers/agreements | 401/403 or redirect to sign-in | `401` | Passed |
+| unauthenticated GET /api/registers/transfers | 401/403 or redirect to sign-in | `401` | Passed |
+| unauthenticated POST /api/registers/transfers | 401/403 or redirect to sign-in | `401` | Passed |
+| unauthenticated PATCH /api/registers/transfers/TRA-0001 | 401/403 or redirect to sign-in | `401` | Passed |
+| authenticated POST /api/registers/agreements issues a prefixed identifier | an IDTA-nnnn identifier, distinct per record | `201 IDTA-0001` | Passed |
+| a second agreement does not reuse the first identifier | an identifier unequal to the first | `IDTA-0001 then IDTA-0002` | Passed |
+| cross-register id reference (agreement id via transfers) | 400 or 404, never 200 or 500 | `400` | Passed |
+| POST /api/registers/transfers with no agreement | 400, the assessment refuses to exist unanchored | `400 every transfers record needs an agreement` | Passed |
+| POST /api/registers/transfers naming an agreement that does not exist | 400, never a stored dangling reference | `400 there is no agreements record 'IDTA-9999' to link to` | Passed |
+| POST /api/registers/transfers with a traversal string as the agreement | 400, never 200 or 500 | `400` | Passed |
+| POST /api/registers/transfers naming a real agreement | 201 and a TRA-nnnn identifier | `201 TRA-0001` | Passed |
+| approve a transfer whose importer is a sub-processor with authorisation NOT_OBTAINED | 400, UK GDPR Article 28(2) refuses the transition | `400 this record cannot be APPROVED yet. UK GDPR Article 28(2): a processor` | Passed |
+| approve the same transfer once it records a SPECIFIC authorisation | 200, the invariant lifts on the recorded fact and not on a retry | `200` | Passed |
+| non-canonical date '2026-W01-1' on review_by | 400, refused rather than rewritten to a different day | `400, stored None` | Passed |
+| non-canonical date '20260101' on review_by | 400, refused rather than rewritten to a different day | `400, stored None` | Passed |
+| non-canonical date '2026-1-1' on review_by | 400, refused rather than rewritten to a different day | `400, stored None` | Passed |
+| state outside its closed vocabulary ('APPROVED_BY_ME') | 400, the vocabulary is a closed set not a free string | `400` | Passed |
+| importer_role outside its closed vocabulary ('PARTNER') | 400, the vocabulary is a closed set not a free string | `400` | Passed |
+| authorisation outside its closed vocabulary ('MAYBE') | 400, the vocabulary is a closed set not a free string | `400` | Passed |
+| severity outside its closed vocabulary ('CATASTROPHIC') | 400, the vocabulary is a closed set not a free string | `400` | Passed |
+| an undeclared field name on transfers | 400, the field set is an allowlist | `400` | Passed |
+| a value over the declared cap on safeguards | 400, capped at the boundary and never truncated | `400` | Passed |
+| a stored script tag in an agreement title, rendered in the console | escaped, never live markup | `<script>alert(1)</script> in page: False` | Passed |
+| audit actions written for the two transfer registers | a distinct action per register mutation | `['IDTA_CREATED', 'TRA_CREATED', 'TRA_UPDATED']` | Passed |
+| the Article 28(2) refusal reaches the audit log | a non-SUCCESS entry naming the transfer, or none if refusals are not register events | `0 non-SUCCESS entries for TRA-0001` | Passed |
+| record content in the audit log | none: the log records that a field changed, never its value | `0 entries carrying a submitted field value` | Passed |
+
+**Observation, not a failure: a refused state transition writes no audit entry.** Measured. Approving a transfer whose authorisation is `NOT_OBTAINED` returns 400 and the audit log holds the same number of entries before and after. The control held and the record did not change, so nothing was lost. What an assessor cannot answer from the log is whether anyone ATTEMPTED an approval that Article 28(2) refused. AUD-001 requires a record of every failed AUTHENTICATION, which this build writes; it does not require one for a refused register transition, so this is a gap in usefulness rather than in policy conformance. Recorded here rather than closed, because closing it means writing an audit entry on a path that currently raises before the chain is touched, and that is a change to the mutation path rather than an addition to it.
+
+**Observation: the Article 28(2) invariant reads the assessment's own `authorisation` field, not the linked agreement's `importer_role`.** So an assessment whose importer is a controller rather than a sub-processor is also held at `DRAFT` until the field is set, and `NOT_APPLICABLE` is the value that releases it. That is deliberate: the question is asked of every transfer and answered explicitly, rather than being skipped whenever a role field happens to say `CONTROLLER`. It means the invariant does not depend on the agreement record being correct.
+
 ## Actions arising
 
 | Action | Owner | When |
@@ -187,3 +233,4 @@ The only outbound call is the token exchange with Entra ID. The host is a consta
 | Size an edge rate limiter against the A04 residual, or accept it | Platform team, ISM | Before production use |
 | Replace the superseded Application Insights alerting, AUD-001 amendment | ISM | `TBC, re-verify` |
 | Annual re-test | ISM | September 2027, alongside AMD-001 11.5 |
+| Decide whether a refused register transition should write an audit entry, per the V2.3 observation | ISM | `TBC, re-verify` |

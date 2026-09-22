@@ -2318,3 +2318,100 @@ def test_every_nav_entry_carries_its_own_title_and_subtitle(signed_in: FlaskClie
     page = signed_in.get("/console").get_data(as_text=True)
     assert page.count("data-title=") == len(records.REGISTERS) + 3
     assert page.count("data-sub=") == len(records.REGISTERS) + 3
+
+
+@pytest.mark.parametrize("register", sorted(records.REGISTERS))
+def test_every_register_issues_distinct_identifiers(signed_in: FlaskClient, register: str) -> None:
+    """Two records in one register must never share an identifier.
+
+    Parametrised over EVERY register, because the defect this catches was invisible to
+    coverage that exercised only the three-letter prefixes. `next_id` matched rows against
+    `[A-Z]{3}-[0-9]{4}`, true of TSK, INC and RSK and false of the four-character IDTA, so
+    every agreement was issued `IDTA-0001`. The existing assertion that an identifier
+    `startswith("IDTA-")` passed the whole time the defect was live.
+
+    Three controls failed together. An audit entry's `resource_id` named the same record for
+    all of them; `store.find` returns the first match, so records after the first could not
+    be read or corrected by any route; and a transfer assessment's link passed referential
+    integrity against an identifier that named several different agreements.
+    """
+    seen = []
+    for _ in range(3):
+        payload = minimal_record(signed_in, register)
+        created = signed_in.post(
+            f"/api/registers/{register}", json=payload, headers=token_for(signed_in)
+        )
+        assert created.status_code == 201, created.get_data(as_text=True)
+        seen.append(created.get_json()["record"]["id"])
+
+    assert len(set(seen)) == len(seen), (
+        f"{register} issued {seen}. Two records sharing an identifier cannot be told apart "
+        "in the audit log, and only the first can be read or corrected."
+    )
+    prefix = records.REGISTERS[register]["prefix"]
+    assert all(row.startswith(f"{prefix}-") for row in seen)
+
+
+@pytest.mark.parametrize(
+    "shape", ["2026-W01-1", "2026W011", "2026-W01", "2026W01", "20260101", "2026-1-1"]
+)
+def test_a_date_is_refused_rather_than_rewritten(signed_in: FlaskClient, shape: str) -> None:
+    """A field is rejected at the boundary, never coerced. This one was coerced.
+
+    `date.fromisoformat` accepts the whole ISO 8601 grammar since Python 3.11, so every
+    shape here was ACCEPTED and silently stored as a different-looking date. `2026-W01-1`
+    became `2025-12-29`, a year earlier than the operator typed, on the review date an
+    assessor reads.
+    """
+    refused = signed_in.post(
+        "/api/registers/tasks",
+        json={"title": "Review", "due": shape},
+        headers=token_for(signed_in),
+    )
+    assert refused.status_code == 400, (
+        f"{shape!r} was accepted and stored as "
+        f"{refused.get_json().get('record', {}).get('due')!r} rather than refused"
+    )
+
+
+def test_a_coerced_date_cannot_pass_as_a_silent_no_op(signed_in: FlaskClient) -> None:
+    """The coercion and the no-op guard combined into a change that left no trace.
+
+    Setting a review date to a week form that resolved to the stored value returned 200 and
+    wrote no audit entry: the operator believed the date had moved, it had not, and nothing
+    recorded the attempt.
+    """
+    headers = token_for(signed_in)
+    created = signed_in.post(
+        "/api/registers/risks",
+        json={"title": "A risk", "review_by": "2025-12-29"},
+        headers=headers,
+    ).get_json()["record"]
+    before = len(signed_in.get("/api/audit").get_json()["entries"])
+
+    response = signed_in.patch(
+        f"/api/registers/risks/{created['id']}",
+        json={"review_by": "2026-W01-1"},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert len(signed_in.get("/api/audit").get_json()["entries"]) == before
+
+
+def test_a_required_field_cannot_be_emptied_by_a_partial_update(
+    signed_in: FlaskClient,
+) -> None:
+    """The requirement held at creation and gave no protection afterwards."""
+    headers = token_for(signed_in)
+    created = signed_in.post(
+        "/api/registers/tasks", json={"title": "A real task"}, headers=headers
+    ).get_json()["record"]
+
+    for blank in ["", "   "]:
+        refused = signed_in.patch(
+            f"/api/registers/tasks/{created['id']}", json={"title": blank}, headers=headers
+        )
+        assert refused.status_code == 400, f"{blank!r} emptied a required field"
+
+    still = signed_in.get("/api/registers/tasks").get_json()["records"][0]
+    assert still["title"] == "A real task"

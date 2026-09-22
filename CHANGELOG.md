@@ -8,6 +8,83 @@ the release-level record the deploy gate reads.
 Dates are UTC. A release is not "shipped" until it is deployed, and nothing has been
 deployed yet, so every row below records a release that was cut, gated and merged.
 
+## V2.3, 2026-09-22, `a3741c8` and the fixes that follow it
+
+**Gates.** `deploy-gate` **FAIL** at `a3741c8`, on five blockers: neither binding review had
+seen the tree, the Managing Director's sign-off was outstanding, four required submission
+fields had no value, the signed accreditation described a three-register application while
+the package shipped five, and the version had not moved since 2026-09-10 although 1,778
+lines had. `security-reviewer` **FAIL** at `a3741c8`, two MAJORs and two MINORs, every one
+in application code rather than build machinery. It held the generated form against five
+cross-site scripting payloads, the drawer's patch path against missing and wrong tokens,
+referential integrity against traversal and oversize values, and the Article 28(2) invariant
+against six routes, and it proved eight of nine new controls by deleting them.
+
+**Changed.**
+
+● **Fields have a KIND.** Text stays capped; a date is an ISO calendar date; a choice is a
+  closed vocabulary; a link names a record in another register. Field acceptance is scoped
+  to the REGISTER rather than the application, so a task cannot carry a transfer agreement.
+  Until this release the application held a compliance operating rhythm with no concept of
+  when anything was due, and a risk register with no severity.
+● **Two registers for the restricted transfer.** `agreements` holds the International Data
+  Transfer Agreement and records the controller, exporter, importer and the importer's role
+  from a closed vocabulary. `transfers` holds the Transfer Risk Assessment and REQUIRES the
+  agreement it assesses; a link to an agreement that does not exist is refused rather than
+  stored.
+● **UK GDPR Article 28(2) is held by the application.** A transfer assessment cannot reach
+  `APPROVED` while the controller's authorisation is unset or `NOT_OBTAINED`, and the
+  refusal names the article and says what to record. First rule in this build that reasons
+  about a record as a whole rather than field by field.
+● **The console generates its form from the schema**, so a field added to a register appears
+  without a second edit, and a record opens in a drawer where every field is readable and
+  editable. Before this a record was write-only: the interface could not create a transfer
+  assessment at all, because `agreement` is required and no form offered it.
+● **The application is renamed to Directive**, slug `directive`, package `src/directive`,
+  environment prefix `DIRECTIVE_ENV`, host `directive.apps.bluestaq.com`.
+● **The shipped records caught up with the five-register reality**, which was a deploy-gate
+  blocker in its own right. `README.md` describes what the application holds. The OWASP Top
+  10 record carries a V2.3 addendum of 27 checks actually sent against the two new registers,
+  27 passed, with two observations recorded rather than closed: a refused state transition
+  writes no audit entry, and the Article 28(2) invariant reads the assessment's own
+  authorisation field rather than the linked agreement's importer role. The accreditation
+  record carries a re-review addendum, drafted and deliberately unsigned, naming which of the
+  seven AMD-001 10.4 confirmations this release touches. `docs/DEPLOYMENT.md` names all five
+  state vocabularies rather than the first three.
+
+**Fixed.**
+
+● **A no-op update wrote a permanent audit entry.** A double click on a state button put an
+  immutable signed row with an empty `fields_changed` into the evidence an assessor reads.
+  The test that should have caught it asserted the weaker property that the entry claimed no
+  transition, which was true of the defect.
+● **Every agreement was issued the identifier `IDTA-0001`.** `next_id` matched rows against
+  a three-letter prefix pattern, false of the four-character `IDTA`, so no existing record
+  ever matched. Three controls failed together: the audit entry's `resource_id` named the
+  same record for all of them, only the first could be read or corrected, and a transfer
+  assessment's link passed referential integrity against an identifier naming several
+  different agreements.
+● **A date was coerced rather than rejected.** `date.fromisoformat` accepts the whole ISO
+  8601 grammar, so `2026-W01-1` was stored as `2025-12-29`, a year earlier than typed, on
+  the review date an assessor reads. Combined with the no-op guard it returned HTTP 200 and
+  wrote no entry at all. This broke the hard rule that a field is rejected at the boundary
+  and never coerced.
+● **A required field could be emptied by a partial update.** The requirement held at
+  creation and gave no protection afterwards.
+
+**Open at this release.** The Managing Director's sign-off on the App Store target. Four
+submission fields: visibility, category, short description, full description. The
+`securityContext.fsGroup` and single sign-on gateway exemption requests. The container image
+has never been built or run, so its non-root user, setuid sweep, absent package manager and
+single layer are held by reading and by tests rather than by probing a built image.
+
+**A note on the commit references in this file and in `docs/GATE-RECORDS.md`.** History was
+rewritten on 2026-09-13 to excise two policy instruments from it, at the owner's
+instruction. Every commit identifier recorded before that date names an object that no
+longer exists in this repository. The verdicts are unchanged and the records are otherwise
+accurate; the identifiers are not resolvable and should be read as naming the pre-rewrite
+lineage.
+
 ## V2.2, 2026-09-10, `ee7a1e1` and the packaging change that follows it
 
 **Gates.** Recorded in `docs/GATE-RECORDS.md`, with the commit each ran against. Security

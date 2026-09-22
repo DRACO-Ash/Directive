@@ -61,3 +61,44 @@ Suggested, not decided:
 | Library 04 reference | `TBC, re-verify` |
 
 **This decision accredits the application. It does not authorise the deployment.** The deploy gate returned FAIL at `ee7a1e1` on items outside this review: the Managing Director's sign-off on the App Store target, and three App Store submission fields with no value. Both sit with their owners.
+
+## Re-review addendum, V2.3. Drafted, NOT signed.
+
+**The V2.2 decision above is signed and is not edited by this addendum.** V2.3 adds two registers to an application accredited with three, so the accreditation does not reach them until this addendum is signed. The decision row at the foot of this section is blank on purpose.
+
+| Item | Value |
+| --- | --- |
+| Release under review | V2.3, branch `claude/build-plan-review-q02bdb` |
+| What changed | Two registers, transfer agreements (`IDTA-nnnn`) and transfer risk assessments (`TRA-nnnn`). A required cross-register link from an assessment to the agreement it assesses. A record-level invariant holding UK GDPR Article 28(2). Four new closed vocabularies. A field-kind system that derives the console's controls from the register declaration. Three defects fixed, each named below. |
+| Test evidence | `docs/OWASP-TOP-10-TEST.md`, V2.3 addendum: 27 checks, 27 passed, 0 failed, measured 2026-09-22 |
+| Reviewer and decision owner | Ash Higgins, Information Security Manager and Data Protection Lead, as UK Information Security Officer |
+
+### Which of the seven confirmations this change touches
+
+| Confirmation | Effect of V2.3 | Reviewer action |
+| --- | --- | --- |
+| Authentication via Entra ID with MFA | **None.** The authentication module is unchanged. | None |
+| Authorisation enforcing least privilege | **Widened in reach, unchanged in kind.** Still one role, and that role now reads and writes two further registers, one of which holds the parties to a customer's international data transfer agreement. The access list is still the Entra assignment list. | Re-accept single-role access on the wider register set, or ask for role separation before the transfer registers carry live customer data |
+| Secure storage of secrets | **None.** No new secret and no new channel. | None |
+| Encrypted communications | **None.** Condition 1 of the V2.2 accreditation still stands and is still undischarged. | Carry condition 1 forward |
+| Input validation and output encoding | **Extended, and measured.** Four new closed vocabularies (`AGREEMENT_STATES`, `TRANSFER_STATES`, `IMPORTER_ROLES`, `AUTHORISATIONS`). A new DATE kind that refuses a non-canonical date rather than rewriting it. A new LINK kind whose format is checked pure and whose existence is checked at the mutation, so a dangling reference cannot be stored. Every field is capped. | Read the V2.3 addendum rows in the OWASP record |
+| Dependency vulnerability scanning | **None.** No dependency added; the lockfiles are unchanged. | None |
+| Annual penetration test scope | **Scope grew.** The September 2027 cycle should name the transfer registers explicitly. | Note against the AMD-001 11.5 scope |
+
+### Three defects found and fixed before this addendum was drafted
+
+Named because the V2.2 record says a control is unfinished until a mutation shows it can fail, and each of these was found by a gate rather than by the suite that was supposed to hold it.
+
+● **Identifier collision.** The identifier pattern assumed a three-letter prefix, so every agreement was issued `IDTA-0001`. Two records sharing an identifier cannot be told apart in the audit log, only the first is addressable, and the assessment-to-agreement link points at whichever came first. Fixed, and held by a test parametrised over every register.
+● **Date coercion.** `date.fromisoformat` accepted `2026-W01-1` and stored `2025-12-29`, a different day, which breaks the hard rule that a value is rejected at the boundary and never coerced. With the no-op guard in place it also returned 200 having written no audit entry at all, so the log did not record the change the caller believed they had made. Fixed by requiring the canonical form first, and held by a test over six non-canonical shapes.
+● **A required field emptied after creation.** The requirement held at create and not at update, so an assessment could be stripped of the agreement it assesses. Fixed, and held by a test.
+
+### Decision
+
+| Field | Entry |
+| --- | --- |
+| Decision | `TBC, re-verify`. Not yet taken. |
+| Rationale | `TBC, re-verify` |
+| Conditions | The four conditions of the V2.2 accreditation are unchanged and none is discharged. `TBC, re-verify` whether V2.3 adds a fifth. |
+| Reviewer | Ash Higgins, Information Security Manager and Data Protection Lead, as UK Information Security Officer |
+| Date | `TBC, re-verify` |
