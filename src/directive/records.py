@@ -375,9 +375,10 @@ def check_value(name: str, value: str) -> str:
         return value
     if kind == LINK:
         prefix = REGISTERS[detail]["prefix"]
-        if not re.fullmatch(rf"{prefix}-\d{{4,}}", value):
+        if not re.fullmatch(rf"{prefix}-[0-9]{{4,}}", value):
             raise RecordError(
-                f"{name!r} must name a {detail} record as {prefix}-0001, not {value[:64]!r}"
+                f"{name!r} must name a record in the {detail} register, "
+                f"as {prefix}-0001, not {value[:64]!r}"
             )
         return value
     cap = FIELD_CAPS[name]

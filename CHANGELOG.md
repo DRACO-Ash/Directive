@@ -20,6 +20,18 @@ cross-site scripting payloads, the drawer's patch path against missing and wrong
 referential integrity against traversal and oversize values, and the Article 28(2) invariant
 against six routes, and it proved eight of nine new controls by deleting them.
 
+Both gates then returned **FAIL** again at `f2e12f8`, the commit that answered them, and
+both were right. The version bump had disarmed the test holding the packaging version
+guard, so the verification loop was red and, under `set -eu`, the dependency scan, the bill
+of materials and the lockfile nesting legs never ran. That commit's message asserted a pass
+count measured against a different tree, which is the rule the two previous FAILs were
+about. Three shipped records were wrong. And the security gate found that a complete
+transfer risk assessment could not be created at all. Every row, with what each gate found,
+is in `docs/GATE-RECORDS.md`. Not one finding across either run was in the running
+application's security controls: the register fixes held under mutation, the Article 28(2)
+invariant held on six routes to APPROVED, and the 27-check evidence record reproduced
+independently.
+
 **Changed.**
 
 ● **Fields have a KIND.** Text stays capped; a date is an ISO calendar date; a choice is a
@@ -42,6 +54,23 @@ against six routes, and it proved eight of nine new controls by deleting them.
   assessment at all, because `agreement` is required and no form offered it.
 ● **The application is renamed to Directive**, slug `directive`, package `src/directive`,
   environment prefix `DIRECTIVE_ENV`, host `directive.apps.bluestaq.com`.
+● **The audit boundary caps a field NAME, and its total cap is measured.** At a
+  128-byte total, a transfer risk assessment naming all thirteen of its declared fields and
+  a starting state joined to 132 bytes, so the audit boundary refused the entry and the
+  create answered 400: the flagship register could not be created in full at all. Found by
+  the security gate, and it survived because nothing exercised the register declaration
+  against the audit cap; the console cannot reach it either, since the create form renders
+  the required fields only.
+  The obvious fix was wrong and is worth recording. That 128 was itself a deliberate
+  tightening from 512, made to stop record content wearing a field name's clothes, so simply
+  raising the number would have undone a privacy control to fix an availability one. The
+  sentence that tightening was aimed at is 79 bytes: it passed a 128-byte TOTAL cap on its
+  own and was only ever caught when doubled. A total cap was always a proxy for a rule about
+  each NAME. So the per-name cap is now explicit at 48 bytes, which refuses that sentence at
+  the first occurrence and keeps refusing it however many fields a register grows, and the
+  total is 256, which carries only what it claims: no single entry dominates the log. The
+  longest name any register declares is `data_categories` at 15 bytes. Both figures are held
+  by tests measured against the registers rather than asserted.
 ● **The shipped records caught up with the five-register reality**, which was a deploy-gate
   blocker in its own right. `README.md` describes what the application holds. The OWASP Top
   10 record carries a V2.3 addendum of 27 checks actually sent against the two new registers,
@@ -70,7 +99,15 @@ against six routes, and it proved eight of nine new controls by deleting them.
   wrote no entry at all. This broke the hard rule that a field is rejected at the boundary
   and never coerced.
 ● **A required field could be emptied by a partial update.** The requirement held at
-  creation and gave no protection afterwards.
+  creation and gave no protection afterwards, so a title could be blanked and the record
+  left with no name in any list an assessor reads. `agreement` was not exposed: its link
+  format rejects an empty string first, so it survived by accident rather than by design.
+● **The version bump disarmed the test holding the packaging version guard.** The test
+  pinned the literal `version = "2.2"` to spoil the manifest, so bumping to 2.3 made the
+  line a no-op and the test died on git's exit code rather than on the control. The guard
+  in `scripts/build-package.sh` was left held by no passing test, and the verification loop
+  was red. The version is now read out of the manifest and the substitution is asserted to
+  have bitten, so the next bump cannot orphan the probe again.
 
 **Open at this release.** The Managing Director's sign-off on the App Store target. Four
 submission fields: visibility, category, short description, full description. The

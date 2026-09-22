@@ -14,10 +14,15 @@ audit log, with sign-in against Microsoft Entra ID.
 
 A transfer risk assessment must name the agreement it assesses. That link is required rather
 than optional, because an assessment that does not name its instrument is exactly the failure
-the register exists to stop: the two drift apart and neither evidences the other. Where the
-importer is a sub-processor, UK GDPR Article 28(2) requires the controller's prior
-authorisation, and the application refuses the approving transition until the agreement
-records one.
+the register exists to stop: the two drift apart and neither evidences the other.
+
+Every assessment must also record whether the controller authorised the transfer, and the
+application refuses the approving transition until it does. UK GDPR Article 28(2) is the
+reason: a processor may not engage a sub-processor without the controller's prior
+authorisation. The question is asked of every transfer rather than only of one whose importer
+is recorded as a sub-processor, so the refusal does not depend on the agreement record being
+right, and `NOT_APPLICABLE` is the answer that releases it. The field is on the assessment,
+not on the agreement.
 
 **The obligation library is planned, not built.** Mapping UK GDPR articles, IASME themes and
 Def Stan 05-138 clauses to controls and evidence is the intended core of this application and

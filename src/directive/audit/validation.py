@@ -56,7 +56,22 @@ FIELD_LIMITS: dict[str, int] = {
     "outcome": 16,
     "source_ip": 45,
     "user_agent": 512,
-    "fields_changed": 128,
+    #: 256, measured, not 128. At 128 the flagship register could not be created at all: a
+    #: `transfers` record naming all thirteen of its declared fields and a starting state
+    #: joins to 132 bytes, so the audit boundary refused the entry and the create answered
+    #: 400, with `agreements` 16 bytes from the same wall. The direction of failure was
+    #: right - the entry appends before the register commits, so the file was untouched and
+    #: no orphan row was left - but the record could not be made.
+    #:
+    #: Read `NAME_LIMIT` below before changing this. The 128 figure was itself a TIGHTENING
+    #: from 512, made to stop record content wearing a field name's clothes, and raising
+    #: this number alone would have undone that: the sentence the tightening was aimed at
+    #: is 79 bytes and passed 128 on its own. A total cap was always a proxy for the rule
+    #: that actually matters, which is per NAME, so the per-name cap now carries it and this
+    #: number carries only what it says: no single entry dominates the log. Held by a test
+    #: that joins every register's full declared field set and asserts it fits, so the next
+    #: field added to a register cannot re-create the refusal silently.
+    "fields_changed": 256,
     "old_state": 32,
     "new_state": 32,
 }
@@ -104,6 +119,18 @@ _STATE = re.compile(r"\A[A-Z][A-Z0-9_]{0,31}\Z")
 #: bytes by FIELD_LIMITS, down from 512, which is a reduction and not a fix: a 79-byte
 #: snake-case sentence still satisfies both the pattern and the cap. Nothing here can tell
 #: a field name from a sentence written like one.
+#: The longest a single field NAME may be. This is the structural form of what the total
+#: `fields_changed` cap was approximating: a name is an identifier, and an identifier is not
+#: a sentence. The case the total cap was tightened to 128 for was
+#: ``jane_doe_reported_theft_of_her_laptop_at_home_address_12_example_street_reading``,
+#: which is record content spelled in snake case; at 79 bytes it passed a 128-byte TOTAL cap
+#: on its own and was only caught when doubled. Capping the name catches it at the first
+#: occurrence and keeps catching it however many fields a register grows. The longest name
+#: any register declares is `data_categories` at 15 bytes, so 48 is generous for a dotted
+#: name and still less than two thirds of that sentence. Tightening this later is one-way,
+#: per the rule in CLAUDE.md, so it is set with room rather than at the current maximum.
+NAME_LIMIT = 48
+
 _FIELD_NAMES = re.compile(
     r"\A[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(,[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*)*\Z"
 )
@@ -274,3 +301,10 @@ def _check_optional(snapshot: dict[str, str]) -> None:
             f"case field names, optionally dotted, got {snapshot['fields_changed']!r}. Names "
             f"only: a value would put record content into an immutable log."
         )
+    for field_name in snapshot["fields_changed"].split(","):
+        if len(field_name.encode()) > NAME_LIMIT:
+            raise AuditFieldError(
+                f"audit field 'fields_changed' carries a name of {len(field_name.encode())} "
+                f"bytes, over the per-name cap of {NAME_LIMIT}: {field_name[:64]!r}. A name "
+                f"that long is a sentence, and a sentence is record content."
+            )

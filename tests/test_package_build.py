@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -410,10 +411,19 @@ def test_a_nested_dockerfile_is_refused(clone: Path) -> None:
 def test_an_implausible_version_is_refused(clone: Path) -> None:
     """A slash in the version makes the recorded path and the written path disagree."""
     manifest = clone / "pyproject.toml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace('version = "2.2"', 'version = "2.2/../x"'),
-        encoding="utf-8",
+    #: Read the version out of the manifest rather than pinning the literal it held when
+    #: this test was written. The pinned form was `version = "2.2"`, so the V2.3 bump made
+    #: this line a no-op: nothing changed, `_commit` had nothing to stage, and the test
+    #: died on git's exit code rather than on the control it exists to hold. The control
+    #: was then held by no passing test, which is one edit from being wrong and is the
+    #: state this project has narrowed and re-defeated before. The assertion below is the
+    #: part that matters: it fails loudly if the substitution ever stops biting again.
+    text = manifest.read_text(encoding="utf-8")
+    spoilt, substitutions = re.subn(
+        r'(?m)^version = "([^"]+)"$', r'version = "\1/../x"', text, count=1
     )
+    assert substitutions == 1, "no version line to spoil, so this test no longer probes anything"
+    manifest.write_text(spoilt, encoding="utf-8")
     _commit(clone, "probe: implausible version")
     result = _build(clone)
 

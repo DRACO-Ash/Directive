@@ -91,7 +91,7 @@ Named because the V2.2 record says a control is unfinished until a mutation show
 
 ● **Identifier collision.** The identifier pattern assumed a three-letter prefix, so every agreement was issued `IDTA-0001`. Two records sharing an identifier cannot be told apart in the audit log, only the first is addressable, and the assessment-to-agreement link points at whichever came first. Fixed, and held by a test parametrised over every register.
 ● **Date coercion.** `date.fromisoformat` accepted `2026-W01-1` and stored `2025-12-29`, a different day, which breaks the hard rule that a value is rejected at the boundary and never coerced. With the no-op guard in place it also returned 200 having written no audit entry at all, so the log did not record the change the caller believed they had made. Fixed by requiring the canonical form first, and held by a test over six non-canonical shapes.
-● **A required field emptied after creation.** The requirement held at create and not at update, so an assessment could be stripped of the agreement it assesses. Fixed, and held by a test.
+● **A required field emptied after creation.** The requirement held at create and not at update, so a title could be blanked by a partial update and the record left with no name in any list an assessor reads. `agreement` was NOT exposed, and this line said it was until the engineering gate caught it: the link format rejects an empty string before the requirement is reached, so the assessment survived by accident rather than by design. Fixed, and held by a test.
 
 ### Decision
 

@@ -182,10 +182,10 @@ The only outbound call is the token exchange with Entra ID. The host is a consta
 | Item | Value |
 | --- | --- |
 | Why an addendum | V2.1 tested three registers. V2.3 ships five. The two new ones carry the Article 28(2) invariant, a required cross-register link, and four new closed vocabularies, so the V2.1 result does not cover them and must not be read as though it did. |
-| Commit tested | working tree at `a3741c8` plus the uncommitted V2.3 changes, re-run and re-recorded at the release commit below |
+| Commit tested | first run against the working tree at `a3741c8` plus the uncommitted V2.3 changes; re-run and reproduced independently by the engineering gate at `f2e12f8` |
 | Date | 2026-09-22 |
 | Method | As above: real requests over the WSGI interface in development mode. The probe is `owasp_transfer_probe.py`, retained in the session scratchpad. |
-| Result | 27 checks, 27 passed, 0 failed. One observation recorded below; it is not a failure of a control that exists. |
+| Result | 27 checks, 27 passed, 0 failed. Two observations recorded below, and one limit of the run stated in the third note; none is a failure of a control that exists. |
 
 These rows extend A01 (access control and cross-register reference), A03 (injection, coercion and the closed vocabularies), A04 (the Article 28(2) design invariant) and A09 (what reaches the log).
 
@@ -222,6 +222,9 @@ These rows extend A01 (access control and cross-register reference), A03 (inject
 **Observation, not a failure: a refused state transition writes no audit entry.** Measured. Approving a transfer whose authorisation is `NOT_OBTAINED` returns 400 and the audit log holds the same number of entries before and after. The control held and the record did not change, so nothing was lost. What an assessor cannot answer from the log is whether anyone ATTEMPTED an approval that Article 28(2) refused. AUD-001 requires a record of every failed AUTHENTICATION, which this build writes; it does not require one for a refused register transition, so this is a gap in usefulness rather than in policy conformance. Recorded here rather than closed, because closing it means writing an audit entry on a path that currently raises before the chain is touched, and that is a change to the mutation path rather than an addition to it.
 
 **Observation: the Article 28(2) invariant reads the assessment's own `authorisation` field, not the linked agreement's `importer_role`.** So an assessment whose importer is a controller rather than a sub-processor is also held at `DRAFT` until the field is set, and `NOT_APPLICABLE` is the value that releases it. That is deliberate: the question is asked of every transfer and answered explicitly, rather than being skipped whenever a role field happens to say `CONTROLLER`. It means the invariant does not depend on the agreement record being correct.
+
+
+**A limit of this run, stated because the security gate found what it missed.** None of the 27 checks creates a record naming every field its register declares. The gate did, and found that a `transfers` create at full width was refused 400 by the audit boundary: the joined field NAMES came to 132 bytes against a 128-byte cap on `fields_changed`. The flagship register could not be created in full at all. The direction of failure was right, so nothing was corrupted and no orphan row was left, but a record that reads "27 checks, 27 passed" over two registers must say what those 27 did not reach. The cap is raised, which is a loosening and leaves every historical digest valid, and a test now joins every register's full declared field set and asserts it fits. Fixed after this table was measured; the table is left as it was run rather than re-cut, because a re-cut table hides the gap this note exists to record.
 
 ## Actions arising
 

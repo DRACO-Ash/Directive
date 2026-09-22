@@ -88,7 +88,7 @@ PINNED_LIMITS = {
     "outcome": 16,
     "source_ip": 45,
     "user_agent": 512,
-    "fields_changed": 128,
+    "fields_changed": 256,
     "old_state": 32,
     "new_state": 32,
 }
@@ -502,14 +502,45 @@ def test_a_formula_smuggled_through_a_quote_break_is_rejected() -> None:
 def test_a_field_name_list_is_capped_at_a_realistic_length() -> None:
     """A change touches a handful of fields, not a paragraph.
 
-    The previous 512-byte cap accepted a whole free-text sentence spelled in snake case,
-    which is record content wearing a field name's clothes.
+    The original 512-byte cap accepted a whole free-text sentence spelled in snake case,
+    which is record content wearing a field name's clothes. It was tightened to 128 for
+    that reason, and the total is now 256 because a `transfers` record at its full declared
+    width joins to 132 bytes and could not be created at all. The sentence is still refused,
+    and by a stricter rule than before: it is 79 bytes, so it passed the 128-byte TOTAL cap
+    on its own and was only ever caught when doubled. `NAME_LIMIT` catches it at the first
+    occurrence, which is what the total cap was approximating.
     """
-    assert validation.FIELD_LIMITS["fields_changed"] == 128
+    assert validation.FIELD_LIMITS["fields_changed"] == 256
     sentence = "jane_doe_reported_theft_of_her_laptop_at_home_address_12_example_street_reading"
+    with pytest.raises(validation.AuditFieldError, match="over the per-name cap"):
+        validation.normalise_fields(fixed_entry(fields_changed=sentence))
     padded = f"{sentence},{sentence}"
-    with pytest.raises(validation.AuditFieldError, match="over its cap"):
+    with pytest.raises(validation.AuditFieldError, match="over the per-name cap"):
         validation.normalise_fields(fixed_entry(fields_changed=padded))
+
+
+def test_the_per_name_cap_does_not_refuse_a_name_any_register_declares() -> None:
+    """The privacy rule must not cost a legitimate field its entry.
+
+    Measured against the registers rather than asserted, because a cap tightened past a
+    real name would refuse the mutation that names it and the record could not be changed.
+    """
+    from directive import records  # noqa: PLC0415 - avoids a cycle at import time
+
+    for register, spec in records.REGISTERS.items():
+        for name in (*spec["fields"], "state"):
+            assert len(name.encode()) <= validation.NAME_LIMIT, (
+                f"{register} declares {name!r} at {len(name.encode())} bytes, over the "
+                f"per-name cap of {validation.NAME_LIMIT}."
+            )
+
+
+def test_a_long_name_is_refused_however_short_the_whole_list_is() -> None:
+    """The per-name rule is not the total rule wearing a different hat."""
+    sentence = "a" * (validation.NAME_LIMIT + 1)
+    assert len(sentence.encode()) < validation.FIELD_LIMITS["fields_changed"]
+    with pytest.raises(validation.AuditFieldError, match="over the per-name cap"):
+        validation.normalise_fields(fixed_entry(fields_changed=sentence))
 
 
 @pytest.mark.parametrize("token", ["HIGGINS", "ASHLEY_HIGGINS", "SW1A1AA"])

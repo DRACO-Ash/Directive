@@ -25,7 +25,7 @@ from directive import (
     records,
     store,
 )
-from directive.audit import AuditFieldError, normalise_fields
+from directive.audit import AuditFieldError, normalise_fields, validation
 from directive.audit.journal import JournalError, read_entries
 from directive.views import api as api_module
 from directive.views.api import DEFAULT_AUDIT_PAGE, MAXIMUM_AUDIT_PAGE
@@ -2318,6 +2318,70 @@ def test_every_nav_entry_carries_its_own_title_and_subtitle(signed_in: FlaskClie
     page = signed_in.get("/console").get_data(as_text=True)
     assert page.count("data-title=") == len(records.REGISTERS) + 3
     assert page.count("data-sub=") == len(records.REGISTERS) + 3
+
+
+@pytest.mark.parametrize("register", sorted(records.REGISTERS))
+def test_a_record_can_be_created_with_every_field_it_declares(
+    signed_in: FlaskClient, register: str
+) -> None:
+    """A register must be usable at its full declared width, not just its required width.
+
+    The security gate found that it was not. `mutate` joins the changed field NAMES into
+    the audit entry's `fields_changed`, and at a 128-byte cap a `transfers` record naming
+    all thirteen of its declared fields and a starting state joined to 132 bytes. The audit
+    boundary refused the entry, so the create answered 400 and the flagship register could
+    not be created in full at all.
+
+    The direction of failure was right and that is worth saying plainly: the entry is
+    appended before the register is committed, so the register file was byte-identical
+    before and after and no orphan row was left. It was availability, not a breach.
+
+    It survived to a gate because nothing exercised the two boundaries against each other.
+    The console cannot reach it either: the create form renders the required fields only
+    and the drawer patches one field at a time. This test is parametrised over every
+    register so the next field added to any of them cannot re-create it silently.
+    """
+    spec = records.REGISTERS[register]
+    payload = minimal_record(signed_in, register)
+    for field in spec["fields"]:
+        if field in payload:
+            continue
+        kind, detail = records.FIELD_KINDS[field]
+        if kind == records.DATE:
+            payload[field] = "2026-01-01"
+        elif kind == records.CHOICE:
+            payload[field] = detail[0]
+        elif kind == records.LINK:
+            payload[field] = minimal_record(signed_in, register)[field]
+        else:
+            payload[field] = "x"
+    payload["state"] = spec["states"][0]
+
+    created = signed_in.post(
+        f"/api/registers/{register}", json=payload, headers=token_for(signed_in)
+    )
+    assert created.status_code == 201, (
+        f"{register} refused a create naming all {len(spec['fields'])} of its declared "
+        f"fields: {created.get_data(as_text=True)}"
+    )
+
+
+def test_the_audit_cap_covers_every_registers_widest_possible_entry() -> None:
+    """The cap is measured against the registers, not chosen and hoped to be enough.
+
+    A cap can only ever be LOOSENED, because an entry already written cannot be brought
+    back inside a narrower rule, so getting it wrong in the tight direction is the
+    expensive mistake. This asserts the headroom rather than the number, so adding a field
+    to a register fails here with the figure rather than failing a create in production.
+    """
+    cap = validation.FIELD_LIMITS["fields_changed"]
+    for register, spec in records.REGISTERS.items():
+        widest = ",".join(sorted([*spec["fields"], "state"]))
+        assert len(widest.encode()) <= cap, (
+            f"{register} at its full width joins to {len(widest.encode())} bytes against a "
+            f"cap of {cap}, so a complete record cannot be created. Raise the cap: it is a "
+            "loosening, so every historical digest stays valid."
+        )
 
 
 @pytest.mark.parametrize("register", sorted(records.REGISTERS))
