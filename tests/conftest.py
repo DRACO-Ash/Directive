@@ -1,4 +1,4 @@
-"""Test configuration: put the src layout on the path and isolate the environment."""
+"""Test configuration: put the package and the entrypoint on the path, isolate the environment."""
 
 from __future__ import annotations
 
@@ -8,7 +8,20 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+#: The package under `src/`, and the project ROOT for `wsgi`, which lives beside `src`.
+#:
+#: The root entry is not belt and braces. `python -m pytest` puts the working directory on
+#: `sys.path` and bare `pytest` does not, so a test importing `wsgi` passed every local run
+#: and failed on the App Store, whose stage 5 runs `pytest` as a console script. The local
+#: loop and the pipeline simulation both used `python -m pytest`, so the simulation
+#: simulated the wrong command and reported PASS on a tree the platform rejected.
+#:
+#: Setting it here rather than fixing the invocation alone means the suite is correct under
+#: BOTH commands, for anyone who runs it either way.
+_ROOT = Path(__file__).resolve().parents[1]
+for _entry in (str(_ROOT / "src"), str(_ROOT)):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
 #: Every variable the app reads. Cleared per test so one test cannot leak into another
 #: and so a value on the developer's machine cannot make a test pass spuriously.
@@ -26,6 +39,8 @@ MANAGED_VARIABLES = (
     "AUDIT_HMAC_KEY",
     "AUDIT_KEY_ID",
     "AUDIT_RETIRED_KEYS",
+    "DIRECTIVE_ENV",
+    "APPSTORE_DAST_SCAN",
 )
 
 #: A test signing key, as the application requires it: real key material decoding to at

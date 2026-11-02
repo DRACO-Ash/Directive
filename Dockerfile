@@ -12,9 +12,21 @@
 #
 # No ENV PORT and no ENV DATA_DIR. An ENV line always beats a code fallback chain, so a
 # baked default would silently defeat the value the platform injects.
+#
+# BASE IMAGE PIN: python:3.12-slim, Python 3.12.16, re-pinned 2026-11-02.
+# A digest pin is reproducible and it is also frozen, so it rots in place while the world
+# patches around it. The previous pin was four CVE-months old and the App Store container
+# scan rejected the release on it: 15 critical, 145 high, 119 medium, 26 low, every one an
+# operating-system package from this base and not one from anything this project wrote.
+# Among them was the interpreter itself, at 3.12.14 against a fix in 3.12.16.
+# Nothing in the verification loop can see this. The loop scans the PYTHON dependencies
+# with pip-audit, which was clean and stayed clean, and no local check reads the base
+# image's package set at all. The platform's scan is the first thing that does, which makes
+# the feedback loop one upload long. Treat the date above as the measurement it is: when
+# this is more than a month old, re-pin before uploading rather than after being rejected.
 
 # ---- build: install the hash-locked requirements into an isolated virtual environment ----
-FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS build
+FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 AS build
 ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN python -m venv /opt/venv
@@ -29,7 +41,7 @@ COPY requirements-runtime.txt .
 RUN pip install --require-hashes --no-deps -r requirements-runtime.txt
 
 # ---- prep: assemble the runtime filesystem, then establish the invariants last ----
-FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS prep
+FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 AS prep
 # No `apt-get upgrade` here, deliberately. It installs whatever Debian ships at build
 # time into a digest-pinned base, so the shipped image stops being reproducible from its
 # pinned inputs and the change set is unreviewed. Patch by rebasing to a newer pinned

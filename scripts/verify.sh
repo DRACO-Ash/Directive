@@ -57,7 +57,8 @@ echo "== static application security testing (AMD-001 section 10.6) =="
 echo "== tests with coverage =="
 # --cov-report=xml is what produces the Cobertura file the Code Quality gate reads. A
 # comprehensive suite that emits no report scores 0%.
-"$PY" -m pytest --cov --cov-report=xml --cov-report=term
+# The console script, matching the App Store's stage 5. See `simulate-pipeline.sh`.
+"$(dirname "$PY")/pytest" --cov --cov-report=xml --cov-report=term
 
 echo "== coverage artefact =="
 if [ ! -s coverage.xml ]; then

@@ -155,9 +155,15 @@ PY312="${PYTHON312:-/usr/bin/python3.12}"
 echo "== stage 5, install: pip install -r requirements.txt =="
 .venv/bin/python -m pip install -q -r requirements.txt
 
+# `pytest` as a CONSOLE SCRIPT, never `python -m pytest`, because that is what stage 5
+# runs and the two are not the same command. `python -m` puts the working directory on
+# `sys.path`; the console script does not. This simulation used `python -m` and therefore
+# reported PASS on a tree whose stage 5 failed with `ModuleNotFoundError: No module named
+# 'wsgi'`. A simulation that runs a different command from the thing it simulates is worse
+# than no simulation, because it is believed.
 echo "== stage 5, test: pytest with coverage to the path the quality gate reads =="
 set +e
-.venv/bin/python -m pytest --cov --cov-report=xml -q
+.venv/bin/pytest --cov --cov-report=xml -q
 STATUS=$?
 set -e
 echo "PYTEST EXIT: $STATUS"

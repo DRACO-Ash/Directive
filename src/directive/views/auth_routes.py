@@ -136,13 +136,24 @@ def sign_in_submit() -> Response:
     Refuses outright when Entra ID is configured, so this path cannot become a way around
     a real identity provider once one exists.
     """
-    if auth.entra_is_configured():
+    if auth.entra_is_configured() or auth.scan_mode():
         # Through `_refuse`, so the refusal is collapsed and charged to the row budget like
         # every other. Recorded directly, this was one fsynced row per request: with Entra
         # configured the CSRF token is issued to any caller of `/`, so an unauthenticated
         # client could reach the log's 64 MiB refusal cap in about 72,500 posts, on the one
         # route the bound was documented as covering and the one mode the suite did not run.
-        return _refuse("the self-asserted sign-in is refused while Entra ID is configured")
+        #
+        # `scan_mode` is here and not only at boot. It lets the process START without an
+        # identity provider so the platform's scanner gets an answer; it must not also hand
+        # the scanner, or anyone else reaching that container, a signed-in session. Without
+        # this clause the boot relaxation would have opened the self-asserted path, because
+        # that path is gated on Entra being configured and in scan mode it is not.
+        reason = (
+            "the self-asserted sign-in is refused while Entra ID is configured"
+            if auth.entra_is_configured()
+            else "the self-asserted sign-in is refused during the platform security scan"
+        )
+        return _refuse(reason)
 
     actor = (request.form.get("actor") or "").strip()
     if not actor or len(actor) > MAXIMUM_ACTOR_LENGTH:

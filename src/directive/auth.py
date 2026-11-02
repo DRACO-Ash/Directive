@@ -39,6 +39,7 @@ import functools
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -74,6 +75,10 @@ def entra_is_configured() -> bool:
 #: is production.
 DEVELOPMENT = "development"
 
+#: This module's logger. It carries exactly one message, the scan-mode warning, and that
+#: message is the only record anybody gets that the identity provider was skipped.
+LOGGER = logging.getLogger(__name__)
+
 
 def is_production() -> bool:
     """Return whether this process is running in production. Unset means YES.
@@ -96,13 +101,47 @@ def is_production() -> bool:
     return config.env("DIRECTIVE_ENV", "production").strip().lower() != DEVELOPMENT
 
 
+def scan_mode() -> bool:
+    """Return whether this process is the App Store's dynamic security scan.
+
+    The scan runs the image with NO environment variables and expects HTTP on port 8080
+    within sixty seconds. This application refuses to boot without Entra ID and without
+    `SESSION_KEY`, both deliberately, so it never answered and the gate reported
+    `no_report`. The platform's own instruction is to generate a throwaway value when
+    `APPSTORE_DAST_SCAN=true`, and this is that.
+
+    Read the second condition as the whole of the safety argument, because the first is only
+    a string match. The flag is honoured ONLY while Entra ID is unconfigured, so it can
+    never degrade a deployment that HAS an identity provider: set it on the real pod and
+    nothing changes. Where Entra is unconfigured the process would not have started at all,
+    so the flag turns a dead container into a running one, and it gives an attacker who can
+    already set environment variables nothing new, because `DIRECTIVE_ENV` has offered the
+    same degradation since V2.1 and is the shorter route to it.
+
+    What it does NOT relax is anything after boot. `is_production()` stays true, so the
+    session cookie keeps its `Secure` flag, and the self-asserted sign-in is refused in this
+    mode exactly as it is when Entra is configured. The scanner therefore crawls the real
+    unauthenticated surface, which is the surface worth scanning.
+    """
+    asserted = config.env("APPSTORE_DAST_SCAN").strip().lower() == "true"
+    return asserted and not entra_is_configured()
+
+
 def check_startup() -> None:
     """Refuse to boot in production without a real identity provider.
 
     The one thing this module must never do is degrade quietly. In production, unconfigured
-    Entra ID is a hard stop.
+    Entra ID is a hard stop, unless this is the platform's own scan: see :func:`scan_mode`.
     """
     if is_production() and not entra_is_configured():
+        if scan_mode():
+            LOGGER.warning(
+                "boot: APPSTORE_DAST_SCAN is set and Entra ID is unconfigured, so this "
+                "process is starting WITHOUT an identity provider, for the platform's "
+                "security scan. Every sign-in path is refused. If you are reading this in a "
+                "real deployment the variable is set wrongly: unset it and supply Entra ID."
+            )
+            return
         raise AuthNotConfiguredError(
             "DIRECTIVE_ENV is production but Entra ID is not configured. Set TENANT_ID, "
             "CLIENT_ID, CLIENT_SECRET and REDIRECT_URI. Refusing to start rather than "
@@ -205,7 +244,7 @@ def signing_secret() -> bytes:
     configured = config.env("SESSION_KEY")
     if configured:
         return configured.encode("utf-8")
-    if is_production():
+    if is_production() and not scan_mode():
         raise AuthNotConfiguredError(
             "SESSION_KEY is not set and DIRECTIVE_ENV is production. Refusing to start with "
             "an ephemeral session key, which would sign every user out on each restart and "
