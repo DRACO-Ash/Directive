@@ -1942,6 +1942,42 @@ def test_every_read_of_the_pair_sits_inside_the_paused_window(route: str) -> Non
 #: packs without it, 20 of 20 with it.
 SLOW_VOLUME_SECONDS = 0.02
 
+#: The fewest packs to read, and the budgets for the two things this test must WAIT for
+#: rather than assume. Both are generous on purpose: they exist to turn a slow runner into
+#: a slow test, never into a red one. A real failure, the mutator unable to write or the
+#: register never growing, still trips them and says which of the two it was.
+PACKS_PER_RUN = 20
+MUTATOR_START_SECONDS = 30.0
+PACK_DRIVE_SECONDS = 60.0
+
+
+def _rows_in(pack: dict[str, Any]) -> int:
+    """Return how many register rows an export pack carries, across every register."""
+    return sum(len(rows) for rows in pack["registers"].values())
+
+
+def _packs_until_the_register_grows(
+    signed_in: FlaskClient, headers: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Read export packs until the register has demonstrably GROWN across the run.
+
+    That growth is what puts a mutation inside the orphan window, so it is the condition
+    the test needs rather than a pack count. A fixed count was enough on a developer's
+    tmpfs and is a timing assumption on a container volume, which is how this test came to
+    fail on the App Store runner while passing everywhere it was written.
+    """
+    packs: list[dict[str, Any]] = []
+    deadline = time.monotonic() + PACK_DRIVE_SECONDS
+    while True:
+        packs.append(signed_in.get("/api/export", headers=headers).get_json())
+        if len(packs) >= PACKS_PER_RUN and _rows_in(packs[-1]) > _rows_in(packs[0]):
+            return packs
+        assert time.monotonic() < deadline, (
+            f"the register did not grow across {len(packs)} packs within "
+            f"{PACK_DRIVE_SECONDS}s (rows {_rows_in(packs[0])} to {_rows_in(packs[-1])}), "
+            "so the packs were not read against a live mutator and the order proves nothing"
+        )
+
 
 def test_an_export_pack_never_holds_a_register_row_with_no_audit_entry(
     signed_in: FlaskClient, monkeypatch: pytest.MonkeyPatch
@@ -1975,21 +2011,34 @@ def test_an_export_pack_never_holds_a_register_row_with_no_audit_entry(
     monkeypatch.setattr(api_module.store, "iter_registers", slow_iter)
 
     mutating = threading.Event()
+    #: Set by the mutator the first time a row actually lands. WAITED ON rather than
+    #: assumed, because the guard below used to require the mutator's first POST to beat the
+    #: first export's register read, which is `SLOW_VOLUME_SECONDS` away: 20 milliseconds.
+    #: That held on a developer machine with a tmpfs and failed on the App Store's runner,
+    #: where a single durable `fsync` can exceed it on its own. The test was asserting a
+    #: timing property it never waited for, so it measured the runner rather than the code.
+    landed_once = threading.Event()
     failures: list[BaseException] = []
 
     def mutate_forever() -> None:
         try:
             while not mutating.is_set():
-                signed_in.post(
+                created = signed_in.post(
                     "/api/registers/tasks", json={"title": "Access review"}, headers=headers
                 )
+                if created.status_code == 201:
+                    landed_once.set()
         except BaseException as error:
             failures.append(error)
 
     mutator = threading.Thread(target=mutate_forever, daemon=True)
     mutator.start()
     try:
-        packs = [signed_in.get("/api/export", headers=headers).get_json() for _ in range(20)]
+        assert landed_once.wait(timeout=MUTATOR_START_SECONDS), (
+            "the mutator created no row at all, so every assertion below would be vacuous. "
+            "This is the mutator failing, not the read order."
+        )
+        packs = _packs_until_the_register_grows(signed_in, headers)
     finally:
         mutating.set()
         mutator.join(timeout=30)
@@ -2007,6 +2056,9 @@ def test_an_export_pack_never_holds_a_register_row_with_no_audit_entry(
     #: posts never land, this test was green: nothing asserted a row was ever created, so
     #: any future change that stops the mutator turns it into a silent no-op. Its siblings
     #: in this file carry exactly this guard.
+    #:
+    #: Both properties are now ESTABLISHED above by waiting, rather than asserted here and
+    #: hoped for, so these two lines restate them for a reader instead of racing a runner.
     landed = [sum(len(rows) for rows in pack["registers"].values()) for pack in packs]
     assert landed[0] > 0, "no register row was ever created, so this proves nothing"
     assert landed[-1] > landed[0], (
