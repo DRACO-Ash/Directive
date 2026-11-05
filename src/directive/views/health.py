@@ -94,14 +94,22 @@ def reset_probe_registry() -> None:
 
 def reset_diagnostics_cache() -> None:
     """Clear the cached verdict. For tests and for a deliberate re-probe."""
-    global _cached  # noqa: PLW0603 - one process-wide cache, guarded by the lock below
+    # One process-wide cache, guarded by the lock below. The reason sits above the
+    # suppression rather than trailing it: a trailing reason is valid for `ruff` and is
+    # read as malformed by the platform analyser, which then reports the suppression
+    # itself as a finding.
+    global _cached  # noqa: PLW0603
     with _cache_lock:
         _cached = None
 
 
 def cached_storage_verdict(path: str, now: float | None = None) -> StorageVerdict:
     """Return a storage verdict, reusing a recent one within the cache window."""
-    global _cached  # noqa: PLW0603 - one process-wide cache, guarded by the lock below
+    # One process-wide cache, guarded by the lock below. The reason sits above the
+    # suppression rather than trailing it: a trailing reason is valid for `ruff` and is
+    # read as malformed by the platform analyser, which then reports the suppression
+    # itself as a finding.
+    global _cached  # noqa: PLW0603
     moment = time.monotonic() if now is None else now
     with _cache_lock:
         if _cached is not None:
@@ -182,7 +190,16 @@ class _Probe:
         """
         try:
             self.verdict = _write_probe(self.path)
-        except BaseException as error:
+        #: S5754 asks for a narrower exception or a re-raise. Neither is available here and
+        #: this is the one place in the application where `BaseException` is the correct
+        #: catch. `CLAUDE.md` states it as a hard rule: a probe never raises and never
+        #: hangs, and converts EVERY failure into a verdict. Containment sits at the thread
+        #: boundary because an exception escaping it leaves `self.verdict` unset, and the
+        #: caller then reports a timeout it never waited for, on the path an operator uses
+        #: to diagnose a bad configuration. Narrowing it would mean enumerating what a
+        #: volume can do to a write, which is the enumeration this project has been wrong
+        #: about before. Re-raising would take the diagnostics channel down with it.
+        except BaseException as error:  # NOSONAR S5754
             self.verdict = StorageVerdict(
                 writable=False, path=self.path, errno=None, detail=type(error).__name__
             )

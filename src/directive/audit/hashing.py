@@ -91,11 +91,21 @@ HASH_LENGTH = 64
 
 _HEX_HASH = re.compile(r"\A[0-9a-f]{64}\Z")
 
+#: The key identifier's slot in the canonical payload. A NUL prefix, so it cannot collide
+#: with a real field name: `FIELD_ORDER` is ASCII and a NUL cannot appear in one.
+#:
+#: Named rather than repeated, and the VALUE is frozen for ever. It is covered by the
+#: digest, so changing these bytes changes every entry hash this application has ever
+#: written and every historical entry reads as tampered. The golden vector in
+#: `tests/test_audit_hashing.py` pins it; if that test goes red after an edit here, the
+#: edit is wrong and the test is right.
+KEY_ID_SLOT = "\x00key_id"
+
 #: The fields that must carry a value on every entry, whatever the event category, kept
 #: here only so the parity test can hold it against `validation.REQUIRED_FIELDS`. The hash
 #: path does NOT enforce it: see the note in `canonical_payload`.
 _REQUIRED_NON_EMPTY = frozenset(
-    {"timestamp", "actor", "action", "resource", "resource_id", "\x00key_id"}
+    {"timestamp", "actor", "action", "resource", "resource_id", KEY_ID_SLOT}
 )
 
 
@@ -122,8 +132,8 @@ def canonical_payload(fields: Mapping[str, str], key_id: str) -> bytes:
     Expects fields already validated by :func:`directive.audit.validation.normalise_fields`.
     """
     parts: list[bytes] = []
-    for name in (*FIELD_ORDER, "\x00key_id"):
-        value = key_id if name == "\x00key_id" else fields.get(name)
+    for name in (*FIELD_ORDER, KEY_ID_SLOT):
+        value = key_id if name == KEY_ID_SLOT else fields.get(name)
         # Type is the ONE rule the hash path enforces, and it covers absence too, because
         # `fields.get` yields None for a missing key. Two things it deliberately does NOT
         # enforce:

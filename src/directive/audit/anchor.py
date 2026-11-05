@@ -345,7 +345,8 @@ def _marker_is_valid(data_dir: str, key: bytes) -> bool:
         if target.stat().st_size > MAXIMUM_ANCHOR_BYTES:
             return False
         stored = target.read_text(encoding="utf-8").strip()
-    except (OSError, ValueError, UnicodeDecodeError):
+    #: `UnicodeDecodeError` SUBCLASSES `ValueError`; listing both caught nothing extra.
+    except (OSError, ValueError):
         return False
     return is_hash(stored) and hmac.compare_digest(stored, _marker_tag(data_dir, key))
 

@@ -41,12 +41,12 @@
     // The `Z` used to be stripped, leaving `2026-09-14 21:38:08` on a screen an assessor
     // reads, in a country an hour off UTC for seven months of the year.
     if (!value) return "";
-    return `${String(value).replace("T", " ").replace("Z", "")} UTC`;
+    return `${String(value).replaceAll("T", " ").replaceAll("Z", "")} UTC`;
   }
 
   function label(register, name) {
     const found = (state.fields[register] || []).find((field) => field.name === name);
-    return found ? found.label : name.replace(/_/g, " ");
+    return found ? found.label : name.replaceAll("_", " ");
   }
 
   function cell(text, className) {
@@ -60,7 +60,7 @@
     const td = document.createElement("td");
     const span = document.createElement("span");
     span.className = `pill pill-${String(value || "").toLowerCase()}`;
-    span.textContent = String(value || "").replace(/_/g, " ");
+    span.textContent = String(value || "").replaceAll("_", " ");
     td.append(span);
     return td;
   }
@@ -73,10 +73,10 @@
       if (next === record.state) continue;
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = next.replace(/_/g, " ");
+      button.textContent = next.replaceAll("_", " ");
       // Without this a screen-reader user hears "approved button" forty times with no idea
       // which record each one belongs to.
-      button.setAttribute("aria-label", `Move ${record.reference || record.id} to ${next.replace(/_/g, " ").toLowerCase()}`);
+      button.setAttribute("aria-label", `Move ${record.reference || record.id} to ${next.replaceAll("_", " ").toLowerCase()}`);
       button.addEventListener("click", () => move(register, record.id, next));
       wrap.append(button);
     }
@@ -131,7 +131,7 @@
       tr.append(pill(record.state));
       for (const field of extraColumns(register)) {
         const value = record[field.name] || "";
-        tr.append(cell(String(value).replace(/_/g, " ") || "—"));
+        tr.append(cell(String(value).replaceAll("_", " ") || "—"));
       }
       tr.append(cell(stamp(record.updated), "stamp"));
       tr.append(transitionButtons(register, record));
@@ -192,7 +192,7 @@
       for (const choice of field.choices) {
         const option = document.createElement("option");
         option.value = choice;
-        option.textContent = choice.replace(/_/g, " ");
+        option.textContent = choice.replaceAll("_", " ");
         input.append(option);
       }
       input.value = record[field.name] || "";
@@ -235,16 +235,21 @@
     meta.textContent = `Created ${stamp(record.created)} · last changed ${stamp(record.updated)}`;
     body.append(meta);
 
-    $("#drawer").classList.remove("hidden");
-    $("#scrim").classList.remove("hidden");
+    // `showModal`, not `show`: only the modal form traps focus, makes the rest of the
+    // page inert and gives us a backdrop. Guarded because calling it on an already-open
+    // dialog throws, and a second click on a row would otherwise take the console down.
+    const drawer = $("#drawer");
+    if (!drawer.open) drawer.showModal();
     const first = body.querySelector("input, select, textarea");
     if (first) first.focus();
   }
 
   function closeDrawer() {
-    state.open = null;
-    $("#drawer").classList.add("hidden");
-    $("#scrim").classList.add("hidden");
+    const drawer = $("#drawer");
+    // `close()` fires the `close` event, which clears `state.open` below. Doing it here as
+    // well would be harmless; leaving it only there means Escape, the close button and a
+    // backdrop click all converge on one place rather than three.
+    if (drawer.open) drawer.close();
   }
 
   async function saveField(register, id, name, value) {
@@ -297,7 +302,7 @@
       note.className = "card-note";
       note.textContent = Object.entries(counts)
         .filter(([key, count]) => key !== "total" && count > 0)
-        .map(([key, count]) => `${count} ${key.toLowerCase().replace(/_/g, " ")}`)
+        .map(([key, count]) => `${count} ${key.toLowerCase().replaceAll("_", " ")}`)
         .join(" · ") || "nothing recorded";
       card.append(label, value, note);
       cards.append(card);
@@ -351,7 +356,7 @@
         method: "PATCH",
         body: JSON.stringify({ state: next }),
       });
-      notify(`${id} moved to ${next.replace(/_/g, " ").toLowerCase()}, and the audit entry is written.`, true);
+      notify(`${id} moved to ${next.replaceAll("_", " ").toLowerCase()}, and the audit entry is written.`, true);
       await refresh();
       await refreshAudit();
     } catch (error) {
@@ -387,8 +392,15 @@
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const register = form.dataset.register;
+        // `FormData` yields `File` as well as `string`, and `String(file)` is
+        // "[object File]", so a file input added to this form would post that literal as a
+        // field value. There is no file input today and there is no upload route to take
+        // one, so this is a guard against a future edit rather than a live defect: a
+        // non-string value is dropped rather than stringified into a record.
         const payload = Object.fromEntries(
-          Array.from(new FormData(form).entries()).filter(([, value]) => String(value).trim() !== ""),
+          Array.from(new FormData(form).entries()).filter(
+            ([, value]) => typeof value === "string" && value.trim() !== "",
+          ),
         );
         try {
           const body = await call(`/api/registers/${register}`, {
@@ -404,10 +416,18 @@
       }),
     );
 
+    const drawer = $("#drawer");
     $("#drawer-close").addEventListener("click", closeDrawer);
-    $("#scrim").addEventListener("click", closeDrawer);
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeDrawer();
+    // The ONE place the open record is forgotten, whatever closed it: the button, the
+    // backdrop, or Escape, which a modal dialog handles natively without a key handler.
+    drawer.addEventListener("close", () => {
+      state.open = null;
+    });
+    // A dialog has no backdrop element to listen on, so a click that lands on the dialog
+    // itself rather than on anything inside it IS a backdrop click. The drawer fills its
+    // own box, so nothing else can produce this.
+    drawer.addEventListener("click", (event) => {
+      if (event.target === drawer) closeDrawer();
     });
 
     $("#verify").addEventListener("click", async () => {

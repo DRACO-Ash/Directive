@@ -35,8 +35,12 @@ done
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
 # A version with a slash in it makes $OUT and `basename "$OUT"` disagree, so the zip is
 # written to one path while a different one is recorded, hashed and pointed at.
+# The `*)` arm is a no-op and is here because the analyser asks for a default and because
+# it says out loud what the silence meant: anything that is not empty and contains only
+# digits and dots is accepted. A reader should not have to infer that from an absence.
 case "$VERSION" in
   "" | *[!0-9.]* ) echo "FAIL: implausible version '$VERSION' in pyproject.toml"; exit 1 ;;
+  * ) : ;;
 esac
 STAMP="$(date -u +%Y%m%d)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"

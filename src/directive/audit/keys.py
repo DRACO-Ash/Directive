@@ -30,7 +30,6 @@ inside the digest, so independent re-verification of clean evidence would fail.
 from __future__ import annotations
 
 import base64
-import binascii
 import os
 
 from .validation import AuditFieldError, check_key_id
@@ -111,7 +110,9 @@ def _decode(raw: str) -> bytes | None:
         pass
     try:
         return base64.b64decode(raw, validate=True)
-    except (binascii.Error, ValueError):
+    #: `binascii.Error` SUBCLASSES `ValueError`, so naming both caught nothing extra and
+    #: read as though it did. The behaviour is unchanged; the claim is now accurate.
+    except ValueError:
         return None
 
 

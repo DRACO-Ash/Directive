@@ -73,6 +73,9 @@ def entra_is_configured() -> bool:
 
 #: The value that selects local development. Anything else, including an unset variable,
 #: is production.
+#: The console's landing endpoint, and the destination every refused redirect takes.
+DASHBOARD_ENDPOINT = "console.dashboard"
+
 DEVELOPMENT = "development"
 
 #: This module's logger. It carries exactly one message, the scan-mode warning, and that
@@ -274,12 +277,16 @@ def redirect_after_sign_in(target: str | None) -> Response:
     `/<TAB>/evil.example` passed the check as a single-slash path and went out as
     `//evil.example`, which is a protocol-relative redirect off this origin.
     """
+    #: Every refusal lands on the same safe destination, named once. Three copies of the
+    #: endpoint string was three chances for one of them to drift to somewhere else while
+    #: still reading like a refusal.
+    refused = redirect(url_for(DASHBOARD_ENDPOINT))
     if not target or not target.startswith("/"):
-        return redirect(url_for("console.dashboard"))
+        return refused
     if "\\" in target or any(character < " " or character == "\x7f" for character in target):
-        return redirect(url_for("console.dashboard"))
+        return refused
     if target.startswith("//"):
-        return redirect(url_for("console.dashboard"))
+        return refused
     return redirect(target)
 
 

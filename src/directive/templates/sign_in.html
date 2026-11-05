@@ -5,7 +5,7 @@
   <main class="signin" id="main">
     <h1>Directive</h1>
     <p class="sub">Bluestaq Limited</p>
-    {% if banner %}<div class="banner" role="status">{{ banner }}</div>{% endif %}
+    {% if banner %}<output class="banner">{{ banner }}</output>{% endif %}
     <form method="post" action="{{ url_for('auth.sign_in_submit') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="next" value="{{ next_path }}">

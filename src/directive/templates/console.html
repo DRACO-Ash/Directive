@@ -37,8 +37,8 @@
   </nav>
 
   <main class="main" id="main">
-    {% if banner %}<div class="banner" role="status">{{ banner }}</div>{% endif %}
-    <div class="notice" id="notice" role="status" aria-live="polite"></div>
+    {% if banner %}<output class="banner">{{ banner }}</output>{% endif %}
+    <output class="notice" id="notice" aria-live="polite"></output>
 
     <div class="head">
       <h1 id="view-title">Dashboard</h1>
@@ -102,7 +102,16 @@
       <div class="table-scroll">
         <table>
           <caption>{{ spec.title }}. Newest first. Select a row to open it.</caption>
-          <thead><tr data-head="{{ name }}"></tr></thead>
+          {#- The four fixed columns are rendered here as well as by `renderHead`, which
+               replaces them with the full set once the schema arrives. Without them the
+               table has no `th` in its source and the platform analyser reports a table
+               with no headers, which is a BUG in its report rather than a style note. The
+               duplication is four words and it makes the document valid before any script
+               runs, which is also what a reader with scripting off gets. -#}
+          <thead><tr data-head="{{ name }}">
+            <th scope="col">Reference</th><th scope="col">Title</th>
+            <th scope="col">Owner</th><th scope="col">State</th>
+          </tr></thead>
           <tbody data-rows="{{ name }}"></tbody>
         </table>
       </div>
@@ -124,11 +133,20 @@
     <section id="panel-system" class="hidden" aria-labelledby="h-system">
       <h2 id="h-system" class="section-heading">Diagnostics</h2>
       <p class="sub">What the application can see of its own configuration and storage.</p>
-      <div class="table-scroll"><table><tbody id="system-rows"></tbody></table></div>
+      <div class="table-scroll"><table>
+        <caption class="visually-hidden">Diagnostics, as setting and value.</caption>
+        <thead><tr><th scope="col">Setting</th><th scope="col">Value</th></tr></thead>
+        <tbody id="system-rows"></tbody>
+      </table></div>
     </section>
   </main>
 
-  <div class="drawer hidden" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+  {#- A native `dialog`, not a div with role="dialog". `showModal()` traps focus inside
+      it, makes the rest of the page inert, restores focus to whatever opened it on
+      close, and closes on Escape without a key handler. The ARIA version had none of
+      that except the Escape handler: a keyboard user could Tab straight out of the
+      open record into the table behind it. The backdrop replaces the scrim div. -#}
+  <dialog class="drawer" id="drawer" aria-labelledby="drawer-title">
     <div class="drawer-head">
       <div>
         <div class="drawer-ref mono" id="drawer-ref"></div>
@@ -140,8 +158,7 @@
     <div class="drawer-foot">
       <span class="sub" id="drawer-hint">Changes save when you leave a field. Each one writes an audit entry.</span>
     </div>
-  </div>
-  <div class="scrim hidden" id="scrim"></div>
+  </dialog>
 </div>
 <script src="{{ url_for('static', filename='console.js') }}" defer></script>
 {% endblock %}

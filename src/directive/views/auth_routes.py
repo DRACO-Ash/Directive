@@ -17,6 +17,10 @@ from ..audit import AuditFieldError
 from ..audit.validation import recordable
 from . import refusals
 
+#: Where every refused or failed sign-in returns the caller. Named once so three
+#: copies cannot drift to three different destinations.
+SIGN_IN_ENDPOINT = "auth.sign_in_page"
+
 auth_bp = Blueprint("auth", __name__)
 
 #: Where the sign-in round trip keeps its state. All three are consumed on first use, so a
@@ -252,14 +256,14 @@ def _refuse(reason: str) -> Response:
             source_ip=collapsed.address,
         )
     if not decision.record:
-        return redirect(url_for("auth.sign_in_page"))
+        return redirect(url_for(SIGN_IN_ENDPOINT))
     if not _record_authentication("LOGIN_FAILED", "unknown", "FAILURE"):
         # `recordable` already stops a caller's own headers vetoing this entry and the
         # actor here is a fixed placeholder, so reaching this line means the boundary
         # refused something no caller controls. There is nothing left to substitute, so it
         # is logged at error rather than retried with the same values.
         current_app.logger.error("the sign-in refusal itself could not be recorded")
-    return redirect(url_for("auth.sign_in_page"))
+    return redirect(url_for(SIGN_IN_ENDPOINT))
 
 
 @auth_bp.post("/sign-out")
@@ -270,4 +274,4 @@ def sign_out() -> Response:
     if auth.current_actor():
         _record_authentication("LOGOUT", actor, "SUCCESS")
     auth.sign_out()
-    return redirect(url_for("auth.sign_in_page"))
+    return redirect(url_for(SIGN_IN_ENDPOINT))

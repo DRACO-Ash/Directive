@@ -45,7 +45,14 @@ def create_app() -> Flask:
     # It was disabled while the app served only health paths, on the principle that surface
     # you do not need is surface you do not defend. `send_from_directory` refuses traversal,
     # and the directory holds two authored files and nothing generated.
-    app = Flask(__name__, static_folder="static", static_url_path="/static")
+    # S4502, cross-site request forgery, is answered by `directive.csrf` rather than by a
+    # Flask extension, which is why the analyser cannot see it here. Every unsafe method on
+    # every route carries a session-derived token compared in constant time, the sign-in and
+    # sign-out forms included, and `tests/test_application.py` walks the whole URL map to
+    # prove no unsafe route is exempt. The only exemptions are the two sign-in routes, which
+    # mint the token they would otherwise present, and a test asserts nothing under `/api/`
+    # can join them.
+    app = Flask(__name__, static_folder="static", static_url_path="/static")  # NOSONAR S4502
     _configure_logging(app)
     # A byte cap on every request body. Werkzeug refuses a larger one with 413 before any
     # handler sees it, so no route has to defend itself against an unbounded payload. Well

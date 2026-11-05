@@ -18,4 +18,4 @@ if __name__ == "__main__":  # pragma: no cover - the container runs gunicorn, no
     # unreachable and every health probe fail. This branch is the local development path
     # only; the container runs gunicorn, which takes its bind from the same rule. The two
     # suppressions below are for that one deliberate decision, nothing wider.
-    app.run(host="0.0.0.0", port=port())  # noqa: S104  # nosec B104
+    app.run(host="0.0.0.0", port=port())  # noqa: S104  # nosec B104  # NOSONAR S8392

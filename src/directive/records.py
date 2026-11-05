@@ -246,7 +246,10 @@ def next_id(rows: list[dict[str, Any]], prefix: str) -> str:
     against an identifier that named several different agreements, which is the drift the
     link exists to stop.
     """
-    pattern = re.compile(rf"\A{re.escape(prefix)}-([0-9]{{4,}})\Z")
+    #: `[0-9]`, never `\d`. See the date check in `check_value` for the whole reason;
+    #: the short version is that `\d` matches non-ASCII digits, `int()` parses them,
+    #: and a row planted on the volume could then move this counter.
+    pattern = re.compile(rf"\A{re.escape(prefix)}-([0-9]{{4,}})\Z")  # NOSONAR S6353
     used = [
         int(found.group(1))
         for row in rows
@@ -290,6 +293,54 @@ def field_schema(register: str) -> list[dict[str, Any]]:
     return described
 
 
+#: Set by the server on every write, so a caller who sends them is ignored rather than
+#: refused: a client must not be able to choose a record's identity or its timestamps, and
+#: a browser that echoes back what it was given should not get an error for it.
+_SERVER_OWNED = frozenset({"id", "created", "updated"})
+
+
+def _check_one_field(name: str, value: object, *, register: str) -> tuple[str, str]:
+    """Validate one submitted field, returning the name and its clean value.
+
+    `object` rather than `Any` for the incoming value, deliberately. It arrives from a JSON
+    body and could be anything, and `Any` would let every line below treat it as whatever
+    was convenient without the type checker objecting. `object` forces the `isinstance`
+    narrowing that this function exists to do. The same reasoning is recorded in
+    `CLAUDE.md`: `Any` voids any control reasoning about a declared type.
+    """
+    if name == "state":
+        return "state", check_state(value, register=register)
+    if not isinstance(value, str):
+        # Capped for the same reason the unknown-name echo below is, and reached
+        # BEFORE the kind lookup: an unknown name carrying a non-string value never
+        # gets as far as the schema, so the truncation has to happen here too.
+        # `str(name)` because a JSON object key is not guaranteed to be text either.
+        raise RecordError(f"{str(name)[:64]!r} must be text")
+    if name not in REGISTERS[register]["fields"]:
+        # The name is truncated before it is echoed. It is attacker-supplied and
+        # unbounded, and a client error is not a mirror. Scoped to the REGISTER now
+        # rather than to the whole application, so a field one register understands is
+        # still refused by a register that would never read it.
+        raise RecordError(f"{name[:64]!r} is not a field of the {register} register")
+    return name, check_value(name, value)
+
+
+def _check_required(clean: Mapping[str, Any], *, register: str, complete: bool) -> None:
+    """Refuse a record missing a required field, or an update that empties one.
+
+    The second half was missing once, so a partial update carrying a blank title returned
+    200 and stored an empty one: the requirement held only at the moment of creation and
+    gave no protection afterwards. `agreement` survived that by accident, because the link
+    format rejects an empty string before this is reached.
+    """
+    for required in ("title", *REGISTERS[register].get("requires", ())):
+        article = "an" if required[0] in "aeiou" else "a"
+        if complete and not clean.get(required):
+            raise RecordError(f"every {register} record needs {article} {required}")
+        if not complete and required in clean and not clean[required]:
+            raise RecordError(f"{required!r} cannot be emptied once a record has one")
+
+
 def check_fields(
     fields: Mapping[str, Any], *, register: str, complete: bool = True
 ) -> dict[str, Any]:
@@ -298,40 +349,21 @@ def check_fields(
     ``complete`` is False for a partial update, where the caller sends only what changed.
     A state transition should not require resending the title, and requiring it would push
     callers towards read-modify-write round trips that lose concurrent edits.
+
+    The per-field and per-requirement checks live in the two helpers above. That split is
+    the analyser's cognitive-complexity finding answered rather than suppressed, and it is
+    the right shape anyway: this function now reads as the three things it does, which is
+    refuse an unknown register, clean each field, and hold the requirements.
     """
     if register not in REGISTERS:
         raise RecordError(f"{str(register)[:64]!r} is not a register")
     clean: dict[str, Any] = {}
     for name, value in fields.items():
-        if name in {"id", "created", "updated"}:
+        if name in _SERVER_OWNED:
             continue
-        if name == "state":
-            clean["state"] = check_state(value, register=register)
-            continue
-        if not isinstance(value, str):
-            # Capped for the same reason the unknown-name echo below is, and reached
-            # BEFORE the kind lookup: an unknown name carrying a non-string value never
-            # gets as far as the schema, so the truncation has to happen here too.
-            # `str(name)` because a JSON object key is not guaranteed to be text either.
-            raise RecordError(f"{str(name)[:64]!r} must be text")
-        if name not in REGISTERS[register]["fields"]:
-            # The name is truncated before it is echoed. It is attacker-supplied and
-            # unbounded, and a client error is not a mirror. Scoped to the REGISTER now
-            # rather than to the whole application, so a field one register understands is
-            # still refused by a register that would never read it.
-            raise RecordError(f"{name[:64]!r} is not a field of the {register} register")
-        clean[name] = check_value(name, value)
-    #: A required field must be present on a CREATE, and must not be emptied by an UPDATE
-    #: that names it. The second half was missing, so a partial update carrying a blank
-    #: title returned 200 and stored an empty one: the requirement held only at the moment
-    #: of creation and provided no protection afterwards. `agreement` survived by accident,
-    #: because the link format rejects an empty string before this is reached.
-    for required in ("title", *REGISTERS[register].get("requires", ())):
-        article = "an" if required[0] in "aeiou" else "a"
-        if complete and not clean.get(required):
-            raise RecordError(f"every {register} record needs {article} {required}")
-        if not complete and required in clean and not clean[required]:
-            raise RecordError(f"{required!r} cannot be emptied once a record has one")
+        checked, cleaned = _check_one_field(name, value, register=register)
+        clean[checked] = cleaned
+    _check_required(clean, register=register, complete=complete)
     if not clean:
         raise RecordError("nothing to change")
     return clean
@@ -358,7 +390,13 @@ def check_value(name: str, value: str) -> str:
         #: a review date to a week form that happened to resolve to the stored value
         #: returned HTTP 200 and wrote no audit entry at all: the operator believed they had
         #: moved the date, nothing had moved, and no line recorded the attempt.
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        #: `[0-9]` and NOT `\d`, against the analyser's advice. This is suppressed rather
+        #: than fixed, and the suppression is the finding's answer: `\d` is Unicode-aware,
+        #: so it matches the Arabic-Indic digits, and `int()` parses them. The identifier
+        #: grammar carried `\d` for exactly this reason once and a row planted on the
+        #: volume with non-ASCII digits could move the identifier counter. A date is the
+        #: same class of value. Applying S6353 here would reopen it.
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):  # NOSONAR S6353
             raise RecordError(f"{name!r} must be a date as YYYY-MM-DD, not {value[:64]!r}")
         #: And `fromisoformat` IS strict about real calendar dates, which is what it is for
         #: here: it refuses the 31st of February rather than rolling it forward.
@@ -375,7 +413,9 @@ def check_value(name: str, value: str) -> str:
         return value
     if kind == LINK:
         prefix = REGISTERS[detail]["prefix"]
-        if not re.fullmatch(rf"{prefix}-[0-9]{{4,}}", value):
+        #: `[0-9]`, never `\d`, and held by a test: the two halves of one identifier
+        #: grammar must agree, and `next_id` issues ASCII digits only.
+        if not re.fullmatch(rf"{prefix}-[0-9]{{4,}}", value):  # NOSONAR S6353
             raise RecordError(
                 f"{name!r} must name a record in the {detail} register, "
                 f"as {prefix}-0001, not {value[:64]!r}"

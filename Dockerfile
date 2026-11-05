@@ -26,7 +26,7 @@
 # this is more than a month old, re-pin before uploading rather than after being rejected.
 
 # ---- build: install the hash-locked requirements into an isolated virtual environment ----
-FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 AS build
+FROM python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 AS build
 ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN python -m venv /opt/venv
@@ -38,10 +38,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 # at the `.in` level, so the runtime set is a strict subset at identical versions, asserted
 # by the verification loop and by `tests/test_store_and_auth.py`.
 COPY requirements-runtime.txt .
-RUN pip install --require-hashes --no-deps -r requirements-runtime.txt
+# `--only-binary :all:` is a supply-chain control, not a speed flag. Without it pip may
+# fall back to a source distribution and run its setup.py during the build, which is
+# arbitrary code execution from anything in the dependency tree, inside the image that
+# ships. Every pin here resolves to a wheel, so requiring one costs nothing and closes
+# that path. With `--require-hashes` the artefact is already fixed; this fixes its KIND.
+RUN pip install --require-hashes --no-deps --only-binary :all: -r requirements-runtime.txt
 
 # ---- prep: assemble the runtime filesystem, then establish the invariants last ----
-FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 AS prep
+FROM python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 AS prep
 # No `apt-get upgrade` here, deliberately. It installs whatever Debian ships at build
 # time into a digest-pinned base, so the shipped image stops being reproducible from its
 # pinned inputs and the change set is unreviewed. Patch by rebasing to a newer pinned
@@ -57,12 +62,17 @@ FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da52
 # software bill of materials would report zero operating-system packages and therefore
 # zero operating-system vulnerabilities. That is a false clean scan in front of an
 # assessor, which is worse than the finding it hides.
+#
+# One instruction rather than two, because the analyser flags consecutive `RUN`s and the
+# two halves are one idea: take every package manager out, the operating system's and the
+# interpreter's alike. Chained with `&&`, so the order is unchanged and a failure in the
+# first half still stops the build.
 RUN rm -rf /usr/bin/apt /usr/bin/apt-get /usr/bin/apt-cache /usr/bin/apt-config \
            /usr/bin/apt-key /usr/bin/apt-mark /usr/bin/dpkg /usr/bin/dpkg-deb \
            /usr/bin/dpkg-divert /usr/bin/dpkg-query /usr/bin/dpkg-split \
            /usr/bin/dpkg-statoverride /usr/bin/dpkg-trigger /usr/sbin/dpkg-reconfigure \
-           /usr/lib/apt /var/lib/apt/lists /etc/apt
-RUN python -m pip uninstall -y pip setuptools wheel 2>/dev/null || true \
+           /usr/lib/apt /var/lib/apt/lists /etc/apt \
+ && { python -m pip uninstall -y pip setuptools wheel 2>/dev/null || true; } \
  && rm -rf /usr/local/lib/python3.12/ensurepip \
            /usr/local/lib/python3.12/site-packages/pip \
            /usr/local/lib/python3.12/site-packages/setuptools \
@@ -87,15 +97,17 @@ COPY src ./src
 # run after the sweep below.
 # The source tree stays root-owned and world-readable, so the runtime user cannot
 # rewrite its own code: a write primitive then buys no persistence across a restart.
+#
+# Three steps, one instruction, and the ORDER inside it is the control. `useradd` can
+# create setgid artefacts, so it must run BEFORE the sweep; the sweep must be the last
+# thing that mutates this stage; the assertion must run after the sweep and must mutate
+# nothing. Chaining with `&&` keeps all three facts and removes the consecutive-`RUN`
+# finding. It also makes the ordering harder to break by accident than three adjacent
+# instructions did, because a reordering is now visibly a reordering of one command.
 RUN useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin appuser \
- && chmod -R a+rX /app
-# THE LAST MUTATION IN THIS STAGE. Files and directories both: a file-only sweep misses
-# the setgid directories the policy scan stops on. Fails closed.
-RUN find / -xdev -perm /6000 \( -type f -o -type d \) -exec chmod a-s {} +
-# The sweep above is a mutation, so it cannot fail. This is the assertion: the build stops
-# here if any setuid or setgid bit survived it. A check rather than another mutation, so it
-# does not reopen the ordering problem the sweep-last rule exists to close.
-RUN [ -z "$(find / -xdev -perm /6000 \( -type f -o -type d \) -print -quit)" ]
+ && chmod -R a+rX /app \
+ && find / -xdev -perm /6000 \( -type f -o -type d \) -exec chmod a-s {} + \
+ && [ -z "$(find / -xdev -perm /6000 \( -type f -o -type d \) -print -quit)" ]
 
 # ---- ship: one clean layer, so the policy scan finds nothing in layer history ----
 FROM scratch

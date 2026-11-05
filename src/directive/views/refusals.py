@@ -171,7 +171,10 @@ _budget = _Budget()
 
 def reset() -> None:
     """Forget every tracked address and the global budget. For tests and a restart."""
-    global _budget  # noqa: PLW0603 - one process-wide budget, guarded by the lock
+    # One process-wide budget, guarded by the lock. The reason sits above the
+    # suppression rather than trailing it, which the platform analyser reads as
+    # malformed.
+    global _budget  # noqa: PLW0603
     with _guard:
         _windows.clear()
         _budget = _Budget()
