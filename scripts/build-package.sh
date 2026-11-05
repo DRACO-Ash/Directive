@@ -587,6 +587,30 @@ NESTED="$(find "$STAGE" -mindepth 2 -name Dockerfile -print | head -1)"
 ! [ -e "$STAGE/.env" ] || { echo "FAIL: .env is in the package"; exit 1; }
 [ -f "$STAGE/.env.example" ] || { echo "FAIL: .env.example must ship; the suite reads it"; exit 1; }
 
+# One version, one set of bytes. Four packages shipped as 2.3 from four different commits,
+# because nothing here objected: the filename carries the commit, so each build found a
+# free name and wrote it. The App Store sees only the version, so three of those four were
+# uploads of "2.3" that were not the 2.3 before them, which is the state this refuses.
+#
+# Matched on the VERSION and a different COMMIT, never on the date: two builds of one
+# commit on two days are the same bytes and are fine. A dirty tree already carries the
+# `-dirty` suffix, so an uncommitted rebuild does not trip this either.
+#
+# LAST of the refusals, deliberately. Placed earlier it masked the credential sweep: a
+# package carrying a secret was refused for having a stale version number, which is the
+# less important of the two things wrong with it and the one an operator would fix first.
+# A release-hygiene refusal must never answer before a content one.
+EXISTING="$(find dist -maxdepth 1 -name "directive-${VERSION}-*.zip" 2>/dev/null \
+            | grep -v -- "-${COMMIT}\.zip$" | head -3)"
+if [ -n "$EXISTING" ]; then
+  echo "FAIL: version ${VERSION} was already packaged from a different commit:"
+  echo "$EXISTING" | sed 's/^/  /'
+  echo "  Bump the version in pyproject.toml and src/directive/version.py, and add a"
+  echo "  CHANGELOG entry, before building again. If you are rebuilding a released"
+  echo "  version deliberately, remove the stale archive above first."
+  exit 1
+fi
+
 (cd "$STAGE" && zip -q -r -X "../package.zip" . )
 mv -f "$BUILT" "$OUT"
 

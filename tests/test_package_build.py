@@ -111,8 +111,21 @@ def _commit(work: Path, message: str) -> None:
     assert committed.returncode == 0, committed.stderr
 
 
-def _build(work: Path) -> subprocess.CompletedProcess[str]:
-    """Run the real packaging script in the clone and return its result."""
+def _build(work: Path, *, keep_archives: bool = False) -> subprocess.CompletedProcess[str]:
+    """Run the real packaging script in the clone and return its result.
+
+    Stale archives from an earlier call in the same clone are removed first, so each call
+    is independent. Without that, every test that builds twice trips the one-version-one-
+    package guard in `build-package.sh` and fails on a refusal it was not testing, which is
+    a red for the wrong reason.
+
+    `keep_archives=True` leaves them, which is how the two tests that DO exercise that
+    guard set it up. It is a parameter rather than a separate helper so that the guard
+    stays reachable from the suite: a control nothing can trip is a control held by nothing.
+    """
+    if not keep_archives:
+        for stale in (work / "dist").glob("*.zip"):
+            stale.unlink()
     return _run([_tool("sh"), "scripts/build-package.sh"], cwd=work)
 
 
@@ -406,6 +419,39 @@ def test_a_nested_dockerfile_is_refused(clone: Path) -> None:
 
     assert result.returncode != 0, result.stdout
     assert "nested Dockerfile" in result.stdout
+
+
+def test_a_second_package_for_one_version_is_refused(clone: Path) -> None:
+    """One version, one set of bytes, or the App Store receives two different "2.3"s.
+
+    This is the defect the guard exists for and it happened: four packages went out stamped
+    2.3, from four different commits, because the filename carries the commit and every
+    build therefore found a free name. The platform shows the operator only the version, so
+    three of those were uploads of a 2.3 that was not the 2.3 before it.
+    """
+    first = _build(clone)
+    assert first.returncode == 0, first.stdout
+
+    #: A real second commit, so the commit component of the name differs the way it does in
+    #: practice. Without this the rebuild reuses the same filename and proves nothing.
+    (clone / "README.md").write_text("probe: a change after packaging\n", encoding="utf-8")
+    _commit(clone, "probe: change the tree without touching the version")
+    second = _build(clone, keep_archives=True)
+
+    assert second.returncode != 0, second.stdout
+    assert "already packaged from a different commit" in second.stdout
+    assert "Bump the version" in second.stdout
+
+
+def test_a_rebuild_of_the_same_commit_is_allowed(clone: Path) -> None:
+    """The guard is about the VERSION moving with the code, not about building twice.
+
+    Two builds of one commit are the same bytes, and the loop and the simulation both
+    rebuild routinely. A guard that stopped that would be turned off within a week.
+    """
+    assert _build(clone).returncode == 0
+    again = _build(clone, keep_archives=True)
+    assert again.returncode == 0, again.stdout
 
 
 def test_an_implausible_version_is_refused(clone: Path) -> None:
@@ -1263,7 +1309,9 @@ def test_the_exempt_env_example_name_is_the_only_one_exempt(clone: Path) -> None
     assert forced.returncode == 0, forced.stderr
     _commit(clone, "probe: a production environment file under docs")
 
-    refused = _build(clone)
+    #: `keep_archives` so the baseline package below survives, which is what the final
+    #: assertion compares against: no NEW package appeared, not an empty directory.
+    refused = _build(clone, keep_archives=True)
     assert refused.returncode != 0, refused.stdout
     assert "docs/.env.production" in refused.stdout, refused.stdout
     # The baseline build above legitimately wrote a package, so the assertion is that NO

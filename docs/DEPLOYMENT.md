@@ -146,7 +146,7 @@ For a release with a predecessor, roll back by resubmitting the previous package
 Two consequences, both of which matter more than the deletion itself.
 
 ● **Deletion does not revert the volume.** The audit journal, its anchor and the anchor's first-use marker live on the persistent volume, and the anchor refuses to move backwards. A deletion followed by a fresh deploy onto a volume that still carries them is not a clean slate: it is a new application meeting an existing chain. Establish with the platform team whether deleting the application also destroys its FILE_STORAGE claim, because the answer changes what a redeploy is. `TBC, re-verify`.
-● **Archive the package before submitting.** `scripts/build-package.sh` writes a dated, commit-stamped zip and prints its SHA-256. Keep the V2.2 artefact and its digest, so V2.3 has a real predecessor to resubmit and this section stops depending on deletion.
+● **Archive the package before submitting.** `scripts/build-package.sh` writes a dated, commit-stamped zip and prints its SHA-256. Keep the PREVIOUS release's artefact and its digest, so the current one has a real predecessor to resubmit and this section stops depending on deletion. Named by position rather than by number, because a sentence that says V2.2 and V2.3 is stale the next time the version moves, and the version has to move on every change: one version, one set of bytes, enforced by `scripts/build-package.sh`.
 
 ## App Store supply-chain gate readiness
 

@@ -8,6 +8,85 @@ the release-level record the deploy gate reads.
 Dates are UTC. A release is not "shipped" until it is deployed, and nothing has been
 deployed yet, so every row below records a release that was cut, gated and merged.
 
+## V2.4, 2026-11-05, `b4cdd2e` and the version bump that should have come first
+
+**Why this release exists.** V2.3 was uploaded to the App Store three times and rejected
+three times, and every fix went out still stamped 2.3. Four distinct packages carried that
+one version, from four different commits. The platform shows an operator only the version,
+so three of those were uploads of a "2.3" that was not the 2.3 before it. Nothing in the
+build objected, because the archive filename carries the commit and every build therefore
+found a free name. That is the first thing fixed here, and it is fixed in the build rather
+than in a habit: `build-package.sh` now refuses to package a version it has already
+packaged from a different commit, and names what to do. Two tests hold it, one in each
+direction, because a guard that also blocked an ordinary rebuild would be switched off
+within a week.
+
+**Fixed, the three App Store pipeline failures.**
+
+● **Stage 5 ran a different command from the simulation.** `pytest` as a console script and
+  `python -m pytest` are not the same: `python -m` puts the working directory on
+  `sys.path`, the console script does not. The App Store runs the console script, so
+  `import wsgi` resolved locally and failed there. Both `verify.sh` and
+  `simulate-pipeline.sh` used `python -m`, which means the pipeline simulation ran a
+  different command from the pipeline it simulates and reported PASS on a tree stage 5
+  rejected. A simulation that is believed and wrong is worse than none. Both now run the
+  console script, and `conftest.py` puts the project root on the path, so the suite is
+  correct under either command.
+● **The dynamic security scan got no answer.** It runs the image with NO environment
+  variables and this application refuses to boot without Entra ID and without
+  `SESSION_KEY`. Both refusals stay. `auth.scan_mode()` honours the platform's
+  `APPSTORE_DAST_SCAN=true` ONLY while Entra is unconfigured, so it cannot degrade a
+  deployment that has an identity provider, and nothing after boot is relaxed: the session
+  cookie keeps its `Secure` flag and the self-asserted sign-in is refused in that mode
+  exactly as it is when Entra is configured. That last clause is load-bearing, because the
+  sign-in path is gated on Entra being CONFIGURED and without it the boot relaxation would
+  have handed the scanner a signed-in session.
+● **The container scan rejected 15 critical and 145 high**, every one an operating-system
+  package from a base image digest four CVE-months old, the interpreter among them at
+  3.12.14 against a fix in 3.12.16. Re-pinned to the current `python:3.12-slim`, which is
+  3.12.16. Nothing local can see this class, so the pin now carries its date and says to
+  re-pin when it is over a month old.
+
+**Fixed, a test that measured the runner rather than the code.** The export orphan test
+required a mutator thread's first POST to land within twenty milliseconds, which is less
+than one durable `fsync` on a container volume. Reproduced here rather than reasoned about:
+pinned to a single CPU the old code reproduces the platform's exact message about one run
+in three, and the new code passes five of five. Both properties it needs are now
+established by waiting rather than assumed.
+
+**Fixed, five dependency advisories that opened since September**, `werkzeug` among them,
+which ships. The other four are dev-only. Found by re-running the loop, which audits
+against live advisory data, so a lockfile clean in September was not clean in November
+without anyone touching it.
+
+**Changed, the platform quality report answered.** Two bugs, three security hotspots and
+most of the code smells. Three findings were refused with reasons rather than applied, and
+those are recorded in `docs/GATE-RECORDS.md` as well as here:
+
+● **S6353 would have reintroduced a fixed defect.** It asks for `\d` in place of `[0-9]`.
+  `\d` is Unicode-aware, so it matches the Arabic-Indic digits, and `int()` parses them.
+  The identifier grammar carried `\d` for that reason and a row planted on the volume could
+  move the identifier counter.
+● **S7924 reported three contrast failures that are passes.** Measured over the composited
+  backgrounds rather than the declared `rgba()`: 12.88:1, 11.51:1 and 9.63:1 against a
+  4.5:1 floor. The rule reads the declared translucent colour, not what it composites to.
+● **S5754 asked for a narrower exception in the storage probe.** `BaseException` there is a
+  hard rule in `CLAUDE.md`: a probe never raises and never hangs.
+
+**Changed, the record drawer is a native `dialog`.** The analyser asked for it as a style
+note and it closed a real defect: the `role="dialog"` version had no focus trap, so a
+keyboard user could Tab out of an open record into the table behind it. Driven in a browser
+to check rather than assumed, nineteen checks including focus staying inside across
+twenty-five Tab presses with zero leaks.
+
+**Open at this release.** Unchanged from V2.3 and all four belong to their owners: the
+Managing Director's sign-off on the App Store target, the four submission fields, and the
+`securityContext.fsGroup` and single sign-on exemption requests. The container image has
+still never been built or run: there is no Docker daemon in the environment this was built
+in, so its non-root user, setuid sweep, absent package manager and single layer are held by
+reading and by tests rather than by probing a built image. Every page load 404s on
+`/favicon.ico`, which the browser requests unprompted and this application does not ship.
+
 ## V2.3, 2026-09-22, `a3741c8` and the fixes that follow it
 
 **Gates.** `deploy-gate` **FAIL** at `a3741c8`, on five blockers: neither binding review had
