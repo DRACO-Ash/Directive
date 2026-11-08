@@ -293,7 +293,7 @@ RULES = [
     # because the prose rule below correctly matched this very comment twice.
     #
     # Matched on the dotenv SHAPE rather than by widening this rule's equals to allow spaces
-    # around it, which flags 24 findings on 24 lines across every tracked file. Python
+    # around it, which flags 26 findings on 26 lines across every tracked file. Python
     # writes `SUITE_KEY = bytes(...)` with spaces around the equals; dotenv never does.
     #
     # The figures named in `tests/test_sweep_cost_figures.py` are re-measured by it against
@@ -388,10 +388,14 @@ COMPILED = [
 #: arithmetic is what makes RELOCATION visible; the match count and the line digest below
 #: are what make a multiple and a substitution visible. All three were needed, and each was
 #: added only after the previous one had been defeated.
+#: Moved with the sign-in module when Entra ID went. The path it named,
+#: `tests/test_entra_sign_in.py`, was deleted in the same change, and a ledger entry naming
+#: a file that no longer exists is dead allowance: it suppresses nothing and nobody reads
+#: it. The count stays at one line, which is what the parity test opposite asserts.
 EXEMPT_ALLOWED = {
-    "tests/test_entra_sign_in.py": {
+    "tests/test_local_sign_in.py": {
         "matches": 1,
-        "sha256": "7ed7ec605bec24f1d85af16e870e8f722b9ceea4fd06f88c0eec9f9a5504b21e",
+        "sha256": "df983a959198da94c4df3a42ec539a04b5b4794c955a3ff5700f0dfff1f5065d",
     }
 }
 EXEMPT_MARKERS = ("# noqa: S105", "# nosec")
@@ -465,7 +469,7 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # `--env` or list-marker prefix and at any indent, and `| NAME | value |` is caught as
     # a document table row, but `NAME = value` with spaces around the equals is NOT, and a
     # `name: value` mapping in YAML or JSON is NOT. The spaces form was measured: widening
-    # the equals to allow them gives 24 findings on 24 lines across every tracked file,
+    # the equals to allow them gives 26 findings on 26 lines across every tracked file,
     # so the rule would fire on every build and be turned off within a week. The experiment
     # is to replace `=` with `[ \t]*=[ \t]*` in the unquoted rule alone and scan every
     # tracked file. It is a real gap and it is recorded here rather than closed.
@@ -473,8 +477,8 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # The QUOTED rule has its own gap and its own price, and they are separate figures. Its
     # keyword group carries `api_key`, `secret`, `token`, `password`, `passwd` and `pwd` but
     # not a bare `key` or `keys`, which the unquoted rule's group does carry, so `key = "..."`
-    # in source is not caught. Adding them gives 7 findings on 7 lines across every tracked
-    # file, 6 beyond the declared double the shipped rules already report, every one a
+    # in source is not caught. Adding them gives 8 findings on 8 lines across every tracked
+    # file, 7 beyond the declared double the shipped rules already report, every one a
     # session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`.
     # That module list is derived from the scan and asserted, positively and against naming
     # a module the scan does not give. Nothing in this PARAGRAPH restates the count: a

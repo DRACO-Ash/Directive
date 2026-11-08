@@ -50,7 +50,7 @@ Four record types. The first is reference data; the other three are Bluestaq's o
 (document edition and verifier), `applies_from`.
 
 **Control.** Something Bluestaq does. Some already exist implicitly in this application:
-the audit chain, the export cadence, Entra ID authentication.
+the audit chain, the export cadence, the local account list.
 `id`, `title`, `owner`, `state` (a closed vocabulary as the registers have),
 `implemented_by` (free text or a reference to a system).
 

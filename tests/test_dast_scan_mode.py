@@ -1,15 +1,15 @@
 """The App Store's dynamic security scan gets a running container, and nothing else.
 
 The scan runs the image with NO environment variables and expects HTTP on port 8080 within
-sixty seconds. This application refuses to boot without Entra ID and without `SESSION_KEY`,
-both deliberately, so it never answered and the gate reported `no_report`: nothing scanned,
+sixty seconds. This application refuses to boot in production without `SESSION_KEY`,
+deliberately, so it never answered and the gate reported `no_report`: nothing scanned,
 release blocked. The platform's instruction is to generate a throwaway value when
 `APPSTORE_DAST_SCAN=true`.
 
 Every test here exists because the relaxation is an authentication control being stood down
 on a flag, which is the shape of a back door whether or not it is one. What makes it not one
-is that it is honoured ONLY while Entra ID is unconfigured, and that nothing after boot is
-relaxed. Both properties are asserted below, in both directions.
+is that it is honoured ONLY while `SESSION_KEY` is absent, which no real deployment is, and
+that nothing after boot is relaxed. Both properties are asserted below, in both directions.
 """
 
 from __future__ import annotations
@@ -19,13 +19,6 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 from directive import auth, create_app
-
-ENTRA = {
-    "TENANT_ID": "11111111-1111-1111-1111-111111111111",
-    "CLIENT_ID": "22222222-2222-2222-2222-222222222222",
-    "CLIENT_SECRET": "a-secret-value-for-the-test",
-    "REDIRECT_URI": "https://directive.apps.bluestaq.com/auth/callback",
-}
 
 
 @pytest.fixture
@@ -76,20 +69,24 @@ def test_only_the_exact_lower_case_true_arms_the_flag(value: str, tmp_path, monk
         create_app()
 
 
-def test_the_flag_cannot_degrade_a_deployment_that_has_entra(tmp_path, monkeypatch) -> None:
+def test_the_flag_cannot_degrade_a_real_deployment(tmp_path, monkeypatch) -> None:
     """The safety property, stated as a test rather than as a comment.
 
     Set on a real pod, the flag must change nothing. If this ever goes green in the other
-    direction the flag has become a way around the identity provider.
+    direction the flag has become a way past the account list.
+
+    The condition moved when Entra ID did. It used to be "the identity provider is
+    unconfigured"; it is now "`SESSION_KEY` is absent", which is the variable the scanner
+    does not inject and every real deployment does. That is a narrower trigger than the one
+    it replaced, not a wider one: the scan surface is unchanged and the credential store is
+    untouched by the flag in either posture.
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APPSTORE_DAST_SCAN", "true")
-    for name, value in ENTRA.items():
-        monkeypatch.setenv(name, value)
     monkeypatch.setenv("SESSION_KEY", "a-real-session-key-for-the-test")
 
     assert auth.scan_mode() is False
-    assert auth.entra_is_configured() is True
+    assert auth.signing_secret() == b"a-real-session-key-for-the-test"
 
 
 def test_the_scan_is_still_production(scanned: Flask) -> None:
@@ -102,9 +99,10 @@ def test_the_scan_is_still_production(scanned: Flask) -> None:
 def test_the_self_asserted_sign_in_is_refused_under_the_scan(scanned: Flask) -> None:
     """The boot relaxation must not open the sign-in path it sits next to.
 
-    That path is gated on Entra being CONFIGURED, and in scan mode it is not, so without an
-    explicit clause the relaxation would have handed the scanner, and anyone else reaching
-    the container, a signed-in session with a self-asserted actor.
+    That path is offered whenever the posture is not production, and the scan runs with no
+    `DIRECTIVE_ENV` either, so without an explicit clause the relaxation would have handed
+    the scanner, and anyone else reaching the container, a signed-in session with a
+    self-asserted actor.
     """
     client: FlaskClient = scanned.test_client()
     token = client.get("/").headers["X-CSRF-Token"]

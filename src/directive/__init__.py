@@ -17,6 +17,7 @@ from .audit import keys as audit_keys
 from .audit.journal import JournalError, resume
 from .version import __version__
 from .views import health_bp
+from .views.account_routes import account_bp
 from .views.api import api_bp
 from .views.auth_routes import auth_bp
 from .views.console import console_bp
@@ -75,6 +76,7 @@ def create_app() -> Flask:
 
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
+    app.register_blueprint(account_bp)
     app.register_blueprint(console_bp)
     app.register_blueprint(api_bp)
 

@@ -19,7 +19,7 @@ Required by AMD-001 section 10.6.
 ● The container image built from the `Dockerfile` at the repository root.
 ● The deployed instance at `directive.apps.bluestaq.com`.
 
-Out of scope: the Bluestaq App Store platform itself, Microsoft Entra ID, and Microsoft
+Out of scope: the Bluestaq App Store platform itself, and Microsoft
 365, each of which is reported to its own owner.
 
 ## What this application defends

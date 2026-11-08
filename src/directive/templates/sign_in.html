@@ -9,11 +9,19 @@
     <form method="post" action="{{ url_for('auth.sign_in_submit') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="next" value="{{ next_path }}">
-      <label for="actor">Your name or user principal name</label>
-      <input id="actor" name="actor" required maxlength="200" autocomplete="username"
-             placeholder="ash.higgins@bluestaq.uk">
+      <label for="username">{% if local %}Username{% else %}Your name or user principal name{% endif %}</label>
+      <input id="username" name="username" required maxlength="128" autocomplete="username"
+             autocapitalize="none" spellcheck="false" placeholder="ash.higgins@bluestaq.uk">
+      {% if local %}
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required maxlength="1024"
+             autocomplete="current-password">
+      {% endif %}
       <button type="submit" class="primary">Sign in</button>
     </form>
+    {% if local %}
+    <p class="hint">You will be asked for a code from your authenticator app next.</p>
+    {% endif %}
   </main>
 </div>
 {% endblock %}

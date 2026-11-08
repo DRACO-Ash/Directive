@@ -17,7 +17,7 @@ from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from directive import auth, create_app, records, store
+from directive import accounts, auth, create_app, records, store
 from directive.audit.journal import read_entries
 from directive.records import RecordError
 from directive.store import StoreError
@@ -240,12 +240,35 @@ def _chain() -> object:
 # ============================ the authentication posture ============================
 
 
-def test_production_without_entra_refuses_to_start(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_production_without_a_session_key_refuses_to_boot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A build that degrades quietly to "anybody may be anybody" is worse than one that stops."""
     monkeypatch.setenv("DIRECTIVE_ENV", "production")
-    monkeypatch.delenv("TENANT_ID", raising=False)
+    monkeypatch.delenv("SESSION_KEY", raising=False)
     with pytest.raises(auth.AuthNotConfiguredError, match="Refusing to start"):
         auth.check_startup()
+
+
+def test_the_boot_check_does_not_read_the_account_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty or unreadable account list must not stop the process coming up.
+
+    The identity provider check that used to sit here is gone, and the obvious replacement
+    (refuse to boot with no administrator) is the wrong one: it turns a storage fault into a
+    crash loop and takes the diagnostics read-out, which is the recovery channel, down with
+    it. This test is what stops that replacement being added back.
+    """
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
+    monkeypatch.setenv("SESSION_KEY", "a-configured-session-key-value")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    # No account file at all, and then one that cannot be parsed.
+    auth.check_startup()
+    broken = tmp_path / accounts.ACCOUNTS_DIRNAME
+    broken.mkdir()
+    (broken / "accounts.json").write_text("{not json", encoding="utf-8")
+    auth.check_startup()
 
 
 def test_production_without_a_session_key_refuses_to_start(
@@ -269,16 +292,17 @@ def test_development_generates_an_ephemeral_key(monkeypatch: pytest.MonkeyPatch)
     assert len(auth.signing_secret()) == 32
 
 
-def test_the_development_banner_disappears_once_entra_is_configured(
+def test_the_development_banner_is_shown_exactly_when_identities_are_self_asserted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("TENANT_ID", raising=False)
+    """The banner tracks the posture, so it cannot say "verified" while the mode is not."""
+    monkeypatch.setenv("DIRECTIVE_ENV", "development")
+    assert auth.local_accounts_only() is False
     assert "self-asserted" in (auth.development_banner() or "")
 
-    for name in ("TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI"):
-        monkeypatch.setenv(name, "configured")
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
+    assert auth.local_accounts_only() is True
     assert auth.development_banner() is None
-    assert auth.entra_is_configured() is True
 
 
 @pytest.mark.parametrize(
@@ -291,10 +315,10 @@ def test_the_development_banner_disappears_once_entra_is_configured(
         (None, None, False),
     ],
 )
-def test_the_sign_in_state_is_compared_in_constant_time_and_fails_closed(
+def test_a_secret_comparison_is_constant_time_and_fails_closed(
     expected: str | None, received: str | None, matches: bool
 ) -> None:
-    assert auth.state_matches(expected, received) is matches
+    assert auth.constant_time_equal(expected, received) is matches
 
 
 @pytest.mark.parametrize(
@@ -318,27 +342,6 @@ def test_the_post_sign_in_redirect_cannot_leave_this_origin(
     app = create_app()
     with app.test_request_context("/sign-in"):
         assert auth.redirect_after_sign_in(target).headers["Location"] == lands_on
-
-
-def test_an_entra_authorise_url_carries_the_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name, value in [
-        ("TENANT_ID", "tenant"),
-        ("CLIENT_ID", "client"),
-        ("CLIENT_SECRET", "secret"),
-        ("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback"),
-    ]:
-        monkeypatch.setenv(name, value)
-    verifier = auth.new_verifier()
-    url = auth.entra_authorise_url(
-        "the-state", challenge=auth.challenge_for(verifier), nonce="the-nonce"
-    )
-    assert url.startswith("https://login.microsoftonline.com/tenant/")
-    assert "state=the-state" in url
-    assert "client_id=client" in url
-    assert "code_challenge_method=S256" in url
-    assert "nonce=the-nonce" in url
-    assert "secret" not in url, "the client secret must never reach a URL"
-    assert verifier not in url, "the PKCE verifier must never reach a URL"
 
 
 def test_the_audit_actor_is_marked_when_self_asserted(
@@ -777,7 +780,8 @@ def test_an_unset_environment_is_production(monkeypatch: pytest.MonkeyPatch) -> 
 
     The default was `development`, and the variable appeared in neither the environment
     table nor `.env.example`, so a deploy that followed the documentation exactly ran with
-    the Secure cookie flag off, Entra ID unenforced and an ephemeral session key, silently.
+    the Secure cookie flag off, the self-asserted sign-in path open and an ephemeral
+    session key, silently.
     A fail-closed control whose default is "off" is not one.
     """
     monkeypatch.delenv("DIRECTIVE_ENV", raising=False)
@@ -799,8 +803,7 @@ def test_an_unset_environment_refuses_to_boot_unconfigured(
     """Loudly, in both directions. A missing variable is never a silent downgrade."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.delenv("DIRECTIVE_ENV", raising=False)
-    for name in ("TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI", "SESSION_KEY"):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("SESSION_KEY", raising=False)
 
     with pytest.raises(auth.AuthNotConfiguredError, match="DIRECTIVE_ENV is production"):
         create_app()
@@ -905,15 +908,17 @@ def test_the_session_timeouts_are_the_ones_that_shipped(client: FlaskClient) -> 
     `SESSION_LIFETIME` is the flight plan's eight-hour idle timeout and it is what limits a
     stolen session cookie; raising it to 400 days was green across the whole suite, and so
     was dropping the assignment onto `permanent_session_lifetime` entirely, which leaves
-    Flask's 31-day default. `TOKEN_TIMEOUT_SECONDS` bounds the back-channel exchange, and it
-    is the only thing stopping one stalled Entra call from holding a worker thread for as
-    long as the socket stays open, which `docs/DEPLOYMENT.md` records as a live amplifier.
+    Flask's 31-day default. `PENDING_SECONDS` replaces the back-channel timeout that went
+    with Entra ID and bounds a different window: how long a correct password alone leaves a
+    half-finished sign-in standing. That marker grants nothing, but an unbounded one would
+    let an attacker who has the password wait indefinitely for a second factor to be
+    conceded, so the window is a control and is pinned here.
 
     Written out rather than read back from the module, because a pin that imports its own
     subject moves with it.
     """
     assert timedelta(hours=8) == auth.SESSION_LIFETIME
-    assert auth.TOKEN_TIMEOUT_SECONDS == 10
+    assert auth.PENDING_SECONDS == 300
     #: And the lifetime reaches the application, which the pin alone does not say.
     assert client.application.permanent_session_lifetime == timedelta(hours=8)
 
@@ -930,10 +935,6 @@ def test_the_session_cookie_is_secure_in_production(
     """
     monkeypatch.setenv("DIRECTIVE_ENV", "production")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TENANT_ID", "t")
-    monkeypatch.setenv("CLIENT_ID", "c")
-    monkeypatch.setenv("CLIENT_SECRET", "s" * 40)
-    monkeypatch.setenv("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback")
     monkeypatch.setenv("SESSION_KEY", "k" * 64)
     monkeypatch.setenv("AUDIT_HMAC_KEY", bytes(range(32)).hex())
     monkeypatch.setenv("AUDIT_KEY_ID", "k1")

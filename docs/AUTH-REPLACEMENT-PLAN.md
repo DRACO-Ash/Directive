@@ -1,8 +1,20 @@
 # Replacing Entra ID as the identity provider: scope and plan
 
 Bluestaq Ltd, Directive (`directive`). Drafted 2026-11-06 for the decision of the UK
-Information Security Officer. **Nothing in this plan is approved and no code has changed.**
-It exists to be argued with before anything is built.
+Information Security Officer.
+
+> **Decided 2026-11-08: Option C, local accounts. Built and shipped in V2.5.** Ash's
+> decision, with the leaver objection answered on the ground that the App Store itself
+> requires an active Entra ID in the Bluestaq tenant for access, so a former employee
+> cannot reach the application to use an account nobody disabled. That argument depends on
+> `directive.apps.bluestaq.com` sitting behind the same gate as the App Store portal, which
+> is a platform configuration this repository cannot check: `TBC, re-verify` with the
+> platform team.
+>
+> The rest of this document is kept as drafted, including Options A and B, because the
+> reasoning behind a decision is evidence an assessor reads and a plan rewritten after the
+> fact to agree with what was built is worth nothing. Where it says nothing is approved and
+> no code has changed, read it as the state on 2026-11-06.
 
 ## The blocker
 

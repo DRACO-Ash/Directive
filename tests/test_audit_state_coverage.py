@@ -26,6 +26,7 @@ import flask
 import pytest
 from flask.testing import FlaskClient
 
+from conftest import refuse_once
 from directive import create_app, records
 from directive.audit.journal import read_entries
 from directive.views import refusals
@@ -303,9 +304,8 @@ def test_the_refusal_marker_written_to_the_chain_carries_no_caller_value(
         #: A forged callback state, which is the refusable unauthenticated request the rest
         #: of the suite uses. A sign-in POST is not refusable in the development posture,
         #: which is why the first version of this drive produced no refusal rows at all.
-        signed_out.get(
-            "/auth/callback?code=x&state=forged",
-            headers={"X-Repeat-Tag": hostile, "X-Forwarded-For": "198.51.100.7"},
+        refuse_once(
+            signed_out, headers={"X-Repeat-Tag": hostile, "X-Forwarded-For": "198.51.100.7"}
         )
 
     for _ in range(20):
@@ -351,10 +351,8 @@ def test_the_flood_marker_written_to_the_chain_carries_no_caller_value(
     monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 3)
 
     def refuse(address: str) -> None:
-        signed_out.get(
-            "/auth/callback?code=x&state=forged",
-            headers={"X-Repeat-Tag": hostile},
-            environ_base={"REMOTE_ADDR": address},
+        refuse_once(
+            signed_out, headers={"X-Repeat-Tag": hostile}, environ_base={"REMOTE_ADDR": address}
         )
 
     for number in range(10):
@@ -413,11 +411,7 @@ def test_the_recorded_source_address_comes_from_the_socket_never_a_header(
     a caller reaching the pod directly could assert.
     """
     forged = "203.0.113.9"
-    signed_out.get(
-        "/auth/callback?code=x&state=forged",
-        headers={header: forged},
-        environ_base={"REMOTE_ADDR": "198.51.100.4"},
-    )
+    refuse_once(signed_out, headers={header: forged}, environ_base={"REMOTE_ADDR": "198.51.100.4"})
 
     chain = signed_out.application.extensions["directive_chain"]
     recorded = {entry.source_ip for entry in chain.entries}
@@ -1504,10 +1498,10 @@ def _drive_every_channel(client: FlaskClient, channel: str, socket_address: str)
     #: inside `views/refusals.py` and every case here stayed green, because the row that
     #: carries that value was never emitted at all.
     for _ in range(refusals.RECORDED_PER_WINDOW + 2):
-        client.get(f"/auth/callback?code=x&state=forged{query}", headers=headers, environ_base=base)
+        refuse_once(client, headers=headers, environ_base=base)
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
-    client.get(f"/auth/callback?code=x&state=forged{query}", headers=headers, environ_base=base)
+    refuse_once(client, headers=headers, environ_base=base)
 
     form = {"actor": "ash.higgins@bluestaq.uk", "csrf_token": headers["X-CSRF-Token"]}
     if channel == "a form field":
@@ -1603,6 +1597,10 @@ HOLDS_A_REQUEST_CONTEXT = frozenset(
         "auth.py",
         "csrf.py",
         "security_headers.py",
+        #: Added with the local account list. It is a blueprint of its own rather than more
+        #: routes inside `auth_routes.py`, because deciding who may start a session and
+        #: administering the list that decision reads are different jobs.
+        "views/account_routes.py",
         "views/api.py",
         "views/auth_routes.py",
         "views/console.py",
@@ -1639,6 +1637,9 @@ PERMITTED_IMPORTS = frozenset(
         "shutil",
         "stat",
         "string",
+        #: `totp.py` only: RFC 4226 dynamic truncation reads a four-byte big-endian integer
+        #: out of the HMAC, and the counter goes in as eight bytes the same way.
+        "struct",
         "tempfile",
         "threading",
         "time",
@@ -2203,10 +2204,10 @@ def _recorded_addresses(directory: Path, noise: int | None) -> list[str]:
     token = {"X-CSRF-Token": client.get("/").headers["X-CSRF-Token"], **headers}
 
     for _ in range(refusals.RECORDED_PER_WINDOW + 2):
-        client.get(f"/auth/callback?code=x&state=forged&{query}", headers=token, environ_base=base)
+        refuse_once(client, headers=token, environ_base=base)
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
-    client.get(f"/auth/callback?code=x&state=forged&{query}", headers=token, environ_base=base)
+    refuse_once(client, headers=token, environ_base=base)
 
     fresh = client.get("/").headers["X-CSRF-Token"]
     client.post(
@@ -2265,10 +2266,10 @@ def test_the_collapsed_row_records_the_same_address_as_the_rows_it_collapses(
     headers = dict.fromkeys((*FORWARDING_HEADERS, "X-Bluestaq-Peer"), "ash.higgins.laptop")
 
     for _ in range(refusals.RECORDED_PER_WINDOW + 2):
-        client.get("/auth/callback?code=x&state=forged", headers=headers, environ_base=base)
+        refuse_once(client, headers=headers, environ_base=base)
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
-    client.get("/auth/callback?code=x&state=forged", headers=headers, environ_base=base)
+    refuse_once(client, headers=headers, environ_base=base)
 
     persisted = read_entries(str(tmp_path))
     direct = {entry.source_ip for entry in persisted if entry.action == "LOGIN_FAILED"}

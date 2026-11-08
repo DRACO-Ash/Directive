@@ -2,7 +2,7 @@
 
 One authenticated system of record for Bluestaq Ltd's compliance operating rhythm: five
 registers, held on a persistent volume and evidenced by a tamper-evident, keyed and anchored
-audit log, with sign-in against Microsoft Entra ID.
+audit log, with sign-in against its own account list: a password and a one-time code.
 
 | Register | Identifier | What it holds |
 | --- | --- | --- |

@@ -18,8 +18,10 @@ from werkzeug.test import TestResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from conftest import fixed_entry
+from conftest import fixed_entry, refuse_once
 from directive import (
+    accounts,
+    auth,
     create_app,
     csrf,
     records,
@@ -112,7 +114,13 @@ PUBLIC_ROUTES = frozenset(
         ("GET", "/sign-in"),
         ("POST", "/sign-in"),
         ("POST", "/sign-out"),
-        ("GET", "/auth/callback"),
+        #: The second half of a sign-in. Public by necessity, like the first: the caller
+        #: has no session yet, only a PENDING marker that `current_actor` does not read.
+        #: Each one refuses outright without that marker, which the tests below assert.
+        ("GET", "/sign-in/verify"),
+        ("POST", "/sign-in/verify"),
+        ("GET", "/sign-in/enrol"),
+        ("POST", "/sign-in/enrol"),
         ("GET", "/static/<path:filename>"),
     }
 )
@@ -214,6 +222,15 @@ def test_every_unsafe_route_refuses_a_signed_in_caller_without_a_token(
     The auth walk beside this one catches a deleted decorator because it walks the map; this
     one now does the same, so a new unsafe route is covered the day it is added.
     """
+    #: Raised to administrator for the walk. The account-administration routes carry
+    #: `@auth.admin_required` OUTSIDE `@csrf.required`, so a member is refused with a 302
+    #: before the token is ever examined, and the walk would then have read a correct
+    #: authorisation refusal as proof of a token check that deleting the decorator would not
+    #: have disturbed. The role is granted here so the token is the only thing left that can
+    #: refuse, which is what this test claims to measure.
+    with signed_in.session_transaction() as session:
+        session[auth.ROLE_KEY] = accounts.ADMIN
+
     adapter = signed_in.application.url_map.bind("localhost")
     walked: list[tuple[str, str, int]] = []
     exempted: list[tuple[str, str]] = []
@@ -222,7 +239,11 @@ def test_every_unsafe_route_refuses_a_signed_in_caller_without_a_token(
             if (method, rule.rule) in CSRF_EXEMPT_ROUTES:
                 exempted.append((method, rule.rule))
                 continue
-            path = rule.rule.replace("<register>", "tasks").replace("<record_id>", "TSK-0001")
+            path = (
+                rule.rule.replace("<register>", "tasks")
+                .replace("<record_id>", "TSK-0001")
+                .replace("<username>", "someone%40bluestaq.uk")
+            )
             reached, _ = adapter.match(path, method=method)
             assert reached == rule.endpoint, (
                 f"{method} {path} reaches {reached}, not {rule.endpoint}"
@@ -596,52 +617,80 @@ def test_the_console_carries_the_security_headers(signed_in: FlaskClient) -> Non
 
 
 @pytest.fixture
-def entra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
-    """Return a client for an app with Entra ID configured."""
+def local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
+    """Return a client for an app in production mode with a bootstrap administrator."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("DIRECTIVE_ENV", "development")
+    monkeypatch.setenv("DIRECTIVE_ENV", "production")
+    monkeypatch.setenv("SESSION_KEY", "a-session-key-long-enough-to-be-real")
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
-    for name, value in [
-        ("TENANT_ID", "a-tenant"),
-        ("CLIENT_ID", "a-client"),
-        ("CLIENT_SECRET", "a-secret"),
-        ("REDIRECT_URI", "https://directive.apps.bluestaq.com/auth/callback"),
-    ]:
-        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("BOOTSTRAP_ADMIN", "ash.higgins@bluestaq.uk")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "a-bootstrap-password-long-enough")
     return create_app().test_client()
 
 
-def test_a_configured_tenant_sends_the_operator_to_entra(entra: FlaskClient) -> None:
-    response = entra.get("/sign-in")
-    assert response.status_code == 302
-    assert response.headers["Location"].startswith("https://login.microsoftonline.com/a-tenant/")
+def test_the_sign_in_page_asks_for_a_password_in_production(local: FlaskClient) -> None:
+    """The mode is visible on the page, not only in the configuration."""
+    body = local.get("/sign-in").get_data(as_text=True)
+
+    assert 'name="password"' in body
+    assert 'type="password"' in body
 
 
-def test_the_self_asserted_path_is_refused_once_entra_is_configured(entra: FlaskClient) -> None:
-    """The self-asserted path must never become a way around a real identity provider."""
-    sign_in_as(entra, "attacker@evil.example")
-    assert entra.get("/api/registers").status_code == 401
+def test_the_self_asserted_path_is_refused_in_production(local: FlaskClient) -> None:
+    """The development shortcut must never become a way past the credential store.
 
-
-def test_a_callback_without_matching_state_signs_nobody_in(entra: FlaskClient) -> None:
-    """A replayed or forged callback must not authenticate anybody."""
-    entra.get("/sign-in")
-    assert entra.get("/auth/callback?code=x&state=forged").status_code == 302
-    assert entra.get("/api/registers").status_code == 401
-
-
-def test_a_callback_with_matching_state_still_fails_closed(entra: FlaskClient) -> None:
-    """The token exchange needs a real tenant, so until it lands this path signs nobody in.
-
-    Failing closed here is why `check_startup` refuses to boot in production without Entra
-    ID configured: the two rules together mean there is no state in which an unverified
-    actor reaches production.
+    The replacement for the Entra-era version of this test. The shortcut used to be gated
+    on a tenant being configured; it is now gated on the mode, which is the same property
+    against a different identity provider.
     """
-    entra.get("/sign-in")
-    with entra.session_transaction() as stored:
-        state = stored.get("directive_signin_state")
-    assert entra.get(f"/auth/callback?code=x&state={state}").status_code == 302
-    assert entra.get("/api/registers").status_code == 401
+    token = local.get("/").headers["X-CSRF-Token"]
+
+    local.post("/sign-in", data={"actor": "attacker@evil.example", "csrf_token": token})
+
+    assert local.get("/api/registers").status_code == 401
+
+
+def test_a_refused_sign_in_signs_nobody_in(local: FlaskClient) -> None:
+    """A wrong password leaves no session and no half-session."""
+    token = local.get("/").headers["X-CSRF-Token"]
+
+    refused = local.post(
+        "/sign-in",
+        data={
+            "username": "ash.higgins@bluestaq.uk",
+            "password": "not-the-bootstrap-password",
+            "csrf_token": token,
+        },
+    )
+
+    assert refused.status_code == 302
+    assert local.get("/api/registers").status_code == 401
+    assert local.get("/sign-in/verify").status_code == 302, "no pending sign-in should exist"
+
+
+def test_a_correct_password_alone_grants_nothing(local: FlaskClient) -> None:
+    """The property the two-step sign-in exists for.
+
+    A correct password sets a PENDING marker and never an actor, and `current_actor` reads
+    only the actor, so every route behind `auth.required` refuses by construction rather
+    than by remembering to check for a half-finished sign-in.
+    """
+    token = local.get("/").headers["X-CSRF-Token"]
+
+    accepted = local.post(
+        "/sign-in",
+        data={
+            "username": "ash.higgins@bluestaq.uk",
+            "password": "a-bootstrap-password-long-enough",
+            "csrf_token": token,
+        },
+    )
+
+    assert accepted.status_code == 302
+    assert accepted.headers["Location"].endswith("/sign-in/enrol")
+    assert local.get("/api/registers").status_code == 401
+    assert local.get("/console").status_code == 302
+    assert local.get("/accounts").status_code == 302
 
 
 def test_an_already_signed_in_operator_skips_the_sign_in_page(signed_in: FlaskClient) -> None:
@@ -1176,7 +1225,7 @@ def test_no_header_shape_can_suppress_the_callback_entry(
     able to do is leave nothing behind.
     """
     entries = app.extensions["directive_chain"].entries
-    client.get("/auth/callback?code=x&state=forged", headers={"User-Agent": HOSTILE_AGENTS[shape]})
+    refuse_once(client, headers={"User-Agent": HOSTILE_AGENTS[shape]})
 
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"], shape
     assert normalise_fields(entries[0].covered_fields()), "the entry satisfies the boundary"
@@ -1207,7 +1256,7 @@ def test_a_header_cannot_suppress_an_audit_entry_on_the_callback(
     source address and user agent AUD-001 collects for security monitoring.
     """
     entries = app.extensions["directive_chain"].entries
-    client.get("/auth/callback?code=x&state=forged", headers=HOSTILE_AGENT)
+    refuse_once(client, headers=HOSTILE_AGENT)
 
     assert [entry.action for entry in entries] == ["LOGIN_FAILED"]
     assert entries[0].user_agent == "unrecordable"
@@ -1256,7 +1305,7 @@ def test_a_value_that_cannot_be_brought_inside_the_rules_is_marked(
     app: Flask, client: FlaskClient, shape: str
 ) -> None:
     """And where trimming cannot help, the marker appears rather than a partial value."""
-    client.get("/auth/callback?code=x&state=forged", headers={"User-Agent": HOSTILE_AGENTS[shape]})
+    refuse_once(client, headers={"User-Agent": HOSTILE_AGENTS[shape]})
     assert app.extensions["directive_chain"].entries[0].user_agent == "unrecordable", shape
 
 
@@ -1426,7 +1475,7 @@ def test_a_refusal_that_cannot_be_recorded_is_logged(
     chain.append = refuse  # type: ignore[method-assign]
     try:
         with caplog.at_level("ERROR"):
-            client.get("/auth/callback?code=x&state=forged")
+            refuse_once(client)
     finally:
         chain.append = original  # type: ignore[method-assign]
 

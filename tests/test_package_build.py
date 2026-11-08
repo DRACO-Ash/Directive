@@ -295,7 +295,7 @@ def test_a_credential_in_a_filename_is_caught(clone: Path) -> None:
 
 def test_a_second_exemption_is_refused(clone: Path) -> None:
     """The count is pinned at the one line that needs it, so a second is a reviewed change."""
-    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite = clone / "tests" / "test_local_sign_in.py"
     suite.write_text(
         suite.read_text(encoding="utf-8") + f"\nSECOND = {PROBE_CREDENTIAL!r}  # nosec\n",
         encoding="utf-8",
@@ -551,7 +551,7 @@ def test_one_exempt_line_cannot_suppress_several_credentials(clone: Path) -> Non
     A tuple of three credentials on the one permitted line shipped an AWS key, an LLM
     provider key and a GitLab token while the banner still read one exemption honoured.
     """
-    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite = clone / "tests" / "test_local_sign_in.py"
     second = "sk-" + "a" * 24
     suite.write_text(
         suite.read_text(encoding="utf-8")
@@ -681,7 +681,7 @@ def test_several_credentials_on_the_one_exempt_line_are_refused(clone: Path) -> 
 
     All three shipped with the banner still reading a single exemption honoured.
     """
-    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite = clone / "tests" / "test_local_sign_in.py"
     text = suite.read_text(encoding="utf-8")
     extra = f"; OTHER = {PROBE_CREDENTIAL!r}; THIRD = {PROBE_CREDENTIAL!r}"
     suite.write_text(text.replace("  # noqa: S105", f"{extra}  # noqa: S105", 1), encoding="utf-8")
@@ -694,7 +694,7 @@ def test_several_credentials_on_the_one_exempt_line_are_refused(clone: Path) -> 
 
 def test_substituting_a_real_secret_for_the_declared_double_is_refused(clone: Path) -> None:
     """The allowance pins the line by digest, so an edit to it is a reviewed change."""
-    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite = clone / "tests" / "test_local_sign_in.py"
     suite.write_text(
         suite.read_text(encoding="utf-8").replace(
             '"not-a-real-secret"', '"P@ssw0rd-prod-entra-2026"'
@@ -784,7 +784,7 @@ def test_one_credential_shape_repeated_spends_the_whole_budget(clone: Path) -> N
     test that named this control was satisfied by the digest pin instead. This one asserts
     the count message specifically.
     """
-    suite = clone / "tests" / "test_entra_sign_in.py"
+    suite = clone / "tests" / "test_local_sign_in.py"
     text = suite.read_text(encoding="utf-8")
     extra = f"; A = {PROBE_CREDENTIAL!r}; B = {PROBE_CREDENTIAL!r}"
     suite.write_text(text.replace("  # noqa: S105", f"{extra}  # noqa: S105", 1), encoding="utf-8")

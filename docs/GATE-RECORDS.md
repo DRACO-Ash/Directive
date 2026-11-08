@@ -290,7 +290,7 @@ that no sweep mistakes them for a live measurement.
 **What it does not, and why each is left open.**
 
 ● `NAME = value` with spaces around the equals. Measured rather than assumed: allowing them
-  gives 24 findings on 24 lines across every tracked file, so the rule would fire on
+  gives 26 findings on 26 lines across every tracked file, so the rule would fire on
   every build and be switched off within a week. The experiment is to replace `=`
   with `[ \t]*=[ \t]*` in that rule alone and scan every tracked file. The cost of closing
   it is a rule nobody keeps.
@@ -315,8 +315,8 @@ that no sweep mistakes them for a live measurement.
   does not, and the difference had no price against it until the twenty-eighth security run
   and the twenty-second engineering pass, both at `9b3bba3` and both recorded in the table
   above, asked for one. Measured separately from the spaces-around-the-equals figure above,
-  because it is a different rule and a different widening: adding them gives 7 findings on
-  7 lines across every tracked file, 6 beyond the declared double the shipped rules already report, every one a
+  because it is a different rule and a different widening: adding them gives 8 findings on
+  8 lines across every tracked file, 7 beyond the declared double the shipped rules already report, every one a
   session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`. That
   module list is derived from the scan and asserted, positively and against naming a module
   the scan does not give. A count written as a word is invisible to any scanner, so the test

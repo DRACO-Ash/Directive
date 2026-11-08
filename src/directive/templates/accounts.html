@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Accounts{% endblock %}
+{% block body %}
+<div class="signin-wrap">
+  <main class="signin wide" id="main">
+    <h1>Accounts</h1>
+    <p class="sub">Who can sign in to Directive. Every change here writes an audit entry.</p>
+    {% if error %}<output class="banner">{{ error }}</output>{% endif %}
+    {% if notice %}<output class="banner ok">{{ notice }}</output>{% endif %}
+
+    <table class="accounts">
+      <caption>Accounts, newest changes last.</caption>
+      <thead>
+        <tr>
+          <th scope="col">Username</th><th scope="col">Role</th><th scope="col">State</th>
+          <th scope="col">Second factor</th><th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for person in people %}
+        <tr>
+          <th scope="row" class="mono">{{ person.username }}</th>
+          <td>{{ person.role|lower }}</td>
+          <td>
+            {{ person.state|lower }}{% if person.locked %}, locked{% endif %}
+            {%- if person.must_change_password %}, must change password{% endif %}
+          </td>
+          <td>
+            {% if person.enrolled %}enrolled, {{ person.recovery_remaining }} recovery codes left
+            {% else %}not enrolled{% endif %}
+          </td>
+          <td class="row-actions">
+            <form method="post" action="{{ url_for('account.set_state', username=person.username) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="state" value="{% if person.state == 'ACTIVE' %}DISABLED{% else %}ACTIVE{% endif %}">
+              <button type="submit">{% if person.state == 'ACTIVE' %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+            <form method="post" action="{{ url_for('account.set_role', username=person.username) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="role" value="{% if person.role == 'ADMIN' %}MEMBER{% else %}ADMIN{% endif %}">
+              <button type="submit">Make {% if person.role == 'ADMIN' %}member{% else %}admin{% endif %}</button>
+            </form>
+            <form method="post" action="{{ url_for('account.reset_factor', username=person.username) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Reset factor</button>
+            </form>
+            {% if person.locked %}
+            <form method="post" action="{{ url_for('account.unlock', username=person.username) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Unlock</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>Add an account</h2>
+    <form method="post" action="{{ url_for('account.create_account') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="new-username">Username</label>
+      <input id="new-username" name="username" required maxlength="128" autocapitalize="none"
+             spellcheck="false" placeholder="name@bluestaq.uk">
+      <label for="new-password">Starting password</label>
+      <input id="new-password" name="password" type="password" required
+             minlength="{{ minimum }}" maxlength="1024" autocomplete="new-password">
+      <label for="new-role">Role</label>
+      <select id="new-role" name="role">
+        {% for role in roles %}<option value="{{ role }}">{{ role|lower }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="primary">Create account</button>
+    </form>
+    <p class="hint">They must change this password and enrol an authenticator app the first
+      time they sign in. Give it to them in person or by a channel they already trust.</p>
+    <p><a href="{{ url_for('console.dashboard') }}">Back to Directive</a></p>
+  </main>
+</div>
+{% endblock %}

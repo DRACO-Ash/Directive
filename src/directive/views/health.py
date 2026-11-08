@@ -45,13 +45,15 @@ DIAGNOSTICS_CACHE_SECONDS = 10.0
 #: version, the port and whether storage accepts a write, which is what a platform operator
 #: needs and discloses nothing: the credential-presence map, the resolved data directory and
 #: the audit log's path and entry count are all signed-in only.
+#: The identity-provider variables that used to head this tuple are gone with Entra ID.
+#: What replaces them is the pair that creates the FIRST administrator, because the
+#: failure this map exists to diagnose is unchanged in shape: nobody can sign in, and the
+#: operator needs to know from the pod log alone whether the variable arrived.
 CRITICAL_INPUTS: tuple[str, ...] = (
-    "TENANT_ID",
-    "CLIENT_ID",
-    "CLIENT_SECRET",
     "SESSION_KEY",
-    "REDIRECT_URI",
     "AUDIT_HMAC_KEY",
+    "BOOTSTRAP_ADMIN",
+    "BOOTSTRAP_ADMIN_PASSWORD",
 )
 
 health_bp = Blueprint("health", __name__)

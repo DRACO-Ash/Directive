@@ -8,6 +8,89 @@ the release-level record the deploy gate reads.
 Dates are UTC. A release is not "shipped" until it is deployed, and nothing has been
 deployed yet, so every row below records a release that was cut, gated and merged.
 
+## V2.5, 2026-11-08, Entra ID out, a local account list in
+
+**Why this release exists.** The IT team confirmed that this application cannot
+authenticate users against the Bluestaq Ltd Entra ID tenant. That removed the identity
+provider the application was built against, the one the signed accreditation names, and the
+one AMD-001 section 10.4 requires by name. `docs/AUTH-REPLACEMENT-PLAN.md` set out three
+options; Ash chose Option C, local accounts, on 2026-11-08. The reason the tenant is
+unavailable was not supplied and is recorded as `TBC, re-verify` rather than invented.
+
+**What a sign-in is now.** A username and a password, verified against a stored scrypt hash
+at the Open Web Application Security Project's minimum parameters (N=2^17, r=8, p=1, so 128
+MiB and about 430 milliseconds per attempt on the build host), and then a time-based
+one-time password per RFC 6238 which every account enrols at first sign-in, with ten
+single-use recovery codes. A correct password alone grants nothing: the half-finished state
+is a PENDING marker that `current_actor` does not read, so no route behind the gate can see
+it, and it expires after 300 seconds. scrypt rather than Argon2id because it is in the
+standard library, and this build installs with `--only-binary :all:` from hash-locked
+lockfiles: a new runtime dependency for a hash the standard library already ships at the
+recommended parameters is a worse trade than it looks.
+
+**What went with Entra ID.** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `REDIRECT_URI`;
+the `/auth/callback` route; the authorisation code flow with PKCE; the `amr` check added in
+V2.2; and the recorded deviation that the identity token's signature was never verified,
+which is closed by removal rather than by work. There is now no outbound HTTP call anywhere
+in the application: no HTTP client is imported under `src/`.
+
+**What arrived with the account list.** `BOOTSTRAP_ADMIN` and `BOOTSTRAP_ADMIN_PASSWORD`
+create the first administrator when the list is empty, and that account must change its
+password at first sign-in, so the value that travelled through the platform's environment is
+replaced by one only that person knows. A second role, `admin`, governs account
+administration only and does not partition the registers. Every account-administration
+route writes an audit entry, refusals included, and the last enabled administrator cannot be
+disabled or demoted.
+
+**What the account file is held to.** It is a credential store on the persistent volume, so
+it is written at mode 0600 before any byte reaches it, then fsynced and renamed. It lives
+under `DATA_DIR/accounts/` and deliberately NOT under `DATA_DIR/records/`, which the export
+globs: a password hash must not be able to leave the volume inside an exported register, and
+a test asserts the directory as well as the absence. `redacted()` is an allowlist of nine
+fields rather than a denylist, because a denylist is one new field away from leaking it.
+
+**Boot deliberately does not read the account list.** The Entra check in `check_startup` is
+gone and is NOT replaced by a check that an administrator exists. An empty or unreadable
+list is recoverable at runtime and a storage fault that refuses the boot is a crash loop
+that takes the diagnostics read-out, the recovery channel, down with it. A test holds that,
+including against an account file that cannot be parsed.
+
+**Figures that moved with the tree, re-measured rather than edited.** Both of the credential
+sweep's widening experiments cost more on this tree than on the last one, because the tree
+gained modules. The numbers are not restated here: they live beside the rules in
+`scripts/build-package.sh` and under Open in scope in `docs/GATE-RECORDS.md`, each re-run
+against the live rules by `tests/test_sweep_cost_figures.py` on every build. Restating a
+measured figure in a fourth place is how this project shipped a wrong one three times.
+
+**Three instruments caught something real and are recorded because they did.**
+
+● The cross-site request forgery walk read a 302 from `@auth.admin_required` as proof of a
+  token check on the five new account-administration routes. The authorisation refusal fires
+  first, so deleting `@csrf.required` from any of them would not have disturbed it. The walk
+  now raises the session to administrator so the token is the only thing left that can
+  refuse, and a mutation confirms it reds.
+● The audit-entry construction rule failed closed on `rows.append(created)` in
+  `account_routes.py`, where `rows` is the account list rather than the audit chain. Fixed
+  by removing the append, not by widening the exemption list the rule reads.
+● The sweep over the staged package reported the new suite's test password. It was a true
+  positive on a line shaped like a credential in a file the package ships, and the comment
+  beside that line said it matched no credential pattern, which was an over-claim. The line
+  is now declared in the exemption ledger by path, match count and digest, and the second
+  test password was collapsed into one derived from it so the exempt surface stayed at one
+  line rather than growing to two.
+
+**Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
+And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
+sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
+off. `docs/ACCREDITATION-REVIEW.md` carries the re-accept action.
+
+**One thing this repository cannot check, stated rather than implied.** Local accounts
+outlive an employment unless somebody disables them. The argument that this does not matter
+is that the App Store requires an active Entra ID in the Bluestaq tenant for access, so a
+former employee cannot reach the application at all. That holds only while
+`directive.apps.bluestaq.com` is behind the same gate as the App Store portal, which is a
+platform configuration: `TBC, re-verify` with the platform team.
+
 ## V2.4, 2026-11-05, `b4cdd2e` and the version bump that should have come first
 
 **Why this release exists.** V2.3 was uploaded to the App Store three times and rejected
@@ -308,8 +391,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 24 findings
-  on 24 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 26 findings
+  on 26 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

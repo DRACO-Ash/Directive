@@ -1,106 +1,98 @@
-"""The authentication boundary: who is acting, and may they.
+"""Who is signed in, and how this application decided that.
 
-Authentication stays in the application, against Entra ID, rather than being delegated to
-the platform gateway. Ash's decision, and the reason is evidential: the actor on an audit
-entry comes from a verified token rather than from a header that a caller reaching the pod
-directly could simply assert. That is what makes attribution defensible in front of an
-assessor, and it satisfies AMD-001 section 10.4 directly.
+**This build authenticates against its own account list.** Microsoft Entra ID is not
+available to this application: the Bluestaq Ltd tenant cannot be used for it, confirmed by
+IT in November 2026. The previous implementation was an OpenID Connect client pointed at
+that tenant, and it is gone. See ``docs/AUTH-REPLACEMENT-PLAN.md`` for the options that
+were weighed and ``docs/ACCREDITATION-REVIEW.md`` for what that costs in policy terms.
 
-The gate is SERVER-SIDE and fails closed. There is no client-side flag, no hidden field and
-no trusted header anywhere in this module: a browser can only present a session cookie that
-this process signed.
+**What replaces it, and what does not change.** The actor on an audit entry still comes
+from something this application verified rather than from a header a caller could assert.
+Under Entra that was a signed token; here it is a password checked against a stored hash
+plus a one-time code checked against a stored secret. The property the audit log depends on
+survives the change of mechanism, which was the whole point of preferring this over a
+gateway that announces the user in a request header.
 
-Two modes, and the difference between them is enforced, not documented:
+**Two factors, and the second is not optional in production.** A compliance system of
+record behind a single factor is a worse position than the signed accreditation already
+describes. An account with no enrolled second factor cannot complete a sign-in: it is sent
+to enrolment and gets no session until that finishes.
 
-● **Configured.** `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `REDIRECT_URI` are all set,
-  and sign-in goes to Entra ID through the OAuth 2.0 authorisation code flow with Proof Key
-  for Code Exchange (PKCE).
-● **Local development.** None of them is set and `DIRECTIVE_ENV` is exactly `development`.
-  The operator names themselves at sign-in and every audit entry records that the actor was
-  self-asserted. Binding to the loopback address is the OPERATOR's responsibility and is
-  not enforced here: `wsgi.py` binds `0.0.0.0` because the platform probe requires it, and
-  no handler checks `remote_addr`. Said plainly because this list is otherwise a list of
-  things the code enforces.
+**The sign-in has two halves and the first one grants nothing.** A correct password puts a
+PENDING marker on the session, never an actor. `current_actor` reads only the actor key, so
+every route guarded by `required` refuses a half-authenticated caller by construction
+rather than by remembering to check. The marker expires on its own.
+
+Two modes, as before:
+
+● **Production.** `DIRECTIVE_ENV` is anything but `development`. The session cookie is
+  `Secure`, `SESSION_KEY` is required, and the only way in is a real account.
+● **Local development.** `DIRECTIVE_ENV` is exactly `development`, and a self-asserted
+  actor is accepted so the console can be driven without a credential store. Every audit
+  entry written that way is marked self-asserted, so evidence produced in development can
+  never be mistaken for evidence of a verified identity.
 
 `DIRECTIVE_ENV` must be set to `development` to get the second mode. Anything else, an
-unset variable included, is production. That default is deliberate and it is the fail-closed
-direction: an unset variable costs a local developer one line, and the other way round it
-silently cost the deployed application its Secure cookie flag and its identity provider.
-
-The second mode REFUSES TO START in production. A build that quietly degrades to
-"anybody may sign in as anybody" the moment a variable is missing is worse than one that
-will not boot, because the failure is invisible until an assessor asks who did something.
+unset variable included, is production. The default was `development` once, and it was
+documented in neither the environment table nor this docstring, which silently cost the
+deployed application its Secure cookie flag and its identity provider.
 """
 
 from __future__ import annotations
 
-import base64
 import functools
-import hashlib
 import hmac
-import json
 import logging
 import secrets
+import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
 from flask import Flask, redirect, request, session, url_for
 from werkzeug.wrappers.response import Response
 
-from . import config
+from . import accounts, config
 
-#: The session keys this module owns.
+#: The session keys. `ACTOR_KEY` is the only one `current_actor` reads, which is what makes
+#: a half-finished sign-in grant nothing.
 ACTOR_KEY = "directive_actor"
 VERIFIED_KEY = "directive_verified"
+ROLE_KEY = "directive_role"
 
-#: How a self-asserted actor is marked, on the session and on every audit entry it causes.
+#: The half-finished sign-in: the password was right and the second factor has not been
+#: presented yet. Deliberately a different key from `ACTOR_KEY`.
+PENDING_KEY = "directive_pending"
+PENDING_SINCE_KEY = "directive_pending_since"
+
+#: How long a half-finished sign-in stays open. Long enough to read a code off a phone,
+#: short enough that a borrowed browser is not a standing invitation.
+PENDING_SECONDS = 300
+
+#: Appended to an actor that was self-asserted rather than verified.
 SELF_ASSERTED_SUFFIX = " (self-asserted)"
 
-
-class AuthNotConfiguredError(RuntimeError):
-    """Raised when the app would run unauthenticated somewhere it must not."""
-
-
-def entra_is_configured() -> bool:
-    """Return whether every Entra ID value needed for a real sign-in is present."""
-    return all(
-        config.env(name) for name in ("TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI")
-    )
-
-
-#: The value that selects local development. Anything else, including an unset variable,
-#: is production.
 #: The console's landing endpoint, and the destination every refused redirect takes.
 DASHBOARD_ENDPOINT = "console.dashboard"
 
+#: The value that selects local development. Anything else, including an unset variable,
+#: is production.
 DEVELOPMENT = "development"
 
-#: This module's logger. It carries exactly one message, the scan-mode warning, and that
-#: message is the only record anybody gets that the identity provider was skipped.
 LOGGER = logging.getLogger(__name__)
 
 
+class AuthNotConfiguredError(RuntimeError):
+    """Raised at start-up when production is configured without what it needs."""
+
+
 def is_production() -> bool:
-    """Return whether this process is running in production. Unset means YES.
+    """Return whether this process is running in production mode.
 
-    The default was `development`, and it was documented in neither the environment table
-    nor `.env.example`, so a deploy that followed the documentation exactly ran with
-    `SESSION_COOKIE_SECURE` off, Entra ID unenforced and an ephemeral session key, all
-    silently. Every one of those guards is a fail-closed control, and a fail-closed control
-    whose default is "off" is not one.
-
-    So the default is now production. A missing variable costs a local developer one line
-    in their `.env`; the other way round it cost the deployed application its session
-    cookie's Secure flag and its identity provider. The failure is loud in both directions:
-    unconfigured production refuses to boot with a message naming what to set.
+    The DEFAULT is production. An unset or misspelt `DIRECTIVE_ENV` gets the strict mode
+    rather than the permissive one, which is the only safe direction for a variable whose
+    absence would otherwise turn off the Secure cookie flag and the credential requirement.
     """
-    # The `.strip()` is redundant: `config.env` already normalises through `config.normalise`,
-    # which strips whitespace, surrounding quotes and control characters. Kept as belt and
-    # braces on a security-posture decision, and noted here because a mutation that removes
-    # it survives the suite and would otherwise read as a coverage gap.
     return config.env("DIRECTIVE_ENV", "production").strip().lower() != DEVELOPMENT
 
 
@@ -108,61 +100,65 @@ def scan_mode() -> bool:
     """Return whether this process is the App Store's dynamic security scan.
 
     The scan runs the image with NO environment variables and expects HTTP on port 8080
-    within sixty seconds. This application refuses to boot without Entra ID and without
-    `SESSION_KEY`, both deliberately, so it never answered and the gate reported
-    `no_report`. The platform's own instruction is to generate a throwaway value when
-    `APPSTORE_DAST_SCAN=true`, and this is that.
-
-    Read the second condition as the whole of the safety argument, because the first is only
-    a string match. The flag is honoured ONLY while Entra ID is unconfigured, so it can
-    never degrade a deployment that HAS an identity provider: set it on the real pod and
-    nothing changes. Where Entra is unconfigured the process would not have started at all,
-    so the flag turns a dead container into a running one, and it gives an attacker who can
-    already set environment variables nothing new, because `DIRECTIVE_ENV` has offered the
-    same degradation since V2.1 and is the shorter route to it.
-
-    What it does NOT relax is anything after boot. `is_production()` stays true, so the
-    session cookie keeps its `Secure` flag, and the self-asserted sign-in is refused in this
-    mode exactly as it is when Entra is configured. The scanner therefore crawls the real
-    unauthenticated surface, which is the surface worth scanning.
+    within sixty seconds. It is honoured only when `SESSION_KEY` is absent, so it cannot
+    change the behaviour of a real deployment, which always has one. What it relaxes is the
+    `SESSION_KEY` refusal and nothing else: the account list is still the only way in, and
+    the scan has no account, so it crawls exactly the unauthenticated surface.
     """
     asserted = config.env("APPSTORE_DAST_SCAN").strip().lower() == "true"
-    return asserted and not entra_is_configured()
+    return asserted and not config.env("SESSION_KEY")
 
 
 def check_startup() -> None:
-    """Refuse to boot in production without a real identity provider.
+    """Refuse to boot in production without what production needs.
 
-    The one thing this module must never do is degrade quietly. In production, unconfigured
-    Entra ID is a hard stop, unless this is the platform's own scan: see :func:`scan_mode`.
+    One check remains, for `SESSION_KEY`. The Entra check that used to live here is gone
+    with Entra, and it is NOT replaced by a check that accounts exist, deliberately. An
+    empty account list is recoverable at runtime: nobody can sign in, `/api/diagnostics`
+    says how many accounts there are, and an operator fixes it by setting the bootstrap
+    variables and restarting. Reading the volume to decide whether to boot would turn a
+    storage fault into a crash loop, and the diagnostics read-out is the recovery channel
+    for a bad configuration, so nothing in the boot path may prevent boot over it.
     """
-    if is_production() and not entra_is_configured():
-        if scan_mode():
-            LOGGER.warning(
-                "boot: APPSTORE_DAST_SCAN is set and Entra ID is unconfigured, so this "
-                "process is starting WITHOUT an identity provider, for the platform's "
-                "security scan. Every sign-in path is refused. If you are reading this in a "
-                "real deployment the variable is set wrongly: unset it and supply Entra ID."
-            )
-            return
+    if is_production() and not config.env("SESSION_KEY") and not scan_mode():
         raise AuthNotConfiguredError(
-            "DIRECTIVE_ENV is production but Entra ID is not configured. Set TENANT_ID, "
-            "CLIENT_ID, CLIENT_SECRET and REDIRECT_URI. Refusing to start rather than "
-            "accept a self-asserted actor on audit evidence."
+            "SESSION_KEY is not set and DIRECTIVE_ENV is production. Refusing to start with "
+            "an ephemeral session key, which would sign every user out on each restart and "
+            "differ between workers."
         )
+
+
+def local_accounts_only() -> bool:
+    """Return whether a real credential is required to sign in.
+
+    True in production. In development the self-asserted path is offered instead, and the
+    banner says so on every page.
+    """
+    return is_production()
+
+
+# ---------------------------------------------------------------- the session
 
 
 def current_actor() -> str | None:
     """Return the signed-in actor, or ``None``.
 
-    Read from the server-signed session cookie only. Nothing here consults a request header.
+    Read from the server-signed session cookie only. Nothing here consults a request header,
+    and nothing here reads the PENDING key, so a caller who has given a correct password and
+    no second factor is not signed in by any measure this application takes.
     """
     actor = session.get(ACTOR_KEY)
     return actor if isinstance(actor, str) and actor else None
 
 
+def current_role() -> str:
+    """Return the signed-in actor's role, defaulting to the lesser one."""
+    role = session.get(ROLE_KEY)
+    return role if isinstance(role, str) and role in accounts.ROLES else accounts.MEMBER
+
+
 def actor_is_verified() -> bool:
-    """Return whether the actor came from a verified token rather than self-assertion."""
+    """Return whether the actor was authenticated rather than self-asserted."""
     return bool(session.get(VERIFIED_KEY))
 
 
@@ -176,12 +172,50 @@ def audit_actor() -> str:
     return actor if actor_is_verified() else f"{actor}{SELF_ASSERTED_SUFFIX}"
 
 
-def sign_in(actor: str, *, verified: bool) -> None:
-    """Record a signed-in actor on the session."""
+def sign_in(actor: str, *, verified: bool, role: str = accounts.MEMBER) -> None:
+    """Record a fully signed-in actor on the session.
+
+    `session.clear()` first, so a pending marker from the first half cannot survive into the
+    signed-in session and so no value set before authentication is carried across it.
+    """
     session.clear()
     session[ACTOR_KEY] = actor
     session[VERIFIED_KEY] = verified
+    session[ROLE_KEY] = role if role in accounts.ROLES else accounts.MEMBER
     session.permanent = True
+
+
+def begin_second_factor(username: str) -> None:
+    """Record that a password was accepted and a second factor is awaited.
+
+    This grants nothing. It names who is halfway through, and when, so the wait can expire.
+    """
+    session.clear()
+    session[PENDING_KEY] = username
+    session[PENDING_SINCE_KEY] = time.time()
+    session.permanent = False
+
+
+def pending_actor(*, now: float | None = None) -> str | None:
+    """Return who is halfway through a sign-in, or ``None`` if nobody or if it expired."""
+    username = session.get(PENDING_KEY)
+    if not isinstance(username, str) or not username:
+        return None
+    started = session.get(PENDING_SINCE_KEY)
+    moment = time.time() if now is None else now
+    try:
+        age = moment - float(started)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if age < 0 or age > PENDING_SECONDS:
+        return None
+    return username
+
+
+def abandon_second_factor() -> None:
+    """Forget a half-finished sign-in."""
+    session.pop(PENDING_KEY, None)
+    session.pop(PENDING_SINCE_KEY, None)
 
 
 def sign_out() -> None:
@@ -207,23 +241,31 @@ def required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
     return guarded  # type: ignore[return-value]
 
 
-def new_state() -> str:
-    """Return a fresh cross-site request forgery state value for the sign-in round trip."""
-    return secrets.token_urlsafe(32)
+def admin_required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
+    """Refuse a request from anyone who is not an administrator.
 
+    The second role this application has ever had. It exists because somebody has to create
+    and disable accounts, and giving that power to everyone who can read a register would
+    make the account list editable by anyone it lists.
 
-def state_matches(expected: str | None, received: str | None) -> bool:
-    """Compare two sign-in state values in constant time, failing closed on either missing.
-
-    Non-ASCII fails closed rather than raising: `compare_digest` raises TypeError on a
-    non-ASCII str, and this runs on an unauthenticated route, so an unhandled 500 would
-    also skip the LOGIN_FAILED entry the refusal path writes.
+    Stacks on top of `required` rather than replacing it: an anonymous caller gets the
+    sign-in redirect, and a signed-in caller without the role gets a flat refusal with no
+    hint that an administrative page exists at that address.
     """
-    if not expected or not received:
-        return False
-    if not expected.isascii() or not received.isascii():
-        return False
-    return hmac.compare_digest(expected, received)
+
+    @functools.wraps(handler)
+    def guarded(*args: object, **kwargs: object) -> object:
+        if current_actor() is None:
+            if request.path.startswith("/api/"):
+                return {"error": "sign-in required"}, 401
+            return redirect(url_for("auth.sign_in_page", next=request.path))
+        if current_role() != accounts.ADMIN:
+            if request.path.startswith("/api/"):
+                return {"error": "not permitted"}, 403
+            return redirect(url_for(DASHBOARD_ENDPOINT))
+        return handler(*args, **kwargs)
+
+    return guarded  # type: ignore[return-value]
 
 
 def configure(app: Flask) -> None:
@@ -258,12 +300,26 @@ def signing_secret() -> bytes:
 
 def development_banner() -> str | None:
     """Return the warning to show when identities are self-asserted, or ``None``."""
-    if entra_is_configured():
+    if local_accounts_only():
         return None
     return (
-        "Development mode: Entra ID is not configured, so the actor below is self-asserted "
-        "and every audit entry records it as such. This mode refuses to start in production."
+        "Development mode: identities here are self-asserted, and every audit entry records "
+        "them as such. This mode refuses to run in production."
     )
+
+
+def constant_time_equal(expected: str | None, received: str | None) -> bool:
+    """Compare two strings in constant time, failing closed on either missing.
+
+    Non-ASCII fails closed rather than raising: `compare_digest` raises TypeError on a
+    non-ASCII str, and this runs on unauthenticated routes, so an unhandled 500 would also
+    skip the LOGIN_FAILED entry the refusal path writes.
+    """
+    if not expected or not received:
+        return False
+    if not expected.isascii() or not received.isascii():
+        return False
+    return hmac.compare_digest(expected, received)
 
 
 def redirect_after_sign_in(target: str | None) -> Response:
@@ -290,226 +346,72 @@ def redirect_after_sign_in(target: str | None) -> Response:
     return redirect(target)
 
 
-#: The Entra ID host. A constant rather than configuration, so a misconfigured value can
-#: never redirect a sign-in or a client secret to somebody else's endpoint.
-ENTRA_HOST = "https://login.microsoftonline.com"
-
-#: The scopes requested. Identity only: this application reads no mailbox, no calendar and
-#: no directory, and asking for what it does not need is what turns a token leak into a
-#: bigger one.
-ENTRA_SCOPES = "openid profile email"
-
-#: How much clock skew is tolerated when checking a token's expiry.
-CLOCK_SKEW_SECONDS = 60
-
-#: How long the back-channel token exchange may take before it is abandoned. A sign-in that
-#: hangs is a sign-in that holds a worker thread.
-TOKEN_TIMEOUT_SECONDS = 10
+# ---------------------------------------------------------------- the account list
 
 
-#: The authentication method reference (RFC 8176) Entra ID places in an identity token's
-#: `amr` claim when the sign-in satisfied multi-factor authentication. AMD-001 section 10.4
-#: requires Entra ID with MFA, and the tenant's Conditional Access policy is what performs
-#: it; this check makes the application refuse a token that does not attest it, so a policy
-#: scoped down, excluded for an account, or bypassed by a break-glass path becomes a refused
-#: sign-in and a LOGIN_FAILED row rather than a verified actor on the audit log.
-#:
-#: Be precise about the limit. `amr` says which methods THIS sign-in used. A Conditional
-#: Access grant satisfied by a compliant device or a trusted location without an MFA prompt
-#: yields `["pwd"]`, and this check refuses it. That is deliberate: the policy asks for MFA,
-#: not for a policy that may waive it. If the tenant design relies on such grants, the
-#: design is reconciled first; this constant is not widened to fit it.
-MFA_METHOD = "mfa"
+def bootstrap_configured() -> bool:
+    """Return whether a first administrator can be created from the environment."""
+    return bool(config.env("BOOTSTRAP_ADMIN") and config.env("BOOTSTRAP_ADMIN_PASSWORD"))
 
 
-class AuthError(RuntimeError):
-    """Raised when a sign-in cannot be completed. The caller sees a generic failure."""
+def ensure_bootstrap(data_dir: str) -> bool:
+    """Create the first administrator from the environment, if there are no accounts.
 
+    Returns whether an account was created. Runs only while the list is EMPTY, so it cannot
+    resurrect a disabled administrator or reset a real one: once anybody exists, the
+    bootstrap variables do nothing at all.
 
-def authorise_endpoint() -> str:
-    """Return the tenant's authorisation endpoint."""
-    return f"{ENTRA_HOST}/{quote(str(config.env('TENANT_ID')), safe='')}/oauth2/v2.0/authorize"
-
-
-def token_endpoint() -> str:
-    """Return the tenant's token endpoint."""
-    return f"{ENTRA_HOST}/{quote(str(config.env('TENANT_ID')), safe='')}/oauth2/v2.0/token"
-
-
-def expected_issuer() -> str:
-    """Return the issuer an identity token from this tenant must name."""
-    return f"{ENTRA_HOST}/{config.env('TENANT_ID')}/v2.0"
-
-
-def new_verifier() -> str:
-    """Return a fresh Proof Key for Code Exchange (PKCE) verifier."""
-    return secrets.token_urlsafe(64)
-
-
-def challenge_for(verifier: str) -> str:
-    """Return the S256 challenge for a verifier.
-
-    PKCE binds the authorisation code to the browser that started the sign-in, so a code
-    intercepted from the redirect cannot be redeemed by anybody else. A confidential client
-    already holds a secret; this closes the window where the code is in a URL and the
-    secret is not yet involved.
+    The created account must change its password at first sign-in, so the value that
+    travelled through the platform's environment is replaced by one only the person knows.
+    The operator should then remove `BOOTSTRAP_ADMIN_PASSWORD`; leaving it set is harmless
+    while accounts exist, but an unused credential in a configuration store is a credential
+    somebody eventually reuses.
     """
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
-def entra_authorise_url(state: str, *, challenge: str, nonce: str) -> str:
-    """Return the Entra ID authorisation URL for the configured tenant.
-
-    Every value is URL-encoded. A configured value interpolated raw would let a stray
-    ampersand in a redirect URI inject a parameter into this application's own sign-in.
-    """
-    query = urlencode(
-        {
-            "client_id": config.env("CLIENT_ID"),
-            "response_type": "code",
-            "redirect_uri": config.env("REDIRECT_URI"),
-            "response_mode": "query",
-            "scope": ENTRA_SCOPES,
-            "state": state,
-            "nonce": nonce,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-        }
+    username = config.env("BOOTSTRAP_ADMIN")
+    password = config.env("BOOTSTRAP_ADMIN_PASSWORD")
+    if not username or not password:
+        return False
+    with accounts.with_lock():
+        rows = accounts.load(data_dir)
+        if rows:
+            return False
+        try:
+            created = accounts.new_account(username, password, role=accounts.ADMIN)
+        except accounts.AccountError:
+            LOGGER.exception("bootstrap administrator not created")
+            return False
+        accounts.save(data_dir, [created])
+    LOGGER.warning(
+        "bootstrap: created the first administrator %r from the environment. It must change "
+        "its password at first sign-in. Remove BOOTSTRAP_ADMIN_PASSWORD once that is done.",
+        created["username"],
     )
-    return f"{authorise_endpoint()}?{query}"
+    return True
 
 
-def _post_form(url: str, form: dict[str, str]) -> dict[str, Any]:
-    """POST a form to Entra ID over TLS and return the parsed response.
+def describe(data_dir: str | None = None) -> dict[str, object]:
+    """Return the authentication posture, for the diagnostics read-out.
 
-    Held in one function so a test can replace exactly this and nothing else. The URL is
-    built from :data:`ENTRA_HOST`, so it is always HTTPS to Microsoft; it is asserted
-    anyway, because a future edit that made the host configurable would otherwise send a
-    client secret wherever that configuration pointed.
+    Counts, never names. The number of accounts tells an operator whether a deployment is
+    usable; the list of who they are is not something an unauthenticated caller needs, and
+    `/api/diagnostics` splits exactly on that line.
     """
-    if not url.startswith(f"{ENTRA_HOST}/"):
-        raise AuthError("the token endpoint is not the configured Entra ID host")
-    request_body = urlencode(form).encode("ascii")
-    post = Request(  # noqa: S310 - the scheme is fixed to HTTPS by the check above
-        url,
-        data=request_body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    try:
-        # Both analysers flag urlopen because a caller-supplied URL could name file:/ or a
-        # custom scheme. This one cannot: the check above requires it to begin with the
-        # ENTRA_HOST literal, which is an https URL fixed in source. Suppressed with the
-        # reason rather than by relaxing either analyser.
-        with urlopen(post, timeout=TOKEN_TIMEOUT_SECONDS) as response:  # noqa: S310  # nosec B310
-            return dict(json.loads(response.read().decode("utf-8")))
-    except (OSError, ValueError) as error:
-        raise AuthError(f"the token exchange failed: {type(error).__name__}") from error
-
-
-def exchange_code(code: str, verifier: str) -> dict[str, Any]:
-    """Redeem an authorisation code for tokens, over the back channel.
-
-    The client secret goes only here, in a POST body to Microsoft over TLS, never into a
-    URL and never near the browser.
-    """
-    payload = _post_form(
-        token_endpoint(),
-        {
-            "client_id": str(config.env("CLIENT_ID")),
-            "client_secret": str(config.env("CLIENT_SECRET")),
-            "code": code,
-            "grant_type": "authorization_code",
-            "redirect_uri": str(config.env("REDIRECT_URI")),
-            "scope": ENTRA_SCOPES,
-            "code_verifier": verifier,
-        },
-    )
-    if "id_token" not in payload:
-        raise AuthError("Entra ID returned no identity token")
-    return payload
-
-
-def _decode_segment(segment: str) -> dict[str, Any]:
-    """Decode one base64url JSON segment of a token."""
-    padded = segment + "=" * (-len(segment) % 4)
-    try:
-        loaded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-    except (ValueError, TypeError) as error:
-        raise AuthError("the identity token is not readable") from error
-    if not isinstance(loaded, dict):
-        raise AuthError("the identity token is not an object")
-    return loaded
-
-
-def claims_from_id_token(id_token: str, *, nonce: str, now: float | None = None) -> dict[str, Any]:
-    """Return the claims of an identity token, checking everything this build checks.
-
-    Be precise about what this does and does not do, because it is the kind of thing that
-    gets over-claimed. It checks the issuer, the audience, the expiry, the nonce, and that
-    the `amr` claim attests multi-factor authentication. It does NOT verify the token's
-    signature.
-
-    That is sound only because of where this token came from, and only here: it was received
-    in the direct response to :func:`exchange_code`, which is an HTTPS POST this process
-    made to Microsoft carrying this application's own client secret. OpenID Connect Core
-    section 3.1.3.7 permits TLS server validation in place of signature checking for exactly
-    that back-channel case. It would NOT be sound for a token arriving any other way, so
-    nothing else in this application may call this function on a token it did not just
-    exchange for itself. Verifying the signature as well needs a JSON Web Key Set fetch and
-    an RSA implementation, which means a new dependency; recorded as a deviation for Adam
-    Field's sign-off and `TBC, re-verify` before the accreditation review.
-    """
-    parts = id_token.split(".")
-    expected_segments = 3
-    if len(parts) != expected_segments:
-        raise AuthError("the identity token is not a JSON Web Token")
-    claims = _decode_segment(parts[1])
-
-    if claims.get("iss") != expected_issuer():
-        raise AuthError("the identity token names another issuer")
-    if claims.get("aud") != config.env("CLIENT_ID"):
-        raise AuthError("the identity token was issued for another application")
-    if not state_matches(
-        nonce, claims.get("nonce") if isinstance(claims.get("nonce"), str) else None
-    ):
-        raise AuthError("the identity token does not carry this sign-in's nonce")
-
-    moment = datetime.now(UTC).timestamp() if now is None else now
-    expiry = claims.get("exp")
-    if not isinstance(expiry, int | float) or moment > float(expiry) + CLOCK_SKEW_SECONDS:
-        raise AuthError("the identity token has expired")
-
-    # A list, by the claim's definition. A bare string "mfa" would satisfy `in` and is not
-    # what Entra ID issues, so it is refused rather than read generously.
-    methods = claims.get("amr")
-    if not isinstance(methods, list) or MFA_METHOD not in methods:
-        raise AuthError("the identity token does not attest multi-factor authentication")
-    return claims
-
-
-def actor_from_claims(claims: dict[str, Any]) -> str:
-    """Return the user principal name to record as the actor.
-
-    Falls back through the claims Entra ID may or may not issue depending on the account
-    type, and raises rather than inventing one: an audit entry with no real actor on it is
-    worse than a refused sign-in.
-    """
-    for name in ("preferred_username", "upn", "email", "sub"):
-        value = claims.get(name)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:320]
-    raise AuthError("the identity token carries no usable actor claim")
-
-
-def describe() -> dict[str, object]:
-    """Return the authentication posture, for the diagnostics read-out."""
-    return {
-        "entraConfigured": entra_is_configured(),
+    posture: dict[str, object] = {
+        "mode": "local-accounts" if local_accounts_only() else "self-asserted",
         "production": is_production(),
         "actorVerified": actor_is_verified() if current_actor() else False,
+        "bootstrapConfigured": bootstrap_configured(),
     }
+    if data_dir:
+        try:
+            rows = accounts.load(data_dir)
+        except accounts.AccountError:
+            posture["accounts"] = "unreadable"
+            posture["administrators"] = "unreadable"
+        else:
+            posture["accounts"] = len(rows)
+            posture["administrators"] = len(accounts.active_admins(rows))
+    return posture
 
 
 #: The flight plan's figure: an eight-hour idle timeout on a signed-in session.

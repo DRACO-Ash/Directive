@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Your recovery codes{% endblock %}
+{% block body %}
+<div class="signin-wrap">
+  <main class="signin wide" id="main">
+    <h1>Save your recovery codes</h1>
+    <p class="sub">This is the only time they are shown. Each one works once, and only if you
+      cannot use your authenticator app.</p>
+    <ul class="codes mono">
+      {% for code in codes %}<li>{{ code }}</li>{% endfor %}
+    </ul>
+    <p class="hint">Keep them somewhere you can reach without this application and without your
+      phone. If you lose both, an administrator resets your second factor and you start again.</p>
+    <p>
+      <a class="primary button-ish"
+         href="{% if must_change %}{{ url_for('account.password_page') }}{% else %}{{ url_for('console.dashboard') }}{% endif %}">
+        {% if must_change %}Continue, and change your password{% else %}Continue to Directive{% endif %}
+      </a>
+    </p>
+  </main>
+</div>
+{% endblock %}

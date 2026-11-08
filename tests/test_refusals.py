@@ -1,7 +1,7 @@
 """Collapsing repeated sign-in refusals, and what that does and does not close.
 
 An unauthenticated caller could write one durable fsynced audit entry per request against
-`/auth/callback`, so a bare loop filled the log toward its refusal cap and left the audit
+the sign-in path, so a bare loop filled the log toward its refusal cap and left the audit
 path unavailable at the next restart, with every register mutation answering 503. AUD-001
 wants the failed-authentication record, so the entries are counted rather than dropped.
 """
@@ -17,6 +17,7 @@ from flask.testing import FlaskClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from conftest import refuse_once
 from directive import create_app
 from directive.audit import journal, normalise_fields
 from directive.views import refusals
@@ -42,8 +43,16 @@ def client(app: Flask) -> FlaskClient:
 
 
 def probe(client: FlaskClient) -> None:
-    """Make one refusable unauthenticated request."""
-    client.get("/auth/callback?code=x&state=forged")
+    """Make one refusable unauthenticated request.
+
+    A sign-in with an empty username, which `_refuse` handles. This used to be a forged
+    `/auth/callback`, a GET that needed no token; that route went with Entra ID. The flood
+    surface moved with it and is now slightly narrower, because every route that can reach
+    `_refuse` is a POST behind the cross-site request forgery token. An attacker still gets
+    one from `/`, so the bound this file measures still matters.
+    """
+    token = client.get("/").headers["X-CSRF-Token"]
+    client.post("/sign-in", data={"username": "", "csrf_token": token})
 
 
 # ============================ the tracker in isolation ============================
@@ -233,7 +242,7 @@ def test_a_burst_that_stops_reaches_the_log_through_another_caller(
         window.started -= refusals.WINDOW_SECONDS + 1
 
     other = app.test_client()
-    other.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.9.9.9"})
+    refuse_once(other, environ_base={"REMOTE_ADDR": "10.9.9.9"})
 
     summary = [
         entry
@@ -249,10 +258,10 @@ def test_a_summary_entry_is_attributed_to_its_own_address(app: Flask, client: Fl
     """A merged total would collapse the attribution as well as the rows."""
     for address in ("10.1.1.1", "10.2.2.2"):
         for _ in range(10):
-            client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": address})
+            refuse_once(client, environ_base={"REMOTE_ADDR": address})
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
-    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.3.3.3"})
+    refuse_once(client, environ_base={"REMOTE_ADDR": "10.3.3.3"})
 
     summaries = {
         entry.source_ip: entry.new_state
@@ -311,14 +320,11 @@ def test_the_overflow_reaches_the_log(
     """End to end: the bound has to produce a real entry, not just a Decision."""
     monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 5)
     for index in range(40):
-        client.get(
-            "/auth/callback?code=x&state=forged",
-            environ_base={"REMOTE_ADDR": f"10.2.{index // 256}.{index % 256}"},
-        )
+        refuse_once(client, environ_base={"REMOTE_ADDR": f"10.2.{index // 256}.{index % 256}"})
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
     refusals._budget.started -= refusals.WINDOW_SECONDS + 1
-    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.3.3.3"})
+    refuse_once(client, environ_base={"REMOTE_ADDR": "10.3.3.3"})
 
     flood = [
         entry
@@ -337,14 +343,11 @@ def test_a_flood_entry_satisfies_the_audit_boundary(
     """It is an entry like any other, so it is held to the same rules."""
     monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 2)
     for index in range(12):
-        client.get(
-            "/auth/callback?code=x&state=forged",
-            environ_base={"REMOTE_ADDR": f"10.4.0.{index}"},
-        )
+        refuse_once(client, environ_base={"REMOTE_ADDR": f"10.4.0.{index}"})
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
     refusals._budget.started -= refusals.WINDOW_SECONDS + 1
-    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.5.5.5"})
+    refuse_once(client, environ_base={"REMOTE_ADDR": "10.5.5.5"})
 
     for entry in app.extensions["directive_chain"].entries:
         assert normalise_fields(entry.covered_fields())
@@ -390,14 +393,11 @@ def test_a_floor_reaches_the_log_as_a_floor(
     monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 2)
     monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 4)
     for index in range(30):
-        client.get(
-            "/auth/callback?code=x&state=forged",
-            environ_base={"REMOTE_ADDR": f"10.6.0.{index}"},
-        )
+        refuse_once(client, environ_base={"REMOTE_ADDR": f"10.6.0.{index}"})
     for window in refusals._windows.values():
         window.started -= refusals.WINDOW_SECONDS + 1
     refusals._budget.started -= refusals.WINDOW_SECONDS + 1
-    client.get("/auth/callback?code=x&state=forged", environ_base={"REMOTE_ADDR": "10.7.7.7"})
+    refuse_once(client, environ_base={"REMOTE_ADDR": "10.7.7.7"})
 
     flood = [
         entry
@@ -492,9 +492,9 @@ def test_a_folded_summary_is_carried_by_the_flood_row(
     monkeypatch.setattr(refusals, "GLOBAL_ROWS_PER_WINDOW", 6)
     monkeypatch.setattr(refusals, "MAXIMUM_TRACKED", 8)
     for _ in range(4):
-        client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": "10.9.6.1"})
+        refuse_once(client, environ_base={"REMOTE_ADDR": "10.9.6.1"})
     for index in range(20):
-        client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": f"10.9.7.{index}"})
+        refuse_once(client, environ_base={"REMOTE_ADDR": f"10.9.7.{index}"})
     entries = [
         entry
         for entry in app.extensions["directive_chain"].entries
@@ -534,12 +534,12 @@ def test_a_row_at_the_field_caps_fits_the_sizing_figure(app: Flask, client: Flas
     # and the serialiser writes each backslash as two bytes. 512 letters made a 959 byte row
     # and was pinned as the worst case; 512 backslashes make 1471, and that is the row an
     # attacker sends.
-    client.get(
-        "/auth/callback?state=forged",
+    refuse_once(
+        client,
         environ_base={"REMOTE_ADDR": address},
         headers={"User-Agent": "\\" * 512},
     )
-    client.get("/auth/callback?state=forged", environ_base={"REMOTE_ADDR": "10.9.9.9"})
+    refuse_once(client, environ_base={"REMOTE_ADDR": "10.9.9.9"})
     log = Path(app.config["DIRECTIVE_DATA_DIR"]) / "audit" / "log.jsonl"
     at_caps, friendly = (len(line) + 1 for line in log.read_bytes().splitlines()[-2:])
 

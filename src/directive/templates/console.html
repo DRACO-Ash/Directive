@@ -27,7 +27,7 @@
     <div class="who">
       <div class="who-actor">{{ actor }}</div>
       <div class="who-mode">
-        {% if verified %}Verified via Entra ID{% else %}Self-asserted identity{% endif %}
+        {% if verified %}Signed in, second factor verified{% else %}Self-asserted identity{% endif %}
       </div>
       <form method="post" action="{{ url_for('auth.sign_out') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

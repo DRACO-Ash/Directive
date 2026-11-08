@@ -6,7 +6,7 @@ that one call site and the class was never swept. A security gate then replaced
 `hmac.compare_digest` with `==` at four OTHER sites and all 845 tests stayed green:
 
     csrf.valid            the cross-site request forgery token
-    auth.state_matches    the Entra ID sign-in state and nonce
+    auth.constant_time_equal  a secret compared on an unauthenticated route
     anchor._marker_is_valid   the first-use marker's tag
     anchor._validate      the anchor MAC, which CLAUDE.md calls the truncation detector
 
@@ -38,10 +38,16 @@ ROOT = Path(__file__).resolve().parents[1]
 #: asks and the answer is never in the function name.
 MUST_BE_CONSTANT_TIME = [
     ("src/directive/csrf.py", "valid"),  # the cross-site request forgery token
-    ("src/directive/auth.py", "state_matches"),  # the sign-in state and the nonce
+    ("src/directive/auth.py", "constant_time_equal"),  # a secret on an unauthenticated route
     ("src/directive/audit/hashing.py", "hashes_equal"),  # an entry's keyed digest
     ("src/directive/audit/anchor.py", "_marker_is_valid"),  # the first-use marker's tag
     ("src/directive/audit/anchor.py", "_validate"),  # the anchor MAC, the truncation detector
+    #: The local account list, added with it. Each of these three is the whole of what
+    #: stands between a caller and a session, so each is the kind of comparison this file
+    #: exists for: a password hash, a one-time code, and a recovery code.
+    ("src/directive/accounts.py", "verify_password"),  # the scrypt hash of a password
+    ("src/directive/accounts.py", "spend_recovery_code"),  # a single-use recovery code hash
+    ("src/directive/totp.py", "verify"),  # a time-based one-time password
 ]
 
 

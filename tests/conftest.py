@@ -7,6 +7,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from flask.testing import FlaskClient
+from werkzeug.test import TestResponse
 
 #: The package under `src/`, and the project ROOT for `wsgi`, which lives beside `src`.
 #:
@@ -41,6 +43,8 @@ MANAGED_VARIABLES = (
     "AUDIT_RETIRED_KEYS",
     "DIRECTIVE_ENV",
     "APPSTORE_DAST_SCAN",
+    "BOOTSTRAP_ADMIN",
+    "BOOTSTRAP_ADMIN_PASSWORD",
 )
 
 #: A test signing key, as the application requires it: real key material decoding to at
@@ -153,3 +157,29 @@ def keys_for_verification() -> dict[str, bytes]:
     Deliberately not named with a ``test_`` prefix: pytest would collect it as a test.
     """
     return {TEST_KEY_ID: TEST_KEY}
+
+
+def refuse_once(
+    client: FlaskClient,
+    *,
+    headers: dict[str, str] | None = None,
+    environ_base: dict[str, str] | None = None,
+) -> TestResponse:
+    """Make one unauthenticated request that the sign-in path refuses.
+
+    This used to be `GET /auth/callback?code=x&state=forged`, a route that went with Entra
+    ID. Every path that reaches `auth_routes._refuse` is now a POST behind the cross-site
+    request forgery token, so a refusal costs an attacker one token fetch from `/` first.
+    That is a slightly narrower flood surface than before, not a closed one, which is why
+    the bounds these tests measure still matter.
+
+    An empty username is the refusal used, because it needs no account to exist and it
+    behaves the same in both authentication modes.
+    """
+    token = client.get("/").headers["X-CSRF-Token"]
+    return client.post(
+        "/sign-in",
+        data={"username": "", "csrf_token": token},
+        headers=headers or {},
+        environ_base=environ_base or {},
+    )

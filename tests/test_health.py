@@ -207,15 +207,15 @@ def test_the_verdict_log_line_states_the_outcome(tmp_path: Path) -> None:
 def test_diagnostics_reports_presence_and_length_never_the_value(
     signed_in_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    injected = "a-client-credential-value-that-must-not-leak"
-    monkeypatch.setenv("CLIENT_SECRET", injected)
+    injected = "a-bootstrap-credential-value-that-must-not-leak"
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", injected)
     monkeypatch.setenv("BUILD_ID", "sha-abc123")
     response = signed_in_client.get("/api/diagnostics")
     body = response.get_json()
 
     assert response.status_code == 200
-    assert body["inputs"]["CLIENT_SECRET"] == {"present": True, "lengthBucket": "32+"}
-    assert body["inputs"]["TENANT_ID"] == {"present": False, "lengthBucket": "0"}
+    assert body["inputs"]["BOOTSTRAP_ADMIN_PASSWORD"] == {"present": True, "lengthBucket": "32+"}
+    assert body["inputs"]["BOOTSTRAP_ADMIN"] == {"present": False, "lengthBucket": "0"}
     assert body["buildId"] == "sha-abc123"
     assert body["version"] == __version__
     assert body["storageWritable"] is True
@@ -452,9 +452,9 @@ def test_the_boot_log_carries_the_input_presence_map(
     attached at NOTSET rather than raising the level with `caplog.at_level`: raising the
     level here would hide the very defect this test exists to catch.
     """
-    injected = "a-client-credential-value-that-must-not-leak"
-    monkeypatch.setenv("CLIENT_SECRET", injected)
-    monkeypatch.delenv("TENANT_ID", raising=False)
+    injected = "a-bootstrap-credential-value-that-must-not-leak"
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", injected)
+    monkeypatch.delenv("BOOTSTRAP_ADMIN", raising=False)
 
     captured: list[str] = []
 
@@ -471,8 +471,8 @@ def test_the_boot_log_carries_the_input_presence_map(
 
     lines = [line for line in captured if "inputs " in line]
     assert lines, "the boot log must carry the presence map"
-    assert "CLIENT_SECRET=set" in lines[0]
-    assert "TENANT_ID=MISSING" in lines[0]
+    assert "BOOTSTRAP_ADMIN_PASSWORD=set" in lines[0]
+    assert "BOOTSTRAP_ADMIN=MISSING" in lines[0]
     assert injected not in lines[0], "never a value"
     assert str(len(injected)) not in lines[0], "never an exact length"
     assert any("storage accepted a write" in line for line in captured), "and the storage line"
@@ -506,9 +506,8 @@ def test_the_presence_map_survives_a_refused_boot(
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DIRECTIVE_ENV", "production")
-    for name in ("TENANT_ID", "CLIENT_ID", "REDIRECT_URI"):
-        monkeypatch.setenv(name, "x" * 40)
-    monkeypatch.delenv("CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("BOOTSTRAP_ADMIN", "x" * 40)
+    monkeypatch.delenv("SESSION_KEY", raising=False)
 
     captured: list[str] = []
 
@@ -520,12 +519,12 @@ def test_the_presence_map_survives_a_refused_boot(
     collector = Collector(level=logging.NOTSET)
     logging.getLogger("directive").addHandler(collector)
     try:
-        with pytest.raises(AuthNotConfiguredError, match="Entra ID is not configured"):
+        with pytest.raises(AuthNotConfiguredError, match="SESSION_KEY is not set"):
             create_app()
     finally:
         logging.getLogger("directive").removeHandler(collector)
 
     lines = [line for line in captured if "inputs " in line]
     assert lines, "the presence map must survive a refused boot"
-    assert "CLIENT_SECRET=MISSING(0)" in lines[0]
-    assert "TENANT_ID=set" in lines[0]
+    assert "SESSION_KEY=MISSING(0)" in lines[0]
+    assert "BOOTSTRAP_ADMIN=set" in lines[0]

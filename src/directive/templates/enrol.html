@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Set up your authenticator{% endblock %}
+{% block body %}
+<div class="signin-wrap">
+  <main class="signin wide" id="main">
+    <h1>Set up your authenticator</h1>
+    <p class="sub">{{ username }}. This happens once, on this device or any other.</p>
+    <ol class="steps">
+      <li>Open your authenticator app and choose to add an account by entering a key.</li>
+      <li>Enter the key below. It is shown once and is not stored in this form again.</li>
+      <li>Type the six-digit code the app then shows, to prove it worked.</li>
+    </ol>
+    <p class="label-ish">Setup key</p>
+    <p class="secret mono">{{ secret }}</p>
+    <details>
+      <summary>Full setup link, if your app accepts one</summary>
+      <p class="secret mono small">{{ uri }}</p>
+    </details>
+    <form method="post" action="{{ url_for('auth.enrol_submit') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="code">Six-digit code from the app</label>
+      <input id="code" name="code" required autocomplete="one-time-code" inputmode="numeric"
+             maxlength="64" spellcheck="false" placeholder="000000">
+      <button type="submit" class="primary">Confirm and sign in</button>
+    </form>
+  </main>
+</div>
+{% endblock %}

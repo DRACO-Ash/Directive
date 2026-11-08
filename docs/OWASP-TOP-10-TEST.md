@@ -7,7 +7,7 @@ Bluestaq Ltd, Directive (`directive`). Required by AMD-001 section 10.6: "applic
 | Commit tested | `ec75bd2` (main, security gate PASS at round twelve) |
 | Date | 2026-09-10 |
 | Tester | Claude Code session, for Ash Higgins (ISM and DPL) |
-| Method | Attacks over the application's HTTP surface using the Flask test client, in development mode and in Entra-configured production mode, plus the verification loop for A06. Script retained in the session scratchpad; every row below is a request that was sent and a response that was observed. |
+| Method | Attacks over the application's HTTP surface using the Flask test client, in development mode and in Entra-configured production mode, plus the verification loop for A06. Script retained in the session scratchpad; every row below is a request that was sent and a response that was observed. **The identity provider changed in V2.5; see the superseding note under A07 for which rows no longer describe the live build.** |
 | Result | 82 checks, 82 passed, 0 failed. Two observations and two gaps recorded below; none is a failure of a control that exists. |
 
 ## Scope and limits
@@ -20,7 +20,9 @@ Bluestaq Ltd, Directive (`directive`). Required by AMD-001 section 10.6: "applic
 
 Every mutating and every reading API route is behind `auth.required`; every mutating route also needs the cross-site request forgery (CSRF) token, compared in constant time and failing closed on a non-ASCII value. That sentence was held on one route when it was written and the table showed one method; both are now walked mechanically over the whole URL map, for every unsafe method. The sign-in flow is the only route skipped by that WALK, and it is not exempt from the control: `POST /sign-in` and `POST /sign-out` both refuse an untokened caller with 403, measured, and are held by their own tests. No API route may be skipped by the walk at all. Register and record identifiers that do not exist are refused with 400, and the response body is generic. The `next` parameter after sign-in is constrained to a same-site path and refuses protocol-relative, backslash and scheme forms.
 
-**Observation, not a failure.** The application has one role. Any authenticated actor can read and write every register and read the audit log. Least privilege is therefore enforced by WHO can authenticate, which is the Entra ID app registration's user assignment, not by the application. That is adequate for a single-team console operated by the ISM and recorded here so it is not mistaken for role-based access control. User assignment is required on the enterprise application, confirmed by the ISM on 2026-09-10; that assignment list is the access list.
+**Observation, not a failure.** The application has one role. Any authenticated actor can read and write every register and read the audit log. Least privilege is therefore enforced by WHO can authenticate, not by the register routes. That is adequate for a single-team console operated by the ISM and recorded here so it is not mistaken for role-based access control.
+
+**Changed in V2.5, and the change narrows this row rather than widening it.** The access list was the Entra ID enterprise application's user assignment, confirmed by the ISM on 2026-09-10. It is now the application's own account list, which an administrator maintains in the console and every change to which writes an audit entry. A second role arrived with it, `admin`, and it governs account administration ONLY: it does not partition the registers, so the sentence above still holds for register data. The platform places the App Store itself behind an active Entra ID in the Bluestaq tenant, which is what bounds who can reach the application at all; `TBC, re-verify` that `directive.apps.bluestaq.com` sits behind that same gate, because this row depends on it and the confirmation is with the platform team rather than in this repository.
 
 | Test | Expected | Observed | Result |
 | --- | --- | --- | --- |
@@ -113,7 +115,7 @@ All four AMD-001 10.6 headers (Content-Security-Policy, Strict-Transport-Securit
 | CSP forbids inline script and remote sources | no 'unsafe-inline' in script-src, default-src 'self' or 'none' | `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src...` | Passed |
 | X-Frame-Options | DENY | `DENY` | Passed |
 | 404 body is generic (no stack, no path echo of internals) | no traceback | `<!doctype html> <html lang=en> <title>404 Not Found</title> <h1>Not Found</h1> <` | Passed |
-| diagnostics in production leaks no CLIENT_SECRET | secret absent | `200 present=False` | Passed |
+| diagnostics in production leaks no CLIENT_SECRET | secret absent | `200 present=False` | Passed (the variable is gone in V2.5; the read-out reports `BOOTSTRAP_ADMIN_PASSWORD` the same way) |
 | probe / unauthenticated in production | 200, no redirect | `200` | Passed |
 | probe /healthz unauthenticated in production | 200, no redirect | `200` | Passed |
 | probe /health unauthenticated in production | 200, no redirect | `200` | Passed |
@@ -126,6 +128,26 @@ All four AMD-001 10.6 headers (Content-Security-Policy, Strict-Transport-Securit
 Not tested by request; tested by the verification loop. `pip-audit` runs against all three hash-locked lockfiles on every change and in Continuous Integration, and returned no known vulnerabilities on this commit. The runtime tree is additionally installed with `--require-hashes --no-deps --target` and audited by path, and that is not belt and braces: the lockfile-text route returned 8 of the 9 shipped pins, dropping `packaging` from both the audit and the bill of materials with no skip notice and exit 0. A component nothing inventories is a component nothing scans, so an assertion now fails the loop and the job if any shipped pin is missing from the inventory. Dependabot raises weekly pull requests for pip, GitHub Actions and Docker. A CycloneDX software bill of materials is produced on every run.
 
 ## A07:2021 Identification and Authentication Failures
+
+> **Superseded in part by V2.5, and the superseded half is marked rather than rewritten.**
+> The Bluestaq Ltd Entra ID tenant is not available to this application, so V2.5 replaced
+> the identity provider with a local account list: a username and password verified against
+> a stored scrypt hash, then a time-based one-time password, with single-use recovery codes.
+> Every row below that names `login.microsoftonline.com`, a callback state or an identity
+> token was a real observation against the build that shipped it and is kept for that
+> reason, but it does NOT describe the live build and must not be read as current evidence.
+>
+> **What is evidenced today**, by the suite rather than by a fresh OWASP sweep, and stated
+> that way deliberately: `tests/test_local_sign_in.py` and `tests/test_accounts.py` cover a
+> correct password granting no session on its own, a refusal that is identical whether or
+> not the account exists, the half-finished sign-in expiring, a wrong one-time password
+> refused, a recovery code working once and never again, the lockout after repeated wrong
+> passwords, and no password, hash, secret or recovery code reaching the audit log, the
+> export or the accounts page. `tests/test_constant_time.py` holds the three comparisons.
+>
+> **What is NOT evidenced today:** a re-run of the A07 attack set against the new flow.
+> `TBC, re-verify` before the next accreditation submission. The rows below stand as the
+> record of the Entra build; they are not the record of this one.
 
 Production sign-in is a redirect to `login.microsoftonline.com` carrying a PKCE challenge, a state and a nonce bound to the session. A callback with a forged or missing state is refused and recorded. The self-asserted development sign-in is refused while Entra ID is configured, and now through the collapser. Hostile actor values (empty, leading `=`, `-`, `@`, over-length, non-ASCII, double quote) are refused without a server error. Sign-out clears the session.
 
@@ -169,7 +191,7 @@ Every authentication event (LOGIN, LOGIN_FAILED, LOGOUT) and every register muta
 
 ## A10:2021 Server-Side Request Forgery
 
-The only outbound call is the token exchange with Entra ID. The host is a constant, the tenant segment is path-quoted from `TENANT_ID`, and `redirect_uri` is the configured value; a spoofed `Host` header does not change it. No route fetches a caller-supplied URL.
+**There is no outbound call at all from V2.5.** The token exchange with Entra ID was the only one, and it went with the identity provider. No route fetches a caller-supplied URL, and nothing in the package makes an outbound HTTP request: the credential store, the one-time password and the audit chain are all local and all on the standard library. This is a reduction in attack surface and it is checkable at source rather than taken on trust: no HTTP client is imported anywhere under `src/`.
 
 | Test | Expected | Observed | Result |
 | --- | --- | --- | --- |
@@ -231,7 +253,9 @@ These rows extend A01 (access control and cross-register reference), A03 (inject
 | Action | Owner | When |
 | --- | --- | --- |
 | Verify TLS 1.2 or above at `directive.apps.bluestaq.com` and attach the result to the accreditation record | ISM, after first deploy | Before production use |
-| User assignment required on the Entra enterprise application: confirmed by the ISM 2026-09-10; single-role access accepted on that basis | ISM | Done |
+| User assignment required on the Entra enterprise application: confirmed by the ISM 2026-09-10; single-role access accepted on that basis. **Superseded in V2.5:** the access list is now the application's own account list. | ISM | Superseded |
+| Confirm with the platform team that `directive.apps.bluestaq.com` sits behind the same Bluestaq tenant Entra gate as the App Store portal. The leaver argument for local accounts rests on it. | ISM | `TBC, re-verify` |
+| Re-run the A07 attack set against the local sign-in flow and replace the superseded rows | ISM | `TBC, re-verify` |
 | MFA evidence: Conditional Access export held by the ISM; `amr` claim check added in V2.2 | ISM | Done, V2.2 |
 | Size an edge rate limiter against the A04 residual, or accept it | Platform team, ISM | Before production use |
 | Replace the superseded Application Insights alerting, AUD-001 amendment | ISM | `TBC, re-verify` |
