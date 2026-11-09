@@ -447,6 +447,12 @@ def new_account(username: str, password: str, *, role: str = MEMBER) -> dict[str
         #: spent twice. `-1` rather than `0`: counter zero is a real RFC 6238 step (the
         #: Unix epoch) and a sentinel that collides with a legitimate value is not one.
         "totp_last_step": NO_STEP,
+        #: Bumped whenever every session this account holds should stop being honoured:
+        #: a password change and a second-factor reset. The session carries a copy and
+        #: `auth.live_role` refuses a mismatch, so "change your password" evicts whoever
+        #: took the session over, which is the threat `password_submit`'s own docstring
+        #: names and which requiring the current password does not address.
+        "session_epoch": 0,
         "recovery": [],
         "must_change_password": True,
         "failures": 0,
@@ -498,11 +504,20 @@ def clear_failures(account: dict[str, Any]) -> None:
     account["updated"] = _now_text()
 
 
-def set_password(account: dict[str, Any], password: str) -> None:
-    """Replace the stored password and clear the must-change flag."""
+def set_password(account: dict[str, Any], password: str) -> int:
+    """Replace the stored password, clear the must-change flag, invalidate every session.
+
+    Returns the new session epoch, so a caller changing its OWN password can write it back
+    onto its session and stay signed in while every other session for this account stops.
+    That is the point of the field: `account_routes.password_submit` names a session left
+    open on an unlocked machine as the ordinary way an account is taken over, and requiring
+    the current password does not evict the person who took it. Changing the password does,
+    now.
+    """
     account["password"] = hash_password(check_password_rules(password))
     account["must_change_password"] = False
     account["updated"] = _now_text()
+    return bump_epoch(account)
 
 
 def begin_enrolment(account: dict[str, Any]) -> str:
@@ -614,6 +629,32 @@ def last_step(account: dict[str, Any]) -> int:
         return FAR_FUTURE_STEP
 
 
+def epoch_of(account: dict[str, Any] | None) -> int:
+    """Return the account's session epoch, failing CLOSED on an unreadable value.
+
+    An unreadable epoch returns a value no session can be carrying, so every session for
+    that account is refused until somebody looks at the record. Reading it as zero would
+    turn one corrupt field into a session that cannot be evicted.
+    """
+    if account is None:
+        return FAR_FUTURE_STEP
+    try:
+        return int(account.get("session_epoch", 0))
+    except (TypeError, ValueError):
+        return FAR_FUTURE_STEP
+
+
+def bump_epoch(account: dict[str, Any]) -> int:
+    """Invalidate every session this account holds. Returns the new epoch.
+
+    The caller persists it, like every other mutation in this module, and a caller that
+    wants to keep its OWN session writes the returned value back onto it.
+    """
+    account["session_epoch"] = epoch_of(account) + 1 if account.get("session_epoch") else 1
+    account["updated"] = _now_text()
+    return int(account["session_epoch"])
+
+
 def reset_factor(account: dict[str, Any]) -> None:
     """Remove the second factor and its recovery codes, forcing re-enrolment."""
     account["totp_secret"] = CLEARED
@@ -623,6 +664,10 @@ def reset_factor(account: dict[str, Any]) -> None:
     #: clock caught up with it, which on a corrupt value means never.
     account["totp_last_step"] = NO_STEP
     account["recovery"] = []
+    #: And every session this account holds stops being honoured. A factor reset is the
+    #: recovery path for a lost phone, so the phone is in somebody else's hands: leaving
+    #: their open sessions working would make the reset a formality.
+    bump_epoch(account)
     account["updated"] = _now_text()
 
 

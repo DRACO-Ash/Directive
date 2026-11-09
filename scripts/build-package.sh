@@ -293,7 +293,7 @@ RULES = [
     # because the prose rule below correctly matched this very comment twice.
     #
     # Matched on the dotenv SHAPE rather than by widening this rule's equals to allow spaces
-    # around it, which flags 28 findings on 28 lines across every tracked file. Python
+    # around it, which flags 29 findings on 29 lines across every tracked file. Python
     # writes `SUITE_KEY = bytes(...)` with spaces around the equals; dotenv never does.
     #
     # The figures named in `tests/test_sweep_cost_figures.py` are re-measured by it against
@@ -469,7 +469,7 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # `--env` or list-marker prefix and at any indent, and `| NAME | value |` is caught as
     # a document table row, but `NAME = value` with spaces around the equals is NOT, and a
     # `name: value` mapping in YAML or JSON is NOT. The spaces form was measured: widening
-    # the equals to allow them gives 28 findings on 28 lines across every tracked file,
+    # the equals to allow them gives 29 findings on 29 lines across every tracked file,
     # so the rule would fire on every build and be turned off within a week. The experiment
     # is to replace `=` with `[ \t]*=[ \t]*` in the unquoted rule alone and scan every
     # tracked file. It is a real gap and it is recorded here rather than closed.
@@ -477,8 +477,8 @@ for path in pathlib.Path(sys.argv[1]).rglob("*"):
     # The QUOTED rule has its own gap and its own price, and they are separate figures. Its
     # keyword group carries `api_key`, `secret`, `token`, `password`, `passwd` and `pwd` but
     # not a bare `key` or `keys`, which the unquoted rule's group does carry, so `key = "..."`
-    # in source is not caught. Adding them gives 8 findings on 8 lines across every tracked
-    # file, 7 beyond the declared double the shipped rules already report, every one a
+    # in source is not caught. Adding them gives 9 findings on 9 lines across every tracked
+    # file, 8 beyond the declared double the shipped rules already report, every one a
     # session key NAME rather than a value, in `auth.py`, `csrf.py` and `auth_routes.py`.
     # That module list is derived from the scan and asserted, positively and against naming
     # a module the scan does not give. Nothing in this PARAGRAPH restates the count: a

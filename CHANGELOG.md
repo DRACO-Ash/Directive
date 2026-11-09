@@ -209,6 +209,35 @@ counting assertion beside it that holds the property rather than a spelling of i
 stored `next` target was uncapped and is now 512 characters. And the previous commit
 message said 1583 passed where the tree gives 1584; the coverage figure was right.
 
+**The fifth round failed on a record contradicting its own code, and on two session
+remedies that did not evict anybody.**
+
+Three places in the tree said the session survives an account list that is merely
+unreadable, while the refusal path cleared it on both branches. Corrupt the file, make one
+request, restore it byte for byte, and the user was signed out for good, unable to sign back
+in because the sign-in route reads the same file. Worse, the one line those three paragraphs
+existed to justify was held by nothing: because every refusal cleared the cookie, the
+redirect loop it prevents was not reachable, and reverting it left 289 tests green. The
+record was right about what should happen; the code was not. Fixed by making the behaviour
+match the record rather than the other way round: a revocation clears the session and a
+fault does not, which makes that line load-bearing and its mutant lethal.
+
+**Sessions now carry an epoch.** Disabling an account already ended its sessions. A password
+change and a second-factor reset did not, and a gate measured a cookie captured beforehand
+still working through both. That matters most for the change-your-own-password form, whose
+own docstring names a session left open on an unlocked machine as the ordinary way an
+account is taken over: requiring the current password evicts nobody, because whoever took
+the session already has it. The account carries an integer that a password change and a
+factor reset bump, the session carries a copy, and a mismatch is a revocation. Changing your
+own password leaves your own session alone and ends every other one.
+
+Two MINORs with them. The break-glass fixture agreed with a FOURTH wrong selection rule,
+most-recently-locked, because the administrator was locked last; it is locked first now and
+four rules disagree with the named lookup. And `enrol_page` was the only one of the three
+second-factor routes not to check `may_sign_in`, so an account disabled between the first
+factor and the second was still shown a fresh secret and still wrote a pending one to its
+row in the credential store.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
@@ -521,8 +550,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 28 findings
-  on 28 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 29 findings
+  on 29 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

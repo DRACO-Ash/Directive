@@ -19,6 +19,15 @@ security rounds the decorators decided from the signed cookie, so a removed admi
 kept the role until the cookie expired and could simply restore themselves. `auth.live_role`
 closes that: the stored account is the authority on every authenticated request. Both halves
 are needed and neither is the other, which is why this paragraph now names the second one.
+
+**A password change and a factor reset evict sessions too, through the account's epoch.**
+Disabling an account was already enough to end its sessions, because `may_sign_in` refuses
+it; the other two were not, and a gate measured a cookie captured beforehand still working
+through both. That matters most for `password_submit` below, whose own docstring names a
+session left open on an unlocked machine as the ordinary way an account is taken over:
+requiring the current password evicted nobody, because the taker has the session and the
+owner's old password changes nothing for them. The change evicts them now, and leaves the
+owner's own session alone.
 """
 
 from __future__ import annotations
@@ -120,10 +129,15 @@ def password_submit() -> Response:
         if refusal:
             return _password_error(refusal)
         try:
-            accounts.set_password(account, proposed)
+            epoch = accounts.set_password(account, proposed)
         except accounts.AccountError as error:
             return _password_error(str(error))
         accounts.save(_data_dir(), rows)
+        #: THIS session keeps going; every other session for this account stops. That is
+        #: the whole point of the change for somebody who suspects a session was taken: the
+        #: current password was already required and the taker has it, so requiring it
+        #: again evicted nobody.
+        auth.remember_epoch(epoch)
 
     _audit("PASSWORD_CHANGED", actor, fields="password")
     return redirect(url_for(auth.DASHBOARD_ENDPOINT))

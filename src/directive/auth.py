@@ -40,6 +40,7 @@ deployed application its Secure cookie flag and its identity provider.
 
 from __future__ import annotations
 
+import enum
 import functools
 import hmac
 import logging
@@ -59,6 +60,11 @@ from . import accounts, config
 ACTOR_KEY = "directive_actor"
 VERIFIED_KEY = "directive_verified"
 ROLE_KEY = "directive_role"
+
+#: The account's session epoch as it stood when this session began. `live_role` refuses a
+#: session whose copy no longer matches the stored one, which is what makes a password
+#: change and a factor reset evict the sessions they ought to.
+EPOCH_KEY = "directive_epoch"
 
 #: The half-finished sign-in: the password was right and the second factor has not been
 #: presented yet. Deliberately a different key from `ACTOR_KEY`.
@@ -172,7 +178,7 @@ def audit_actor() -> str:
     return actor if actor_is_verified() else f"{actor}{SELF_ASSERTED_SUFFIX}"
 
 
-def sign_in(actor: str, *, verified: bool, role: str = accounts.MEMBER) -> None:
+def sign_in(actor: str, *, verified: bool, role: str = accounts.MEMBER, epoch: int = 0) -> None:
     """Record a fully signed-in actor on the session.
 
     `session.clear()` first, so a pending marker from the first half cannot survive into the
@@ -182,6 +188,7 @@ def sign_in(actor: str, *, verified: bool, role: str = accounts.MEMBER) -> None:
     session[ACTOR_KEY] = actor
     session[VERIFIED_KEY] = verified
     session[ROLE_KEY] = role if role in accounts.ROLES else accounts.MEMBER
+    session[EPOCH_KEY] = epoch
     session.permanent = True
 
 
@@ -259,42 +266,98 @@ def live_role() -> str | None:
     revocation that takes effect, and it is paid on the same volume every register read
     already touches.
     """
+    standing, role = live_standing()
+    return role if standing is Standing.GRANTED else None
+
+
+class Standing(enum.Enum):
+    """What the account list says about this session right now.
+
+    Three values, not two, and the third is the whole reason this type exists. `REVOKED`
+    and `UNKNOWN` both refuse the request, so a boolean was enough for the gate; they are
+    NOT the same for the session. A revocation is a decision an administrator made and the
+    cookie should go. An unreadable account list is a fault, and destroying every session
+    over a fault means one request landing during a transient volume problem signs that
+    person out for good, with no way back in because the sign-in route reads the same file.
+
+    Three places in this module said the session survived the fault while `_refuse_stale_session`
+    cleared it on both branches. A security gate measured the contradiction: corrupt the
+    file, make one request, restore the file byte for byte, and the client was still signed
+    out. The record was right about what should happen; the code was not.
+    """
+
+    GRANTED = "granted"
+    REVOKED = "revoked"
+    UNKNOWN = "unknown"
+
+
+def live_standing() -> tuple[Standing, str]:
+    """Return this session's standing against the stored account, and its live role."""
     actor = current_actor()
     if actor is None:
-        return None
+        return Standing.REVOKED, accounts.MEMBER
     if not local_accounts_only():
-        return current_role()
+        #: Development has no account list to consult, so there is nothing to revoke
+        #: against and nothing that can be unreadable.
+        return Standing.GRANTED, current_role()
     try:
         rows = accounts.load(str(current_app.config["DIRECTIVE_DATA_DIR"]))
         account = accounts.find(rows, actor)
     except (accounts.AccountError, KeyError, OSError):
-        return None
+        return Standing.UNKNOWN, accounts.MEMBER
     if not accounts.may_sign_in(account):
-        return None
+        return Standing.REVOKED, accounts.MEMBER
+    if accounts.epoch_of(account) != _session_epoch():
+        #: A password change or a factor reset since this session began. Revoked rather
+        #: than unknown: somebody decided it, even if that somebody was the account's own
+        #: owner evicting whoever had taken their session.
+        return Standing.REVOKED, accounts.MEMBER
     role = str(account.get("role", accounts.MEMBER))
-    return role if role in accounts.ROLES else accounts.MEMBER
+    return Standing.GRANTED, role if role in accounts.ROLES else accounts.MEMBER
 
 
-def _refuse_stale_session() -> object:
+def _session_epoch() -> int:
+    """Return the epoch this session carries, failing CLOSED on anything unreadable."""
+    held = session.get(EPOCH_KEY)
+    if isinstance(held, bool) or not isinstance(held, int):
+        #: `bool` is an `int` in Python and `True == 1`, so a session carrying `True`
+        #: would match an account at epoch 1. Excluded explicitly.
+        return -1
+    return held
+
+
+def remember_epoch(epoch: int) -> None:
+    """Record a new epoch on THIS session, so a self-service change does not evict it."""
+    session[EPOCH_KEY] = epoch
+
+
+def _refuse_stale_session(standing: Standing) -> object:
     """Answer a request whose session no longer grants anything.
 
-    The session is cleared on the way out. Not for tidiness: `sign_in_page` redirects a
-    signed-in caller to the dashboard, and the dashboard would redirect a revoked one back
-    to the sign-in page, so leaving the cookie in place is a redirect loop. `sign_in_page`
-    reads `live_role` for the same reason, which covers the case this cannot: an account
-    list that is temporarily unreadable, where the session should survive the fault rather
-    than be destroyed by it.
+    **The session is cleared on a REVOCATION and kept on an UNKNOWN**, and that split is
+    the point of taking a `Standing` rather than a boolean. An administrator's decision
+    should take the cookie with it. A volume fault should not: one request landing during a
+    transient problem would otherwise sign that person out permanently, and while the list
+    is unreadable they cannot sign back in either, because the sign-in route reads the same
+    file. Three places in this module described that behaviour while the code cleared on
+    both branches, and a gate measured it.
 
-    No audit entry. The revocation itself was recorded when an administrator made it, and
-    a row per refused request would let a revoked browser on a refresh loop fill the log,
-    which is the amplifier `views/refusals.py` exists to bound on the sign-in path.
+    Keeping the cookie on `UNKNOWN` is what makes `sign_in_page` asking `live_role`
+    load-bearing: a caller holding a still-valid cookie is bounced here by the dashboard,
+    and a sign-in page that asked `current_actor` would bounce them straight back. That is
+    a real redirect loop, and it is now reachable, which it was not while every refusal
+    cleared.
+
+    No audit entry on either branch. The revocation itself was recorded when an
+    administrator made it, and a row per refused request would let a revoked browser on a
+    refresh loop fill the log, which is the amplifier `views/refusals.py` exists to bound
+    on the sign-in path.
     """
-    if request.path.startswith("/api/"):
+    if standing is Standing.REVOKED:
         sign_out()
+    if request.path.startswith("/api/"):
         return {"error": "sign-in required"}, 401
-    target = request.path
-    sign_out()
-    return redirect(url_for("auth.sign_in_page", next=target))
+    return redirect(url_for("auth.sign_in_page", next=request.path))
 
 
 def required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
@@ -306,8 +369,9 @@ def required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
 
     @functools.wraps(handler)
     def guarded(*args: object, **kwargs: object) -> object:
-        if live_role() is None:
-            return _refuse_stale_session()
+        standing, _ = live_standing()
+        if standing is not Standing.GRANTED:
+            return _refuse_stale_session(standing)
         return handler(*args, **kwargs)
 
     return guarded  # type: ignore[return-value]
@@ -327,9 +391,9 @@ def admin_required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
 
     @functools.wraps(handler)
     def guarded(*args: object, **kwargs: object) -> object:
-        role = live_role()
-        if role is None:
-            return _refuse_stale_session()
+        standing, role = live_standing()
+        if standing is not Standing.GRANTED:
+            return _refuse_stale_session(standing)
         if role != accounts.ADMIN:
             # The LIVE role, not the session's copy of it. A demoted administrator is
             # refused here from the next request, including the request that would undo

@@ -305,6 +305,7 @@ def verify_submit() -> Response:
         role = str(account.get("role", accounts.MEMBER))
         must_change = bool(account.get("must_change_password"))
         remaining = len(account.get("recovery", []))
+        epoch = accounts.epoch_of(account)
 
     return _complete_sign_in(
         username,
@@ -312,11 +313,18 @@ def verify_submit() -> Response:
         must_change=must_change,
         recovery_used=used_recovery,
         remaining=remaining,
+        epoch=epoch,
     )
 
 
 def _complete_sign_in(
-    username: str, *, role: str, must_change: bool, recovery_used: bool, remaining: int
+    username: str,
+    *,
+    role: str,
+    must_change: bool,
+    recovery_used: bool,
+    remaining: int,
+    epoch: int,
 ) -> Response:
     """Establish the session and write the LOGIN entry, or refuse and leave nothing behind.
 
@@ -339,7 +347,7 @@ def _complete_sign_in(
     the gate, and a gate pointed out that nothing in the tree supported it.
     """
     target = session.get(NEXT_KEY, "")
-    auth.sign_in(username, verified=True, role=role)
+    auth.sign_in(username, verified=True, role=role, epoch=epoch)
     if not record_event("LOGIN", auth.audit_actor(), "SUCCESS"):
         # A verified identity this log cannot name is not one this application will accept.
         # AUD-001 requires the user principal name on an authentication event, and an
@@ -373,7 +381,14 @@ def enrol_page() -> str | Response:
     with accounts.with_lock():
         rows = accounts.load(_data_dir())
         account = accounts.find(rows, username)
-        if account is None or accounts.is_enrolled(account):
+        #: `may_sign_in`, not merely "exists and is unenrolled". Both sibling routes check
+        #: it and this one did not, so an account disabled between the first factor and the
+        #: second was still shown a fresh secret and still had `totp_pending` written to its
+        #: row in the credential store. The POST was correctly refused, so nothing was
+        #: gained beyond one write and one disclosure of a secret that opens nothing; it was
+        #: still a half-authenticated caller writing to the account file after revocation.
+        if not accounts.may_sign_in(account) or accounts.is_enrolled(account):
+            auth.abandon_second_factor()
             return redirect(url_for(SIGN_IN_ENDPOINT))
         #: Reuse a pending secret rather than issuing a new one on every load. This GET
         #: used to mint one each time, so refreshing the page after scanning the key made
@@ -414,8 +429,9 @@ def enrol_submit() -> Response:
         accounts.save(_data_dir(), rows)
         role = str(account.get("role", accounts.MEMBER))
         must_change = bool(account.get("must_change_password"))
+        epoch = accounts.epoch_of(account)
 
-    auth.sign_in(username, verified=True, role=role)
+    auth.sign_in(username, verified=True, role=role, epoch=epoch)
     if not record_event("LOGIN", auth.audit_actor(), "SUCCESS"):
         auth.sign_out()
         return _refuse("the actor could not be recorded on an audit entry")

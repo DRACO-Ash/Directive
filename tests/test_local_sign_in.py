@@ -713,3 +713,33 @@ def test_the_next_target_is_capped_where_it_is_stored(client: FlaskClient) -> No
         held = str(stored.get(auth_routes.NEXT_KEY, ""))
 
     assert len(held) == auth_routes.MAXIMUM_NEXT_LENGTH, f"stored {len(held)} characters"
+
+
+def test_the_enrolment_page_refuses_an_account_disabled_mid_sign_in(
+    app: Flask, client: FlaskClient
+) -> None:
+    """Both sibling routes check `may_sign_in` and this one did not.
+
+    An account disabled between the first factor and the second was still shown a fresh
+    base32 secret and the whole `otpauth://` URI, and `totp_pending` was written to its row
+    in the credential store. The POST was correctly refused, so nothing was gained beyond
+    one write and one disclosure of a secret that opens nothing; it was still a
+    half-authenticated caller writing to the account file after revocation, and a gate
+    found that the condition here was the odd one out.
+    """
+    give_password(client)
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    accounts.set_state(account, accounts.DISABLED)
+    accounts.save(data_dir, rows)
+
+    page = client.get("/sign-in/enrol")
+
+    assert page.status_code == 302, "a disabled account was shown a second-factor secret"
+    after = accounts.find(accounts.load(data_dir), USERNAME)
+    assert after is not None
+    assert not str(after.get("totp_pending") or ""), (
+        "a revoked caller wrote a pending secret to the credential store"
+    )

@@ -39,7 +39,7 @@ from flask import Flask
 from flask.testing import FlaskClient
 from werkzeug.test import TestResponse
 
-from directive import accounts, create_app, totp
+from directive import accounts, auth, create_app, totp
 
 SUITE_KEY = bytes(range(32)).hex()
 ADMIN = "ash.higgins@bluestaq.uk"
@@ -604,9 +604,14 @@ def test_the_break_glass_only_touches_the_named_account(
     assert stored == [MEMBER, ADMIN, DECOY], stored
     assert DECOY < ADMIN, "the decoy must sort before the administrator"
 
+    #: The administrator is locked FIRST, which is the fourth axis. With it locked last it
+    #: was also the most recently locked account, so a mutant selecting by `locked_until`
+    #: still picked the right one and survived the whole module: a gate measured that after
+    #: the three positional axes were fixed. Four rules now disagree with the named lookup:
+    #: first row, last row, lowest username, and most recently locked.
+    _lock_out(app, ADMIN)
     _lock_out(app, MEMBER)
     _lock_out(app, DECOY)
-    _lock_out(app, ADMIN)
     monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
 
     restarted = create_app()
@@ -761,19 +766,160 @@ def test_a_locked_account_is_refused_mid_session_too(
 def test_an_unreadable_account_list_grants_nothing(
     app: Flask, admin: FlaskClient, second_admin: FlaskClient
 ) -> None:
-    """Fail closed. A volume fault must stop the console rather than open it.
-
-    And the sign-in page must still render: the session is deliberately NOT cleared on this
-    path, so a caller bounced here by the dashboard would be bounced straight back if that
-    page asked a different authority. The pair of assertions is the redirect loop that an
-    earlier version of this fix would have shipped.
-    """
+    """Fail closed. A volume fault must stop the console rather than open it."""
     stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    kept = stored.read_bytes()
     stored.write_text("{ this is not json", encoding="utf-8")
 
     assert second_admin.get("/api/registers").status_code == 401
     assert second_admin.get("/accounts").status_code in {302, 403}
-    assert second_admin.get("/sign-in").status_code == 200, "a redirect loop, not a sign-in page"
+    stored.write_bytes(kept)
+
+
+def test_an_unreadable_account_list_does_not_destroy_the_session(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """A fault refuses the request. It must not sign the person out for good.
+
+    Three places in the tree said this and the code did the opposite: every refusal cleared
+    the session, so one request landing during a transient volume problem signed that user
+    out permanently, and while the list was unreadable they could not sign back in either,
+    because the sign-in route reads the same file. A gate measured the contradiction. The
+    record was right about what should happen and the code was not, which is the shape of
+    finding this project treats as binding.
+    """
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    kept = stored.read_bytes()
+    stored.write_text("{ this is not json", encoding="utf-8")
+
+    assert second_admin.get("/api/registers").status_code == 401, "refused during the fault"
+    stored.write_bytes(kept)
+
+    assert second_admin.get("/api/registers").status_code == 200, (
+        "the session did not survive a transient fault, which three records say it does"
+    )
+
+
+def test_the_sign_in_page_renders_during_a_fault_rather_than_looping(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The loop the surviving cookie makes reachable, and the line that prevents it.
+
+    With the cookie kept through a fault, the dashboard bounces the caller to the sign-in
+    page, and a sign-in page asking `current_actor` rather than `live_role` bounces them
+    straight back. That is a real loop and it is only reachable now that a fault keeps the
+    session: while every refusal cleared the cookie there was nothing for this to catch,
+    which a gate proved by reverting the line with the whole suite green.
+    """
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    kept = stored.read_bytes()
+    stored.write_text("{ this is not json", encoding="utf-8")
+
+    bounced = second_admin.get("/console")
+    landed = second_admin.get("/sign-in")
+    stored.write_bytes(kept)
+
+    assert bounced.status_code == 302
+    assert "/sign-in" in bounced.headers["Location"]
+    assert landed.status_code == 200, "the sign-in page bounced back: a redirect loop"
+
+
+def test_a_revocation_clears_the_session_but_a_fault_does_not(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The split, asserted as a split rather than one side at a time.
+
+    A boolean was enough to refuse both cases, and refusing is not the question: an
+    administrator's decision should take the cookie with it and a volume fault should not.
+    """
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+    second_admin.get("/console")
+
+    with second_admin.session_transaction() as cleared:
+        assert auth.ACTOR_KEY not in cleared, "a revocation must take the cookie with it"
+
+
+# ============================ sessions have an epoch ============================
+
+
+def test_changing_your_own_password_evicts_every_other_session(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The remedy for a session somebody else is holding.
+
+    `password_submit`'s own docstring names a session left open on an unlocked machine as
+    the ordinary way an account is taken over. Requiring the current password evicts
+    nobody: the taker has the session and the owner's old password changes nothing for
+    them. A gate measured that a cookie captured beforehand kept working. The epoch on the
+    account is what makes the change mean something.
+    """
+    taken = app.test_client()
+    taken.set_cookie("directive_session", _session_cookie(second_admin))
+    assert taken.get("/api/registers").status_code == 200, "the taken session worked"
+
+    _change_own(second_admin, PHRASE, NEW_PHRASE)
+
+    assert taken.get("/api/registers").status_code == 401, "the taken session survived"
+    assert second_admin.get("/api/registers").status_code == 200, "and the owner stayed in"
+
+
+def test_an_administrator_resetting_a_factor_evicts_that_accounts_sessions(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """A factor reset is the lost-phone path, so the phone is in somebody else's hands."""
+    assert second_admin.get("/api/registers").status_code == 200
+
+    _post(admin, f"/accounts/{MEMBER}/reset-factor")
+
+    assert second_admin.get("/api/registers").status_code == 401
+
+
+def test_a_session_carrying_no_epoch_is_refused(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """Fail closed on a session shaped like one from before the field existed.
+
+    `True` is in the set for a reason that needs the account to be AT epoch 1 to show:
+    `bool` is an `int` in Python and `True == 1`, so a session carrying `True` would match
+    an account whose epoch is 1 unless bools are excluded explicitly. The first version of
+    this test planted `True` against an account still at epoch 0, where the mismatch
+    refused it for the wrong reason and the mutant survived. So the password is changed
+    first, which takes the account to epoch 1, and only then is each value planted.
+    """
+    _change_own(second_admin, PHRASE, NEW_PHRASE)
+    assert accounts.epoch_of(_stored(app, MEMBER)) == 1, "the account must be AT epoch 1"
+    assert second_admin.get("/api/registers").status_code == 200, "the owner is still in"
+    with second_admin.session_transaction() as held:
+        good = dict(held)
+
+    for planted in (None, "1", True, [1], 0, 2):
+        # The session is rebuilt from the good copy each time, because an epoch mismatch is
+        # a REVOCATION and a revocation clears the cookie: without this, only the first
+        # value is actually tested and every later one is refused for having no actor at
+        # all. The first version of this loop did exactly that, and the `True` mutant
+        # survived underneath it.
+        with second_admin.session_transaction() as held:
+            held.clear()
+            held.update(good)
+            if planted is None:
+                held.pop(auth.EPOCH_KEY, None)
+            else:
+                held[auth.EPOCH_KEY] = planted
+        assert second_admin.get("/api/registers").status_code == 401, f"{planted!r} was honoured"
+
+
+def _session_cookie(client: FlaskClient) -> str:
+    """Return the signed session cookie this client holds, as an attacker would copy it.
+
+    Copying the signed VALUE is what an attacker does, which is why this test works that
+    way rather than through `session_transaction`: `sign_out` only asks a browser to drop
+    a cookie, and somebody who has the signed string simply keeps presenting it. The
+    eviction therefore has to come from the server side, which is what the epoch is.
+    """
+    for cookie in client._cookies.values():
+        if cookie.key == "directive_session":
+            return str(cookie.value)
+    raise AssertionError("the client holds no session cookie")
 
 
 def test_a_deleted_account_row_ends_the_session(
