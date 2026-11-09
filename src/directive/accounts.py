@@ -567,8 +567,16 @@ def verify_code(account: dict[str, Any], code: object, *, now: float | None = No
 
     The counter is written onto the account, so the CALLER must persist it. Every call site
     is inside `accounts.with_lock()` and followed by `accounts.save`, which is the same
-    discipline `spend_recovery_code` and `record_failure` already require, and
-    `test_account_admin.py` holds the end-to-end property rather than the discipline.
+    discipline `spend_recovery_code` and `record_failure` already require.
+
+    That discipline is held by `test_the_verify_route_signs_in_with_a_fresh_code_and_spends_it`
+    and `test_a_code_spent_at_the_verify_route_cannot_be_replayed`, both in
+    `tests/test_local_sign_in.py`. The sentence here used to name `test_account_admin.py`,
+    which never calls this function at all, and a gate proved the gap by restoring the
+    counter on the route's success branch: the whole suite stayed green while one code
+    signed in three fresh clients again. No test in the suite had ever posted a valid,
+    unspent code to `/sign-in/verify`, because every helper completes a first sign-in
+    through enrolment instead.
 
     Strictly greater than the stored counter, not merely different. Equal is the replay;
     LESS than is a code from earlier in the window arriving after a later one has been

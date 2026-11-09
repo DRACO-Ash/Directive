@@ -5,9 +5,10 @@ X-Content-Type-Options and X-Frame-Options, applied to all responses. All four a
 here, on every response including a health probe and an error page, because a header
 applied selectively is a header an attacker reaches the exception to.
 
-Defence in depth, not a boundary. The real boundaries are authentication against Entra
-ID, the server-side authorisation check, and the Cross-Site Request Forgery token. These
-headers reduce what a successful injection can do; they do not stop one.
+Defence in depth, not a boundary. The real boundaries are authentication against the local
+account list with a second factor, the server-side authorisation check, and the Cross-Site
+Request Forgery token. These headers reduce what a successful injection can do; they do not
+stop one.
 
 Tighten only, and mechanically so. The values below are applied over anything a route
 set, because the earlier `setdefault` implementation was first-writer-wins: a route could

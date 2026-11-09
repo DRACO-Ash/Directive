@@ -412,8 +412,16 @@ def break_glass_unlock(data_dir: str) -> bool:
       not the role, not the state. Whoever holds the environment channel can already
       replace this application wholesale, but a recovery that silently reset a credential
       would be a back door with a runbook, and the narrow one is as useful.
-    ● **It writes to the log before it is useful to anybody.** The entry is written by the
-      caller, in the application factory, where the audit chain exists.
+    ● **It is recorded, on a best-effort basis, and that qualifier is the honest one.**
+      The caller writes the entry, in the application factory, where the audit chain
+      exists. The order is: clear the lock, persist it, then record. So a chain that
+      resumes and THEN refuses an append, a full volume being the realistic way, leaves the
+      lock cleared with no entry. An earlier version of this sentence said the entry was
+      written before the unlock was useful to anybody, which was the wrong way round and a
+      gate said so. Inverting the order would be worse, not better: it would record an
+      unlock that then failed to happen. `record_event` is best-effort by design and says
+      so, the same contract `/accounts/<username>/unlock` already runs under, and the
+      backstop is the pod log, which carries the warning below unconditionally.
 
     Returns whether a lock was actually cleared, so the caller writes an entry only when
     something happened.

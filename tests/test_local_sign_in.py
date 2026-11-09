@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -286,31 +287,14 @@ def test_the_accounts_page_shows_no_secret(client: FlaskClient) -> None:
 
 
 # ============================ a code is spent when it is used ============================
-
-
-def test_a_code_that_signed_in_cannot_sign_in_again(app: Flask, client: FlaskClient) -> None:
-    """The end-to-end half of RFC 6238 section 5.2, over HTTP and across sessions.
-
-    This is the test that did not exist, and its absence was a working bypass rather than a
-    gap in coverage: a security gate took one six-digit code and signed in three
-    consecutive fresh clients with it, each reaching the console. `tests/test_accounts.py`
-    holds the property at the function; this holds that the ROUTE persists the counter,
-    which is a different claim. The counter is written onto the account record inside the
-    file lock, so a route that forgot to save would pass the unit test and fail here.
-    """
-    secret, _ = sign_in_fully(client)
-    code = totp.code_now(secret)
-
-    second = app.test_client()
-    give_password(second, user=USERNAME)
-    replayed = second.post(
-        "/sign-in/verify",
-        data={"code": code, "csrf_token": form_token(second, "/sign-in/verify")},
-    )
-
-    assert second.get("/api/registers").status_code == 401, "a spent code signed in again"
-    assert replayed.status_code == 302
-    assert "/console" not in replayed.headers.get("Location", "")
+#
+# The test that stood first in this section asserted that a code which "signed in" could
+# not sign in again, and it was a duplicate of the one below rather than the route test its
+# name promised: the code it replayed had been spent by `/sign-in/enrol`, because every
+# helper in this file completes a first sign-in through enrolment. A security gate found
+# that the verify route's success branch was executed by nothing in the whole suite. It is
+# covered properly further down, under "the verify ROUTE, not just the function", and the
+# duplicate is gone rather than left to look like coverage.
 
 
 def test_the_enrolment_code_cannot_be_replayed_at_the_verify_step(
@@ -426,3 +410,181 @@ def test_a_corrupt_account_file_refuses_and_records_rather_than_raising(
     assert client.get("/api/registers").status_code == 401
     actions = [entry.action for entry in app.extensions["directive_chain"].entries]
     assert "LOGIN_FAILED" in actions, "the refusal must still be recorded"
+
+
+# ============================ the verify ROUTE, not just the function ============================
+
+
+class _MovableClock:
+    """The clock the one-time password module reads, which a test can move forward.
+
+    Patched onto `totp` alone rather than onto the standard library, so nothing else in
+    the application sees a different time: a global shift would also move `is_locked`'s
+    window and `accounts._now_text`, and a test that moves two things proves neither.
+    """
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def advance(self, seconds: float) -> None:
+        self.offset += seconds
+
+    def time(self) -> float:
+        return _real_time() + self.offset
+
+
+_real_time = time.time
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _MovableClock:
+    """Return a clock the test moves AFTER enrolment, not before it.
+
+    Enrolment consumes the code for the step it runs in, so every code at that step is
+    spent for the rest of the window. A test that wants a FRESH code for the verify route
+    has to leave that step behind, and it has to do so after enrolling rather than before,
+    or it enrols in the very step it then tries to reuse. Moving the clock is the honest
+    way to get there; editing `totp_last_step` on the stored record would be the test
+    arranging the one piece of state it claims to measure.
+    """
+    moved = _MovableClock()
+    monkeypatch.setattr(totp, "time", moved)
+    return moved
+
+
+def test_the_verify_route_signs_in_with_a_fresh_code_and_spends_it(
+    app: Flask, client: FlaskClient, clock: _MovableClock
+) -> None:
+    """The route-level single-use control, which was held by NOTHING.
+
+    A security gate proved the gap by mutation: restoring `totp_last_step` on the success
+    branch of `/sign-in/verify` left all 1565 tests green while one code signed in three
+    consecutive fresh clients again, which is the exact bypass the commit before this one
+    existed to close. `coverage.xml` named the success branch of that route as never
+    executed, because every helper in this suite completes a sign-in through
+    `/sign-in/enrol` instead, and so every `/sign-in/verify` POST in the suite carried a
+    wrong code, a recovery code, or an already-spent one.
+
+    So this test does the one thing none of them did: it posts a VALID, UNSPENT code to
+    `/sign-in/verify`, reaches the console with it, and then replays it.
+    """
+    secret, _ = sign_in_fully(client)
+    clock.advance(totp.STEP_SECONDS * 4)
+    spent_at = _last_step(app)
+
+    fresh = app.test_client()
+    give_password(fresh)
+    arrived = fresh.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(fresh, "/sign-in/verify")},
+    )
+
+    assert fresh.get("/api/registers").status_code == 200, "a fresh code must sign in"
+    assert arrived.status_code == 302
+    assert _last_step(app) > spent_at, "the route must persist the counter it spent"
+
+
+def test_a_code_spent_at_the_verify_route_cannot_be_replayed(
+    app: Flask, client: FlaskClient, clock: _MovableClock
+) -> None:
+    """And the other half: having signed in through `/sign-in/verify`, it is spent.
+
+    Separate from the test above on purpose. That one fails if the route refuses a good
+    code; this one fails if it accepts a spent one. A single test asserting both would go
+    green on a route that accepted everything, because the first assertion would pass.
+    """
+    secret, _ = sign_in_fully(client)
+    clock.advance(totp.STEP_SECONDS * 4)
+    code = totp.code_now(secret)
+
+    first = app.test_client()
+    give_password(first)
+    first.post(
+        "/sign-in/verify",
+        data={"code": code, "csrf_token": form_token(first, "/sign-in/verify")},
+    )
+    assert first.get("/api/registers").status_code == 200, "the first use must work"
+    after_first = _last_step(app)
+
+    second = app.test_client()
+    give_password(second)
+    replayed = second.post(
+        "/sign-in/verify",
+        data={"code": code, "csrf_token": form_token(second, "/sign-in/verify")},
+    )
+
+    assert second.get("/api/registers").status_code == 401, "a spent code signed in again"
+    assert replayed.status_code == 302
+    assert _last_step(app) == after_first, "a refused replay must not move the counter"
+
+
+def _last_step(app: Flask) -> int:
+    """Read the spent-counter off the volume, bypassing the application entirely."""
+    rows = accounts.load(str(app.config["DIRECTIVE_DATA_DIR"]))
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    return accounts.last_step(account)
+
+
+# ============================ the busy signal, at its real source ============================
+
+
+def test_an_exhausted_semaphore_really_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CONVERSION, not a monkeypatched stand-in for it.
+
+    Every other test of the busy path patches `_scrypt` itself to raise, so the line that
+    turns a real slot timeout into `ServiceBusyError` was executed by nothing and a mutant
+    that returned a non-matching digest instead survived. Then a busy slot would read as a
+    wrong password again, which is the defect this class was created to end.
+    """
+    monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.05)
+    held = [accounts._hash_slots.acquire() for _ in range(accounts.HASH_SLOTS)]
+    try:
+        with pytest.raises(accounts.ServiceBusyError, match="busy"):
+            accounts.hash_password(PASSWORD)
+    finally:
+        for _ in held:
+            accounts._hash_slots.release()
+
+
+def test_a_memory_error_becomes_a_busy_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sharper half of the same gap.
+
+    An unconverted `MemoryError` is not an `AccountError`, so it escapes the view as a 500
+    rather than a refusal. The mutant that re-raised it survived the suite.
+    """
+    import hashlib  # noqa: PLC0415 - only this test needs it
+
+    def out_of_memory(*args: object, **kwargs: object) -> bytes:
+        raise MemoryError
+
+    monkeypatch.setattr(hashlib, "scrypt", out_of_memory)
+
+    with pytest.raises(accounts.ServiceBusyError, match="memory"):
+        accounts.hash_password(PASSWORD)
+
+
+def test_a_busy_hash_is_refused_as_a_sign_in_not_as_an_unreadable_file(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """The explicit catch must be the one that fires, not the blueprint's error handler.
+
+    `ServiceBusyError` subclasses `AccountError`, so deleting the explicit `except` in the
+    route leaves the handler to catch it and the outward behaviour identical: the security
+    property still holds through the second control, which is why the gate scored it MINOR.
+    What changes is the server log, which would start calling a capacity event "the account
+    list could not be read", and mislabelling a capacity event is the whole reason this
+    class exists. So the test keys on the reason rather than on the status code.
+    """
+    give_password(client, password=WRONG_PASSWORD)
+
+    def busy(*args: object, **kwargs: object) -> bytes:
+        raise accounts.ServiceBusyError("no slot came free")
+
+    monkeypatch.setattr(accounts, "_scrypt", busy)
+    with caplog.at_level("WARNING"):
+        give_password(client)
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "service busy" in logged
+    assert "account list could not be read" not in logged

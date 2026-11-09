@@ -45,6 +45,10 @@ MANAGED_VARIABLES = (
     "APPSTORE_DAST_SCAN",
     "BOOTSTRAP_ADMIN",
     "BOOTSTRAP_ADMIN_PASSWORD",
+    #: Drives a boot-time path that writes to the account file AND to the audit chain, so a
+    #: value left in a developer's shell or on a runner would change what every test in the
+    #: session boots into. Added after a gate found it missing from this tuple.
+    "BOOTSTRAP_UNLOCK",
 )
 
 #: A test signing key, as the application requires it: real key material decoding to at

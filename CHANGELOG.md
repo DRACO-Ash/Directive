@@ -118,6 +118,34 @@ Three MINORs with it: `Cache-Control: no-store` on the two pages that render a p
 secret, a corrupt account file answering 500 with no audit entry on the unauthenticated
 sign-in route, and stale Entra prose in `__init__.py`.
 
+**The re-run then failed the build again, on the fix itself.** It confirmed all four MAJORs
+dead by live attack, including a six-way concurrent race on one code, and found that the
+single-use control was held by no test: restoring the counter on the success branch of
+`/sign-in/verify` left all 1565 tests green while one code signed in three fresh clients
+again. The coverage report named that branch as never executed. Every helper in the suite
+completes a first sign-in through enrolment, so no test had ever posted a valid, unspent
+code to the verify route, and the test named for that property was a duplicate of the
+enrolment one beside it. Two docstrings claimed the coverage existed; one named a module
+that never calls the function.
+
+That is the sixth time this project has shipped a correct control that nothing held, and
+the first time the control was written the same day as the claim about it. Two tests now
+post a fresh code to the verify route and replay it, split so that one fails if the route
+refuses a good code and the other fails if it accepts a spent one, with the one-time
+password clock moved forward after enrolment rather than the stored counter edited. The
+gate's own mutation now reds. The duplicate test is deleted rather than left to look like
+coverage, and both docstrings now name the tests that actually hold the property.
+
+Six MINORs with it, each mutation-proved: the real `ServiceBusyError` raise sites were
+executed by nothing because every test patched `_scrypt` to raise, so an unconverted
+`MemoryError` would have escaped as a 500; the explicit `except` was not independently
+held, since the blueprint handler catches the subclass and answers identically while
+calling a capacity event "the account list could not be read" in the log; the break-glass
+audit entry is written after the unlock is persisted rather than before, so the docstring
+and the runbook now say it is best-effort with the pod log as the backstop;
+`BOOTSTRAP_UNLOCK` was missing from the suite's managed variables; the named-account test
+passed by file order; and one stale Entra sentence survived in `security_headers.py`.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign

@@ -548,6 +548,11 @@ def test_the_break_glass_only_touches_the_named_account(
 ) -> None:
     """It names `BOOTSTRAP_ADMIN`, so another locked account stays locked."""
     _make_member(admin)
+    # The MEMBER is locked first, deliberately. With the administrator locked first it is
+    # also the first locked row in file order, so a mutant picking "the first locked
+    # account" rather than the named one passed: a gate measured that and it is the
+    # difference between a test that holds the control and one that agrees with it by
+    # accident. Locking the member first makes the two answers differ.
     _lock_out(app, MEMBER)
     _lock_out(app, ADMIN)
     monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
