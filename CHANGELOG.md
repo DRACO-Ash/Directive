@@ -493,6 +493,49 @@ ordering that set the per-session bit after its save, now moot because the bit i
 `abandon_second_factor` clearing the enrolment keys, now held by an assertion over the
 session keys.
 
+**The twelfth round could not break the derivation, and failed the build on a comment.**
+It attacked the new code directly: two sign-ins on one account, five interleaved reloads, a
+tampered cookie, a forged cookie carrying a chosen token, the key-absence paths in
+production, development and scan mode, both orderings of the enrolment race, a second submit
+against the recovery codes, and a revocation mid-enrolment. None of it moved. It recomputed
+the page's secret outside the process from the configured session key and got the same
+value, which proves the key in use is the deployment's rather than a constant. It measured
+zero writes across 50 loads driven three ways, with the inode, mtime and content unchanged
+and no temporary files left. And it checked the claim flagged as load-bearing, that the
+enrolment-denial residual is closed, and found it correct.
+
+**The MAJOR was a comment contradicting its own docstring ten lines above it.** The commit
+that rewrote `finish_enrolment` to say the ownership clause had gone with the stored field
+left eighteen lines inside the function describing that clause as a live second layer,
+reachable, unexploitable and untestable, all of it about a field the same commit deleted. It
+is binding in substance and not only by the rule: somebody who believes a second layer
+stands there is one edit from removing `enrol_submit`'s `is_enrolled` branch, which is the
+branch that stops a confirmed factor being replaced and which has no second layer at all.
+The clause is replaced by what the branch means now, and the replacement says why the wrong
+version was there, because that is the evidence that the pattern recurred.
+
+**Two of the round's own new controls were held by nothing**, and both were reproduced here
+before anything was written. Replacing the whole body of `auth.enrolment_key` with a
+constant in the source left every test green: the derived value becomes the account's
+permanent confirmed factor, so the server-held key is the only thing stopping anyone with
+the source and one captured pre-enrolment cookie computing a victim's live second factor. A
+route-level test now recomputes the served secret from `app.secret_key` and the caller's own
+session token. Deleting `is_enrolled` from `enrol_page`'s refusal was also green, and it is
+the symmetric half of a branch whose POST-side sibling is lethal. Both now die on their own
+named assertions.
+
+**And the token's length is recorded for what it buys.** Not stopping a third party deriving
+somebody's secret, which the key does and which a guessed token cannot touch; keeping two
+half-finished sign-ins from colliding on one token. The constant's comment and the test
+asserting it both said otherwise, and that file had already been corrected once for the same
+kind of reach.
+
+**Worth stating because it has held for four rounds.** Every binding finding since the ninth
+has been a record over-claiming rather than a missing control: three bounds asserted wider
+than they held, then a deleted control still described as live. The code survived direct
+attack each time. What kept failing was the prose around it, written in the same commit as
+the change it described, by the author best placed to believe it.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
