@@ -1185,10 +1185,16 @@ def test_one_callers_enrolment_secret_cannot_be_confirmed_by_another(
 
     attacker = app.test_client()
     _give_first_factor(attacker, MEMBER, PHRASE)
-    planted = re.search(
-        r'class="secret mono">([A-Z2-7]+)<', attacker.get("/sign-in/enrol").get_data(as_text=True)
-    )
+    #: Both the secret and the request token come off the SAME load, which is what a browser
+    #: holding this page has. Scraping the token with a second GET stopped working when the
+    #: page began minting once per sign-in: the attacker's second load is redirected, so
+    #: there is no form on it to read a token from. The attack is not weakened by reading
+    #: them together, it is described more exactly.
+    planted_page = attacker.get("/sign-in/enrol").get_data(as_text=True)
+    planted = re.search(r'class="secret mono">([A-Z2-7]+)<', planted_page)
+    planted_token = re.search(r'name="csrf_token" value="([^"]+)"', planted_page)
     assert planted is not None
+    assert planted_token is not None
 
     owner = app.test_client()
     _give_first_factor(owner, MEMBER, PHRASE)
@@ -1204,7 +1210,7 @@ def test_one_callers_enrolment_secret_cannot_be_confirmed_by_another(
         "/sign-in/enrol",
         data={
             "code": totp.code_now(planted.group(1)),
-            "csrf_token": _token(attacker, "/sign-in/enrol"),
+            "csrf_token": planted_token.group(1),
         },
     )
     assert attacker.get("/api/registers").status_code == 401
@@ -1280,6 +1286,14 @@ def test_a_second_load_is_never_shown_another_sessions_secret(
     Reproduced here before the test was written: with the comparison bypassed the
     attacker's second load returns the owner's exact secret, and with it in place it does
     not.
+
+    The second load is a REDIRECT from the tenth round on, because the page mints once per
+    sign-in and sends a session that has lost the stored secret back to the start. That
+    changes how this is asserted, not what it asserts, and the two assertions are kept apart
+    deliberately: the first is the comparison's own property and dies with the comparison,
+    the second is the per-session bound's and dies with that. Asserting only a status code
+    would let a bypass that serves the owner's secret pass as long as it served it with the
+    right number on it.
     """
     _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
 
@@ -1298,8 +1312,12 @@ def test_a_second_load_is_never_shown_another_sessions_secret(
     _give_first_factor(owner, MEMBER, PHRASE)
     owners = shown(owner)
 
-    assert shown(attacker) != owners, (
+    second = attacker.get("/sign-in/enrol")
+    assert owners not in second.get_data(as_text=True), (
         "a second load was served the secret another session is about to confirm"
+    )
+    assert second.status_code == 302, (
+        "a second load was handed a fresh secret instead of being sent back to the start"
     )
 
 
