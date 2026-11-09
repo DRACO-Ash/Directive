@@ -18,6 +18,11 @@ from directive import accounts
 
 GOOD = "a-password-of-real-length"  # a test value, opens nothing
 
+#: The key an enrolment secret is derived under. In the application this is the session
+#: signing key, read through `auth.enrolment_key`; here it is a fixed value, because the
+#: derivation is a pure function and these tests assert the function, not the wiring.
+DERIVATION_KEY = bytes(range(32))
+
 
 # ============================ usernames ============================
 
@@ -394,7 +399,11 @@ def test_the_enabled_administrators_are_counted() -> None:
 def test_redacted_is_an_allowlist_and_carries_no_secret() -> None:
     """A denylist is one new field away from leaking it, and the next field is a secret."""
     account = accounts.new_account("a@b.uk", GOOD, role=accounts.ADMIN)
-    accounts.begin_enrolment(account, token=accounts.new_enrolment_token())
+    #: A confirmed secret rather than an unconfirmed one: there is no longer an unconfirmed
+    #: secret on a record to plant, because the enrolment page derives it instead of storing
+    #: it. What this test is about is unchanged, which is that `redacted` names the fields it
+    #: will show rather than the fields it will hide.
+    account["totp_secret"] = accounts.enrolment_secret("a@b.uk", "a-token", DERIVATION_KEY)
     account["a_future_secret"] = "must not appear"  # noqa: S105 - the point of the test
 
     shown = accounts.redacted(account)
@@ -423,12 +432,12 @@ def test_enrolment_is_two_steps_and_the_pending_secret_grants_nothing() -> None:
 
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    secret = accounts.begin_enrolment(account, token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
 
     assert not accounts.is_enrolled(account)
     assert not accounts.verify_code(account, totp.code_now(secret))
 
-    codes = accounts.finish_enrolment(account, totp.code_now(secret), token=token)
+    codes = accounts.finish_enrolment(account, totp.code_now(secret), secret=secret)
 
     assert codes is not None
     assert accounts.is_enrolled(account)
@@ -455,8 +464,8 @@ def test_a_code_cannot_be_spent_twice() -> None:
 
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    secret = accounts.begin_enrolment(account, token=token)
-    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
+    accounts.finish_enrolment(account, totp.code_now(secret), secret=secret)
     moment = time.time() + totp.STEP_SECONDS * 4
     code = totp.code_now(secret, now=moment)
 
@@ -477,8 +486,8 @@ def test_a_code_from_earlier_in_the_window_is_refused_after_a_later_one() -> Non
 
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    secret = accounts.begin_enrolment(account, token=token)
-    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
+    accounts.finish_enrolment(account, totp.code_now(secret), secret=secret)
     moment = time.time() + totp.STEP_SECONDS * 4
     earlier = totp.code_now(secret, now=moment - totp.STEP_SECONDS)
 
@@ -496,8 +505,8 @@ def test_an_unreadable_counter_refuses_every_code() -> None:
 
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    secret = accounts.begin_enrolment(account, token=token)
-    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
+    accounts.finish_enrolment(account, totp.code_now(secret), secret=secret)
     account["totp_last_step"] = "not a number"
 
     moment = time.time() + totp.STEP_SECONDS * 4
@@ -516,23 +525,23 @@ def test_resetting_the_factor_resets_the_counter() -> None:
 
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    secret = accounts.begin_enrolment(account, token=token)
-    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
+    accounts.finish_enrolment(account, totp.code_now(secret), secret=secret)
     accounts.reset_factor(account)
 
     assert account["totp_last_step"] == accounts.NO_STEP
 
     fresh_token = accounts.new_enrolment_token()
-    fresh = accounts.begin_enrolment(account, token=fresh_token)
-    assert accounts.finish_enrolment(account, totp.code_now(fresh), token=fresh_token) is not None
+    fresh = accounts.enrolment_secret(account["username"], fresh_token, DERIVATION_KEY)
+    assert accounts.finish_enrolment(account, totp.code_now(fresh), secret=fresh) is not None
 
 
 def test_enrolment_with_a_wrong_code_confirms_nothing() -> None:
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    accounts.begin_enrolment(account, token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
 
-    assert accounts.finish_enrolment(account, "000000", token=token) is None
+    assert accounts.finish_enrolment(account, "000000", secret=secret) is None
     assert not accounts.is_enrolled(account)
 
 
@@ -541,8 +550,8 @@ def test_a_reset_factor_forces_re_enrolment_and_drops_recovery_codes() -> None:
 
     account = accounts.new_account("a@b.uk", GOOD)
     token = accounts.new_enrolment_token()
-    secret = accounts.begin_enrolment(account, token=token)
-    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
+    secret = accounts.enrolment_secret(account["username"], token, DERIVATION_KEY)
+    accounts.finish_enrolment(account, totp.code_now(secret), secret=secret)
 
     accounts.reset_factor(account)
 
@@ -561,10 +570,12 @@ def test_two_sign_ins_get_different_unguessable_enrolment_tokens() -> None:
     would satisfy it while being guessable in a few hundred attempts. So the length is
     asserted here, at the source, alongside the uniqueness.
 
-    Minted by `new_enrolment_token` rather than by `begin_enrolment`, because the token has
-    to exist before the enrolment page can be loaded: created inside the page, it could
-    never be in a replayed cookie and every replay minted a secret and wrote the credential
-    store. See that function's own docstring for the measurement.
+    Minted at the first factor rather than by the enrolment page, because the token has to
+    exist before that page can be loaded: created inside it, it could never be in a replayed
+    cookie and every replay minted a secret and wrote the credential store. It is now also
+    the only input that separates one half-finished sign-in's derived secret from another's,
+    so its length is what stops a guesser deriving somebody else's. See
+    `accounts.enrolment_secret` for the three rounds of measurement behind that.
     """
     first = accounts.new_enrolment_token()
     second = accounts.new_enrolment_token()
@@ -573,13 +584,36 @@ def test_two_sign_ins_get_different_unguessable_enrolment_tokens() -> None:
     assert len(first) >= 43, f"a {len(first)}-character token is guessable"
 
 
-def test_an_enrolment_secret_is_owned_by_the_token_it_was_minted_with() -> None:
-    """The caller supplies the token, so the account records WHICH sign-in owns the secret."""
+def test_an_enrolment_secret_belongs_to_one_sign_in_by_construction() -> None:
+    """Two half-finished sign-ins cannot derive the same secret, and a reload cannot differ.
+
+    This replaces an ownership COMPARISON against a field on the account. That field was
+    shared state, which is what two security rounds kept finding: whichever session loaded
+    last owned it, and bounding the writes that caused was defeated twice. There is nothing
+    to own now. The separation is the derivation's own arithmetic, and these are the two
+    properties the page depends on: different tokens give different secrets, so one sign-in
+    can never be shown another's, and the same token gives the same secret, so a reload
+    shows what was scanned.
+
+    Also asserted: the account is not touched. The derivation is pure, and a version that
+    wrote anything back would reopen the whole amplification class.
+    """
     account = accounts.new_account("a@b.uk", GOOD)
+    before = dict(account)
     mine, theirs = accounts.new_enrolment_token(), accounts.new_enrolment_token()
 
-    secret = accounts.begin_enrolment(account, token=mine)
+    secret = accounts.enrolment_secret(account["username"], mine, DERIVATION_KEY)
 
-    assert accounts.pending_secret_for(account, mine) == secret
-    assert accounts.pending_secret_for(account, theirs) == ""
-    assert account["totp_pending_token"] == mine
+    assert accounts.enrolment_secret(account["username"], mine, DERIVATION_KEY) == secret, (
+        "a reload derived a different secret from the one that was scanned"
+    )
+    assert accounts.enrolment_secret(account["username"], theirs, DERIVATION_KEY) != secret, (
+        "two half-finished sign-ins derived the same secret"
+    )
+    assert accounts.enrolment_secret("b@b.uk", mine, DERIVATION_KEY) != secret, (
+        "two accounts derived the same secret from one token"
+    )
+    assert accounts.enrolment_secret(account["username"], mine, bytes(32)) != secret, (
+        "the key is not an input, so anyone who can read the token can derive the secret"
+    )
+    assert account == before, "deriving a secret wrote to the account record"

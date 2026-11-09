@@ -509,7 +509,6 @@ def new_account(username: str, password: str, *, role: str = MEMBER) -> dict[str
         "role": role,
         "state": ACTIVE,
         "totp_secret": CLEARED,
-        "totp_pending_token": CLEARED,
         #: The last counter a one-time code was accepted at, so the same code cannot be
         #: spent twice. `-1` rather than `0`: counter zero is a real RFC 6238 step (the
         #: Unix epoch) and a sentinel that collides with a legitimate value is not one.
@@ -602,72 +601,53 @@ def new_enrolment_token() -> str:
     return secrets.token_urlsafe(ENROLMENT_TOKEN_BYTES)
 
 
-def begin_enrolment(account: dict[str, Any], *, token: str) -> str:
-    """Return a new second-factor secret, owned by the caller's sign-in token.
+def enrolment_secret(username: str, token: str, key: bytes) -> str:
+    """Return the unconfirmed second-factor secret this half-finished sign-in is entitled to.
 
-    Stored before it is confirmed so the person can be shown it once and asked to prove
-    their app has it. Until `finish_enrolment` runs, `enrolled` is False and the secret
-    cannot be used to sign in.
+    **Derived, and never stored until it is confirmed. That is the whole point of it, and it
+    is the third attempt at bounding what this cost.** The enrolment page used to WRITE an
+    unconfirmed secret to the credential store, and three rounds of the security gate went
+    at the bound on those writes:
 
-    **The token exists because an unconfirmed secret on the account is shared state, and
-    sharing it was an account takeover.** `enrol_page` reuses a stored pending secret rather
-    than minting one per request, which it has to: minting on every GET meant refreshing the
-    page invalidated the code the person had just scanned. But the reuse read the ACCOUNT,
-    so two callers who both knew the password saw the same secret. A security gate drove it
-    end to end and it needs no administrator action at all: an attacker holding the password
-    visits the enrolment page before the real owner ever signs in, the owner is then shown
-    the attacker's secret, confirms it, and the attacker holds the account's live second
-    factor. For the bootstrap administrator that attacker is anyone who can read the
-    platform's environment tab, which `docs/DEPLOYMENT.md` already states is a real reader.
+    ● The eighth round found one captured pre-enrolment cookie minting a secret per request.
+      The token was moved to the first factor so a replayed cookie carries one, and the
+      replay then reused rather than minted.
+    ● The tenth round found the same amplification with TWO half-finished sign-ins, because
+      the mint-or-reuse decision read the ACCOUNT's stored token, which both sessions fought
+      over. A per-session bit was added so a sign-in minted at most once.
+    ● The eleventh round defeated that bit in one line of attacker code: the bit lives in a
+      cookie the SERVER sets, and a client that never carries the cookie back never presents
+      it. Measured at 50 loads, 50 secrets and 50 fsynced rewrites of the credential store
+      from two password verifications, which is the eighth round's figure unchanged.
 
-    So the secret belongs to ONE half-finished sign-in. The token is random, stored beside
-    the secret, and returned to the caller to put on its session; `enrol_page` reuses the
-    secret only for the session holding the token, and `finish_enrolment` refuses without
-    it. The secret itself stays server-side rather than moving into the session cookie,
-    which is signed and not encrypted.
+    The lesson, written down because it was paid for three times: a bound enforced on state
+    the caller holds is not a bound. So there is nothing to mint. The secret is a keyed
+    function of the account name and the random token `begin_second_factor` put on the
+    session, so the page recomputes the same value on every load and writes NOTHING, and
+    `finish_enrolment` recomputes it again from the same token to check the code. The write
+    happens once, on the confirming POST, by a caller who has proved possession of a code.
+
+    Three properties follow and each closes something the stored version needed a control
+    for. Two half-finished sign-ins derive DIFFERENT secrets, because the token differs, so
+    neither can be shown or steal the other's and the ownership comparison that guarded that
+    is gone with the state it guarded. A reload derives the same secret, which is the case
+    the reuse path existed for. And a password change or a factor reset still kills an
+    in-flight enrolment, through the epoch on the pending marker rather than by clearing a
+    stored field.
+
+    The key is the application's session signing key, under an explicit label. Deliberate,
+    and the reasoning is that the token is only ever carried inside a cookie signed by that
+    same key: if it rotates, every cookie is void and every half-finished sign-in with it, so
+    a secret that changes with it changes exactly when it has no holder left. A separate
+    secret would be one more required environment variable for no property this does not
+    already have.
     """
-    secret = totp.new_secret()
-    account["totp_pending"] = secret
-    account["totp_pending_token"] = token
-    account["updated"] = _now_text()
-    return secret
-
-
-def pending_secret_for(account: dict[str, Any], token: object) -> str:
-    """Return the unconfirmed secret this token owns, or an empty string.
-
-    Compared in constant time, and be exact about what that buys, because this docstring has
-    been corrected twice for reaching too far. It is not a boundary control: the token
-    arrives from a server-signed session the caller cannot write, so there is no oracle to
-    time, and calling the token "a bearer value" overstated the exposure. The comparison
-    stays because it costs nothing and because the day something does hand this a
-    caller-chosen value, the control is already the right one.
-
-    The COMPARISON, not the guards above it, is what refuses a second session the live
-    secret, and it is reachable only on a second load: a session arriving with no token at
-    all is refused by the empty-token guard without comparing anything. That distinction is
-    why the obvious test of the takeover could not catch a bypass of this line, and it is
-    held now by `test_a_second_load_is_never_shown_another_sessions_secret`.
-    """
-    held = str(account.get("totp_pending_token") or "")
-    secret = str(account.get("totp_pending") or "")
-    if not held or not secret or not isinstance(token, str) or not token:
-        return ""
-    if not held.isascii() or not token.isascii():
-        #: `compare_digest` raises on a non-ASCII string, and this runs on an
-        #: unauthenticated route. Fail closed rather than 500.
-        return ""
-    return secret if hmac.compare_digest(held, token) else ""
-
-
-def clear_pending_enrolment(account: dict[str, Any]) -> None:
-    """Forget an unconfirmed second-factor secret and the token that owned it."""
-    account["totp_pending"] = CLEARED
-    account["totp_pending_token"] = CLEARED
+    material = hmac.new(key, f"enrol:{username}:{token}".encode(), hashlib.sha256).digest()
+    return totp.new_secret(material[: totp.SECRET_BYTES])
 
 
 def finish_enrolment(
-    account: dict[str, Any], code: object, *, token: object, now: float | None = None
+    account: dict[str, Any], code: object, *, secret: str, now: float | None = None
 ) -> list[str] | None:
     """Confirm enrolment with a code from the app. Returns recovery codes, or None.
 
@@ -678,9 +658,15 @@ def finish_enrolment(
     so without this the code the person has just typed into the enrolment form stays valid
     at `/sign-in/verify` for the rest of the window, which is the same replay the sign-in
     path was found to allow and the gate demonstrated from a second session.
+
+    Takes the secret rather than reading one off the account, because there is no longer one
+    to read: the caller recomputes it with `enrolment_secret` from the token on its own
+    session, and this is the only place it is ever written down. The ownership comparison
+    that used to stand here went with the stored field it compared, and so did the clause
+    recorded beside it as "reachable and not exploitable": two sign-ins cannot derive the
+    same secret, so there is nothing to own.
     """
-    pending = pending_secret_for(account, token)
-    if not pending:
+    if not secret:
         #: No secret, or a secret this session does not own.
         #:
         #: **The ownership half here is a second layer. It IS reachable, and it is held by
@@ -700,14 +686,13 @@ def finish_enrolment(
         #: already made twice.
         return None
     try:
-        matched = totp.matching_step(pending, code if isinstance(code, str) else "", now=now)
+        matched = totp.matching_step(secret, code if isinstance(code, str) else "", now=now)
     except totp.TotpError:
         return None
     if matched is None:
         return None
     codes, hashes = new_recovery_codes()
-    account["totp_secret"] = pending
-    clear_pending_enrolment(account)
+    account["totp_secret"] = secret
     account["totp_last_step"] = matched
     account["recovery"] = hashes
     account["updated"] = _now_text()
@@ -811,11 +796,13 @@ def bump_epoch(account: dict[str, Any]) -> int:
     wants to keep its OWN session writes the returned value back onto it.
     """
     account["session_epoch"] = epoch_of(account) + 1 if account.get("session_epoch") else 1
-    #: An unconfirmed enrolment secret goes with the sessions. "Every session this account
-    #: holds stops" has to include a half-finished sign-in that is holding a secret, or a
-    #: disable-and-re-enable leaves the attacker's planted factor on the record for the
-    #: owner to confirm later, which is precisely the takeover the token above closes.
-    clear_pending_enrolment(account)
+    #: There is no unconfirmed secret on the record to clear any more, and the sentence that
+    #: used to be here cleared one. "Every session this account holds stops" still has to
+    #: include a half-finished sign-in, and it does: an enrolment secret is derived from the
+    #: token on the pending session, `_pending_refusal` refuses a pending sign-in whose epoch
+    #: no longer matches, so bumping the epoch is what ends it. The disable-and-re-enable
+    #: case the old clearing was written for cannot arise either, because no planted factor
+    #: is left on the record for an owner to confirm later.
     account["updated"] = _now_text()
     return int(account["session_epoch"])
 

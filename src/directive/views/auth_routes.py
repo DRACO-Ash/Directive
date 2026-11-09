@@ -412,74 +412,51 @@ def _complete_sign_in(
 
 @auth_bp.get("/sign-in/enrol")
 def enrol_page() -> str | Response:
-    """Show the second-factor secret, once, for an account that has none."""
+    """Show the second-factor secret, once, for an account that has none.
+
+    **This route writes nothing, and that is the control.** It read the account, minted a
+    secret and rewrote the credential store, and three rounds of the security gate went at
+    bounding how often: a replayed cookie minted per request, then two half-finished sign-ins
+    minted per load off each other, then a per-session bit was defeated by a client that
+    simply never carried the server's cookie back, at 50 writes from two password
+    verifications. A bound kept in state the caller holds is not a bound. So the secret is
+    derived from the token on the session instead, and there is nothing left to amplify: no
+    write, no lock taken, and nothing on the record for a second caller to fight over.
+
+    Read without `with_lock`, like `auth.live_standing` on every authenticated request, which
+    is the established shape for a read-only path here: `accounts.save` publishes by atomic
+    rename, so a reader without the lock sees a whole old file or a whole new one.
+    """
     username = auth.pending_actor()
     if not username:
         return redirect(url_for(SIGN_IN_ENDPOINT))
-    with accounts.with_lock():
-        rows = accounts.load(_data_dir())
-        account = accounts.find(rows, username)
-        #: `may_sign_in`, not merely "exists and is unenrolled". Both sibling routes check
-        #: it and this one did not, so an account disabled between the first factor and the
-        #: second was still shown a fresh secret and still had `totp_pending` written to its
-        #: row in the credential store. The POST was correctly refused, so nothing was
-        #: gained beyond one write and one disclosure of a secret that opens nothing; it was
-        #: still a half-authenticated caller writing to the account file after revocation.
-        if not accounts.may_sign_in(account) or accounts.is_enrolled(account):
-            auth.abandon_second_factor()
-            return redirect(url_for(SIGN_IN_ENDPOINT))
-        #: The epoch, which this route alone did not check. Both siblings did, so a
-        #: password change or a factor reset stopped a half-finished sign-in completing
-        #: while this page went on serving it fresh secrets and WRITING them to the record:
-        #: a half-authenticated caller writing to the credential store after revocation,
-        #: which is the case the `may_sign_in` line above was added to close one round ago.
-        #: That fix closed the disabled and locked half and left this one open.
-        if _pending_refusal(account, username):
-            auth.abandon_second_factor()
-            return redirect(url_for(SIGN_IN_ENDPOINT))
-        #: Reuse a pending secret rather than issuing a new one on every load. This GET
-        #: used to mint one each time, so refreshing the page after scanning the key made
-        #: the code in the app stop working, with nothing on screen to say why.
-        #:
-        #: Reused for THIS SIGN-IN only, which is the part that was wrong. The reuse read
-        #: the account, so two callers who both knew the password were shown the same
-        #: secret, and a gate drove the takeover that follows from it: an attacker loads
-        #: this page first, the owner is then shown the attacker's secret, confirms it, and
-        #: the attacker holds the account's live second factor. No administrator action is
-        #: needed. The token names one half-finished sign-in and lives on the session;
-        #: another session gets a fresh secret, and only the holder can confirm one.
-        #: Refused outright without one, rather than minting. A pending sign-in always
-        #: carries a token, because `begin_second_factor` mints it; a request that does not
-        #: is either a cookie from before this release or a forgery, and in both cases the
-        #: safe answer is to start again. Minting here instead is half of what made the page
-        #: a write amplifier; the per-session bound below is the other half, and this comment
-        #: said "what made" for one round while the two-session case was still open.
-        owned = session.get(auth.ENROLMENT_KEY)
-        if not isinstance(owned, str) or not owned:
-            auth.abandon_second_factor()
-            return redirect(url_for(SIGN_IN_ENDPOINT))
-        secret = accounts.pending_secret_for(account, owned)
-        if not secret:
-            #: Minted at most ONCE per half-finished sign-in, and the bit that bounds it
-            #: lives on the session because the account cannot answer the question. The
-            #: decision above asks whether the ACCOUNT's stored token is ours; two pending
-            #: sign-ins on one unenrolled account therefore took it back from each other on
-            #: every load, and 50 alternating loads bought 50 secrets and 50 fsynced
-            #: rewrites of the credential store, at 460 a second, for two password
-            #: verifications. The ninth round bounded the ONE-cookie case and this was
-            #: measured at the tenth. A session that has minted and no longer owns the
-            #: stored secret starts again rather than being handed a third one: whatever it
-            #: scanned is dead either way, so the redirect loses nothing and the write is
-            #: what an attacker was buying.
-            if session.get(auth.ENROLMENT_MINTED_KEY):
-                auth.abandon_second_factor()
-                return redirect(url_for(SIGN_IN_ENDPOINT))
-            secret = accounts.begin_enrolment(account, token=owned)
-            accounts.save(_data_dir(), rows)
-            #: After the save, never before. A save that raises leaves the volume with no
-            #: pending secret, and a bit set ahead of it would refuse this sign-in every
-            #: load thereafter.
-            session[auth.ENROLMENT_MINTED_KEY] = True
+    rows = accounts.load(_data_dir())
+    account = accounts.find(rows, username)
+    #: `may_sign_in`, not merely "exists and is unenrolled". Both sibling routes check it and
+    #: this one did not, so an account disabled between the first factor and the second was
+    #: still shown a fresh secret. It no longer writes, so what this refuses now is the
+    #: disclosure of a secret to a revoked sign-in rather than a write by one.
+    if not accounts.may_sign_in(account) or accounts.is_enrolled(account):
+        auth.abandon_second_factor()
+        return redirect(url_for(SIGN_IN_ENDPOINT))
+    #: The epoch, which this route alone did not check while both siblings did, so a password
+    #: change or a factor reset stopped a half-finished sign-in completing while this page
+    #: went on serving it secrets. It is also the whole of what now ends an in-flight
+    #: enrolment: nothing is stored to clear, so the refusal here and in `enrol_submit` is
+    #: the mechanism, not a second layer over one.
+    if _pending_refusal(account, username):
+        auth.abandon_second_factor()
+        return redirect(url_for(SIGN_IN_ENDPOINT))
+    #: Refused without a token rather than minting one. A pending sign-in always carries one,
+    #: because `begin_second_factor` mints it at the first factor; a request that does not is
+    #: a cookie from before that release or a forgery, and in both cases the safe answer is
+    #: to start again. The token is also the only input that distinguishes one half-finished
+    #: sign-in's secret from another's, so a request without one has no secret to be shown.
+    owned = session.get(auth.ENROLMENT_KEY)
+    if not isinstance(owned, str) or not owned:
+        auth.abandon_second_factor()
+        return redirect(url_for(SIGN_IN_ENDPOINT))
+    secret = accounts.enrolment_secret(username, owned, auth.enrolment_key())
     return _never_stored(
         render_template(
             "enrol.html",
@@ -501,16 +478,35 @@ def enrol_submit() -> Response:
     with accounts.with_lock():
         rows = accounts.load(_data_dir())
         account = accounts.find(rows, username)
-        if not accounts.may_sign_in(account):
+        #: `is_enrolled` rides with `may_sign_in` here, in one branch, which is the shape
+        #: `enrol_page` already uses and keeps both enrolment routes symmetric. This route did
+        #: NOT check it and did not need to while an unconfirmed secret was stored: confirming
+        #: cleared that secret, and the clearing was what refused a second pass. Deriving the
+        #: secret removed the state and inherited its dependency on it, and the consequence was
+        #: measured rather than reasoned about. An attacker holding the password loads the page
+        #: before the owner enrols, keeps the secret it is shown, lets the owner enrol, then
+        #: POSTs: the code still derives from its own session token, `finish_enrolment` matches
+        #: it, and the owner's confirmed factor was REPLACED by the attacker's with a live
+        #: session on the end of it. Refused here, which is also what stops an honest
+        #: double-submit rotating the recovery codes the person has just been shown.
+        if not accounts.may_sign_in(account) or accounts.is_enrolled(account):
             auth.abandon_second_factor()
-            return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
+            return _refuse(f"{username!r} cannot enrol: absent, disabled, locked or enrolled")
         blocked = _pending_refusal(account, username)
         if blocked:
             auth.abandon_second_factor()
             return _refuse(blocked)
-        codes = accounts.finish_enrolment(
-            account, request.form.get("code"), token=session.get(auth.ENROLMENT_KEY)
+        #: Recomputed from the session's token, never read off the record, because the
+        #: record no longer holds one. A session without a token derives nothing and is
+        #: refused below rather than being allowed to confirm whatever happens to be stored,
+        #: which is what the ownership comparison used to be for.
+        owned = session.get(auth.ENROLMENT_KEY)
+        secret = (
+            accounts.enrolment_secret(username, owned, auth.enrolment_key())
+            if isinstance(owned, str) and owned
+            else ""
         )
+        codes = accounts.finish_enrolment(account, request.form.get("code"), secret=secret)
         if codes is None:
             return _refuse(f"the enrolment code for {username!r} did not match")
         accounts.clear_failures(account)

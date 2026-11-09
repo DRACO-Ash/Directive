@@ -1135,10 +1135,11 @@ def test_an_outstanding_enrolment_cannot_complete_past_the_pending_gate(
 
     # A CORRUPT epoch rather than a disable-and-re-enable, and the difference is the
     # difference between a test that holds this gate and one that agrees with it. A bump
-    # also clears `totp_pending`, so the enrolment is refused for want of a secret and the
-    # gate never runs: a gate's mutant proved the first version of this test green with the
-    # call deleted. Corrupting the epoch leaves the pending secret in place, so the only
-    # thing that can refuse is `_pending_refusal` on this route.
+    # used to clear the stored unconfirmed secret, so the enrolment was refused for want of a
+    # secret and the gate never ran: a gate's mutant proved the first version of this test
+    # green with the call deleted. The secret is derived now and no bump can clear it, so
+    # that confound is gone, and the corrupt epoch is kept anyway because it is the stricter
+    # isolation: the only thing that can refuse it is `_pending_refusal` on this route.
     data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
     rows = accounts.load(data_dir)
     account = accounts.find(rows, MEMBER)
@@ -1150,7 +1151,6 @@ def test_an_outstanding_enrolment_cannot_complete_past_the_pending_gate(
     csrf = _token(caller, "/sign-in/enrol")
     account["session_epoch"] = "corrupt"
     accounts.save(data_dir, rows)
-    assert str(_stored(app, MEMBER).get("totp_pending") or ""), "the secret must survive"
 
     completed = caller.post(
         "/sign-in/enrol",
@@ -1165,135 +1165,85 @@ def test_an_outstanding_enrolment_cannot_complete_past_the_pending_gate(
 # ============================ a planted second factor ============================
 
 
-def test_one_callers_enrolment_secret_cannot_be_confirmed_by_another(
+def test_a_confirmed_factor_cannot_be_replaced_by_an_outstanding_enrolment(
     app: Flask, admin: FlaskClient
 ) -> None:
-    """An account takeover, driven end to end by a gate, and it needed no admin action.
+    """A factor-replacement this round's own fix opened, measured before it was closed.
 
-    `enrol_page` reuses a stored pending secret rather than minting one per request, which
-    it has to: minting on every GET meant a refresh invalidated the code the person had just
-    scanned. But the reuse read the ACCOUNT, so two callers who both knew the password were
-    shown the SAME secret. An attacker loads the page first; the owner, signing in for the
-    first time, is shown the attacker's secret and confirms it; the attacker then holds the
-    account's live second factor.
+    The enrolment page used to store an unconfirmed secret and confirming it cleared that
+    secret, and the clearing was the only thing refusing a second pass through
+    `finish_enrolment`: `enrol_submit` never checked `is_enrolled`, and the docstring of the
+    test that held the clearing said exactly that. Deriving the secret from the session's
+    token removed the state and inherited its dependency on it.
 
-    The precondition is knowing the password, which for the bootstrap administrator means
-    anyone who can read the platform's environment tab, a reader `docs/DEPLOYMENT.md`
-    already names. The token binds a pending secret to one half-finished sign-in.
+    Driven end to end before the guard went in, and this is what it did. An attacker holding
+    the password loads the page before the owner enrols and keeps the secret it is shown; the
+    owner signs in, is shown a different secret, and confirms it; the attacker then POSTs a
+    code for the secret it kept, which still derives from its own session token. The owner's
+    confirmed factor was REPLACED by the attacker's and the attacker held a live session on
+    `/api/registers`. `is_enrolled` now rides with `may_sign_in` in one branch and refuses it.
+
+    This is the stronger half of what the old takeover test asserted, and it is the half that
+    is a control rather than an accident of shared state.
     """
     _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
 
     attacker = app.test_client()
     _give_first_factor(attacker, MEMBER, PHRASE)
-    #: Both the secret and the request token come off the SAME load, which is what a browser
-    #: holding this page has. Scraping the token with a second GET stopped working when the
-    #: page began minting once per sign-in: the attacker's second load is redirected, so
-    #: there is no form on it to read a token from. The attack is not weakened by reading
-    #: them together, it is described more exactly.
-    planted_page = attacker.get("/sign-in/enrol").get_data(as_text=True)
-    planted = re.search(r'class="secret mono">([A-Z2-7]+)<', planted_page)
-    planted_token = re.search(r'name="csrf_token" value="([^"]+)"', planted_page)
-    assert planted is not None
-    assert planted_token is not None
+    kept = attacker.get("/sign-in/enrol").get_data(as_text=True)
+    attackers = re.search(r'class="secret mono">([A-Z2-7]+)<', kept)
+    attackers_csrf = re.search(r'name="csrf_token" value="([^"]+)"', kept)
+    assert attackers is not None
+    assert attackers_csrf is not None
 
     owner = app.test_client()
     _give_first_factor(owner, MEMBER, PHRASE)
-    shown = re.search(
-        r'class="secret mono">([A-Z2-7]+)<', owner.get("/sign-in/enrol").get_data(as_text=True)
-    )
-    assert shown is not None
+    page = owner.get("/sign-in/enrol").get_data(as_text=True)
+    owners = re.search(r'class="secret mono">([A-Z2-7]+)<', page)
+    owners_csrf = re.search(r'name="csrf_token" value="([^"]+)"', page)
+    assert owners is not None
+    assert owners_csrf is not None
+    assert owners.group(1) != attackers.group(1), "both sign-ins derived one secret"
 
-    assert shown.group(1) != planted.group(1), "the owner was shown the attacker's secret"
-    #: And the attacker cannot confirm theirs either, because the owner's visit replaced the
-    #: stored secret and the token that owned it.
-    refused = attacker.post(
+    owner.post(
         "/sign-in/enrol",
-        data={
-            "code": totp.code_now(planted.group(1)),
-            "csrf_token": planted_token.group(1),
-        },
+        data={"code": totp.code_now(owners.group(1)), "csrf_token": owners_csrf.group(1)},
     )
-    assert attacker.get("/api/registers").status_code == 401
-    assert refused.status_code == 302
-    assert not str(_stored(app, MEMBER).get("totp_secret") or ""), "a secret was confirmed"
+    assert _stored(app, MEMBER).get("totp_secret") == owners.group(1), (
+        "the owner's own enrolment did not complete, so this test proves nothing"
+    )
 
-
-def test_a_refresh_still_shows_the_same_secret(app: Flask, admin: FlaskClient) -> None:
-    """The property the account-wide reuse was introduced for, kept.
-
-    Minting a secret on every GET made refreshing the enrolment page invalidate the code
-    the person had just scanned, with nothing on screen to say why. Binding the secret to
-    the sign-in keeps that fixed while closing the takeover above, and a test that only
-    held the takeover would be satisfied by minting afresh every time.
-    """
-    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
-    caller = app.test_client()
-    _give_first_factor(caller, MEMBER, PHRASE)
-
-    seen = {
-        re.search(  # type: ignore[union-attr]
-            r'class="secret mono">([A-Z2-7]+)<', caller.get("/sign-in/enrol").get_data(as_text=True)
-        ).group(1)
-        for _ in range(3)
-    }
-
-    assert len(seen) == 1, f"three loads showed {len(seen)} different secrets"
-    confirmed = caller.post(
+    late = attacker.post(
         "/sign-in/enrol",
-        data={"code": totp.code_now(seen.pop()), "csrf_token": _token(caller, "/sign-in/enrol")},
+        data={"code": totp.code_now(attackers.group(1)), "csrf_token": attackers_csrf.group(1)},
     )
-    assert confirmed.status_code == 200, "the scanned code no longer enrols"
 
-
-def test_an_epoch_bump_clears_an_unconfirmed_enrolment_secret(
-    app: Flask, admin: FlaskClient
-) -> None:
-    """Stopping every session has to include a secret one of them is holding.
-
-    Otherwise a disable-and-re-enable leaves the attacker's planted factor on the record for
-    the owner to confirm later, which is the takeover above with an administrator action in
-    the middle of it.
-    """
-    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
-    caller = app.test_client()
-    _give_first_factor(caller, MEMBER, PHRASE)
-    caller.get("/sign-in/enrol")
-    assert str(_stored(app, MEMBER).get("totp_pending") or ""), "no pending secret was written"
-
-    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
-
-    after = _stored(app, MEMBER)
-    assert not str(after.get("totp_pending") or ""), "the planted secret survived the bump"
-    assert not str(after.get("totp_pending_token") or ""), "the token survived the bump"
+    assert late.status_code == 302, "an outstanding enrolment was accepted after one completed"
+    assert _stored(app, MEMBER).get("totp_secret") == owners.group(1), (
+        "the owner's confirmed second factor was replaced by an outstanding enrolment"
+    )
+    assert attacker.get("/api/registers").status_code == 401, (
+        "replacing the factor handed the caller a live session"
+    )
 
 
 def test_a_second_load_is_never_shown_another_sessions_secret(
     app: Flask, admin: FlaskClient
 ) -> None:
-    """The token COMPARISON, which the takeover test above cannot reach.
+    """Separation between two half-finished sign-ins, driven over the routes.
 
-    That test has the owner arrive with no enrolment token at all, so
-    `pending_secret_for` returns on its empty-token guard before comparing anything. A gate
-    measured the consequence: bypassing the comparison, or making the token a constant,
-    left all 1614 tests green while the attack came back.
+    This began as the test for a token COMPARISON against a field on the account, because a
+    gate had bypassed that comparison and kept all 1614 tests green while an account takeover
+    came back. The comparison needed a SECOND load to decide anything: the attacker loads
+    once, the owner loads and replaces the stored secret and its token, and the attacker loads
+    again carrying a token that is present and wrong.
 
-    The attack needs a SECOND load. The attacker loads the page once, which puts a token on
-    their session; the owner then loads it, which replaces the account's secret and token;
-    and the attacker loads it again, arriving with a token that is present and wrong. That
-    is the only path on which the comparison decides anything, and it is the path that
-    serves the owner's live secret to the attacker when the comparison is gone.
-
-    Reproduced here before the test was written: with the comparison bypassed the
-    attacker's second load returns the owner's exact secret, and with it in place it does
-    not.
-
-    The second load is a REDIRECT from the tenth round on, because the page mints once per
-    sign-in and sends a session that has lost the stored secret back to the start. That
-    changes how this is asserted, not what it asserts, and the two assertions are kept apart
-    deliberately: the first is the comparison's own property and dies with the comparison,
-    the second is the per-session bound's and dies with that. Asserting only a status code
-    would let a bypass that serves the owner's secret pass as long as it served it with the
-    right number on it.
+    There is no stored secret and no comparison now. Each sign-in derives its own secret from
+    its own token, so the separation is arithmetic rather than a check, and the attacker's
+    second load is served its own secret again rather than being refused. What this asserts
+    is unchanged and is the property that actually matters: no load of this page ever shows a
+    caller a secret another sign-in is about to confirm. A derivation that dropped the token,
+    or keyed on the account alone, would hand the attacker the owner's secret here.
     """
     _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
 
@@ -1306,32 +1256,37 @@ def test_a_second_load_is_never_shown_another_sessions_secret(
 
     attacker = app.test_client()
     _give_first_factor(attacker, MEMBER, PHRASE)
-    shown(attacker)
+    attackers_first = shown(attacker)
 
     owner = app.test_client()
     _give_first_factor(owner, MEMBER, PHRASE)
     owners = shown(owner)
 
     second = attacker.get("/sign-in/enrol")
-    assert owners not in second.get_data(as_text=True), (
+    body = second.get_data(as_text=True)
+
+    assert owners not in body, (
         "a second load was served the secret another session is about to confirm"
     )
-    assert second.status_code == 302, (
-        "a second load was handed a fresh secret instead of being sent back to the start"
+    assert attackers_first in body, (
+        "a reload was not served its own secret, so the code that was scanned is dead"
     )
+    assert owners != attackers_first, "two half-finished sign-ins derived one secret"
 
 
-def test_a_completed_enrolment_clears_the_pending_secret_and_its_token(
+def test_a_completed_enrolment_leaves_no_unconfirmed_state_behind(
     app: Flask, admin: FlaskClient
 ) -> None:
-    """The clearing is the only thing standing between one enrolment and a second run.
+    """What stood between one enrolment and a second run, and what stands there now.
 
-    `enrol_submit` checks `may_sign_in` and the pending gate but never `is_enrolled`, so
-    nothing else refuses a second pass through `finish_enrolment`, which would rotate the
-    recovery codes the person has just been shown. A gate found the clearing held by no
-    test. It is not reachable as an attack, because the token dies with the session that
-    held it, which is why this asserts the state rather than driving a second attempt: a
-    test that drove one would pass on the session check and tell us nothing.
+    `enrol_submit` checks `may_sign_in` and the pending gate but never `is_enrolled`, so for
+    a while the only thing refusing a second pass through `finish_enrolment` was the clearing
+    of the stored unconfirmed secret, and a gate found that clearing held by no test. There
+    is nothing to clear now: the secret is derived, so a second pass would have to re-derive
+    it from a session token, and `enrol_page` refuses an enrolled account before that.
+
+    Kept, and renamed, because the assertion still earns its place: it is what fails if an
+    unconfirmed secret is ever written to a record again.
     """
     _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
     caller = _sign_in(app, MEMBER, PHRASE)
@@ -1339,8 +1294,8 @@ def test_a_completed_enrolment_clears_the_pending_secret_and_its_token(
     assert caller.get("/account/password").status_code == 200, "the enrolment did not complete"
     after = _stored(app, MEMBER)
     assert str(after.get("totp_secret") or ""), "no factor was confirmed"
-    assert not str(after.get("totp_pending") or ""), "the unconfirmed secret was left behind"
-    assert not str(after.get("totp_pending_token") or ""), "its token was left behind"
+    assert "totp_pending" not in after, "an unconfirmed secret was written to the record"
+    assert "totp_pending_token" not in after, "an ownership token was written to the record"
 
 
 def test_no_pre_authentication_key_survives_a_completed_sign_in(
@@ -1368,91 +1323,63 @@ def test_no_pre_authentication_key_survives_a_completed_sign_in(
     assert not survived, f"these outlived the session boundary: {survived}"
 
 
-def test_a_replayed_pre_enrolment_cookie_mints_once_not_once_per_request(
+def test_the_enrolment_page_writes_nothing_however_it_is_driven(
     app: Flask, admin: FlaskClient
 ) -> None:
-    """One password hash must buy one write, not a write per request.
+    """One test for a class three security rounds failed to bound, and the reason it failed.
 
-    The enrolment token used to be minted BY the page, alongside the secret, so a caller
-    who kept the cookie from the first factor and replayed it was never carrying a token
-    and was served a freshly minted secret every time. A gate measured 25 replays of one
-    cookie producing 25 secrets and 25 fsynced rewrites of the credential store in 0.06
-    seconds, each taking the global lock that every sign-in and every administration route
-    also takes, for five minutes per hash. Reproduced here before the fix and after.
+    The page used to write an unconfirmed secret to the credential store, and each round
+    bounded the attack the round before had measured:
 
-    Minting the token at the first factor is what closes it: a replayed cookie already
-    carries the token, so it matches and the page writes nothing.
+    ● A replayed pre-enrolment cookie minted a secret per request. Closed by minting the
+      token at the first factor, so a replay carries one and reuses rather than mints.
+    ● Two half-finished sign-ins on one account minted off each other on every load, because
+      the mint-or-reuse decision read the ACCOUNT's token, which both of them wrote. Closed
+      by a per-session bit: a sign-in mints at most once.
+    ● A client that never carried the server's cookie back never presented that bit, so two
+      pre-mint cookies replayed alternately from fresh clients gave 50 secrets and 50 fsynced
+      rewrites of the credential store from two password verifications: the first round's
+      figure, unchanged, after two fixes aimed at it.
+
+    A bound held in state the caller holds is not a bound. So the assertion here is not a
+    count of writes, it is that the route does not write, and it is driven all three ways at
+    once: the cooperating reload, the two-session alternation, and the cookie-discarding
+    replay that defeated the last fix. The secret is derived from the session's token, so
+    there is nothing to mint and nothing shared to fight over.
     """
     _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
-    victim = app.test_client()
-    _give_first_factor(victim, MEMBER, PHRASE)
-    captured = _session_cookie(victim)
     stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
 
-    secrets_served, file_states = set(), set()
-    for _ in range(12):
-        replay = app.test_client()
-        replay.set_cookie("directive_session", captured)
-        found = re.search(
-            r'class="secret mono">([A-Z2-7]+)<', replay.get("/sign-in/enrol").get_data(as_text=True)
-        )
-        assert found is not None, "the replay was not served the page at all"
-        secrets_served.add(found.group(1))
-        file_states.add(stored.stat().st_mtime_ns)
-
-    assert len(secrets_served) == 1, f"{len(secrets_served)} secrets minted from one hash"
-    assert len(file_states) == 1, f"{len(file_states)} writes to the credential store"
-
-
-def test_two_pending_sign_ins_on_one_account_mint_once_each_not_once_per_load(
-    app: Flask, admin: FlaskClient
-) -> None:
-    """The write the ninth round's fix did NOT bound, and the record said it had.
-
-    That fix stopped one captured cookie minting per request, and the test beside this one
-    holds it. It left the mint-or-reuse decision asking whether the ACCOUNT's stored token
-    is this session's, and the account's token is shared state: two half-finished sign-ins
-    on one unenrolled account take ownership back from each other on every load, so each
-    load minted and wrote. Measured at the tenth security round, 50 alternating loads
-    bought 50 secrets and 50 staged, fsynced rewrites of the credential store at 460 a
-    second, each under the one global lock every sign-in and every administration route
-    also takes, for two password verifications. Nothing is disclosed and no factor is
-    stolen; it is availability, plus a half-authenticated caller writing to the credential
-    store at request rate with no audit entry behind it.
-
-    The bound is now per SESSION, which is the only scope that can answer the question, and
-    this test is what holds it: one write per password verification, whatever the load
-    count, and the session that loses the stored secret starts again rather than being
-    handed a third one.
-    """
-    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
     first, second = app.test_client(), app.test_client()
     _give_first_factor(first, MEMBER, PHRASE)
     _give_first_factor(second, MEMBER, PHRASE)
-    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    captured = (_session_cookie(first), _session_cookie(second))
+    before = stored.stat().st_mtime_ns
 
-    file_states: set[int] = set()
     secrets_served: set[str] = set()
-    codes: list[int] = []
     for index in range(20):
-        who = first if index % 2 == 0 else second
+        #: Alternating, and every other load from a FRESH client carrying a captured
+        #: pre-enrolment cookie, so no cookie the server sets is ever carried back. That is
+        #: the attack that defeated the per-session bound, and it is driven here rather than
+        #: described.
+        if index % 2:
+            who: FlaskClient = app.test_client()
+            who.set_cookie("directive_session", captured[index % 4 == 1])
+        else:
+            who = first if index % 4 == 0 else second
         page = who.get("/sign-in/enrol")
-        codes.append(page.status_code)
+        assert page.status_code == 200, f"load {index} was refused: {page.status_code}"
         found = re.search(r'class="secret mono">([A-Z2-7]+)<', page.get_data(as_text=True))
-        if found:
-            secrets_served.add(found.group(1))
-        file_states.add(stored.stat().st_mtime_ns)
+        assert found is not None, f"load {index} showed no secret"
+        secrets_served.add(found.group(1))
 
-    assert len(file_states) == 2, (
-        f"{len(file_states)} writes to the credential store from two password verifications"
-    )
+    assert stored.stat().st_mtime_ns == before, "the enrolment page wrote to the credential store"
     assert len(secrets_served) == 2, (
-        f"{len(secrets_served)} secrets minted, one per half-finished sign-in expected"
+        f"{len(secrets_served)} secrets across 20 loads of two sign-ins, 2 expected: a "
+        "reload must derive what was scanned and two sign-ins must never share"
     )
-    assert codes[2] == 302, (
-        "the sign-in that lost the stored secret was handed another one instead of "
-        f"starting again: {codes[:4]}"
-    )
+    held = _stored(app, MEMBER)
+    assert "totp_pending" not in held, "an unconfirmed secret reached the record"
 
 
 def test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start(
@@ -1483,8 +1410,8 @@ def test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start
 
     assert served.status_code == 302, "a tokenless sign-in was served a secret"
     assert stored.stat().st_mtime_ns == before, "a tokenless GET wrote to the credential store"
-    assert not str(_stored(app, MEMBER).get("totp_pending") or ""), (
-        "a tokenless GET planted a pending secret"
+    assert "totp_pending" not in _stored(app, MEMBER), (
+        "a tokenless GET planted an unconfirmed secret"
     )
     with victim.session_transaction() as held:
         assert auth.PENDING_KEY not in held, (
@@ -1509,11 +1436,12 @@ def test_the_enrolment_page_refuses_a_sign_in_the_epoch_has_moved_past(
     victim.get("/sign-in/enrol")
 
     _post(admin, f"/accounts/{MEMBER}/reset-factor")
-    assert not str(_stored(app, MEMBER).get("totp_pending") or ""), "the remedy did not clear"
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    before = stored.stat().st_mtime_ns
 
     served = victim.get("/sign-in/enrol")
 
     assert served.status_code == 302, "a revoked sign-in was served a secret"
-    assert not str(_stored(app, MEMBER).get("totp_pending") or ""), (
-        "a revoked sign-in re-planted a secret on the credential store"
+    assert stored.stat().st_mtime_ns == before, (
+        "a revoked sign-in caused a write to the credential store"
     )
