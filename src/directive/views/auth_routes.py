@@ -172,7 +172,6 @@ def sign_in_submit() -> Response:
             # tells an unauthenticated caller which usernames exist.
             accounts.absorb_timing()
             return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
-        assert account is not None  # noqa: S101 - narrowed by `may_sign_in` above
         stored = str(account.get("password", ""))
         if not accounts.verify_password(stored, request.form.get("password")):
             locked = accounts.record_failure(account)
@@ -233,7 +232,6 @@ def verify_submit() -> Response:
         if not accounts.may_sign_in(account):
             auth.abandon_second_factor()
             return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
-        assert account is not None  # noqa: S101 - narrowed by `may_sign_in` above
 
         used_recovery = False
         if accounts.verify_code(account, supplied):
@@ -280,8 +278,14 @@ def _complete_sign_in(
         )
     target = session.pop(NEXT_KEY, "")
     if must_change:
-        # Straight to the change-password page, which refuses to let anything else happen
-        # until it is done. The bootstrap password travelled through a configuration store.
+        # Straight to the change-password page. Be exact about what this is: it LANDS the
+        # caller there, and the page says why. It does NOT refuse every other route until
+        # the change is done, and the sentence here used to say it did. The session is a
+        # full one by this point, so an account that navigates away keeps the password it
+        # was given. That is a nudge rather than a gate, and the bootstrap password is the
+        # one case where it matters, because that value travelled through the platform's
+        # environment: `docs/DEPLOYMENT.md` tells the operator to remove the variable once
+        # the first sign-in is done, which is the control that actually bounds it.
         return redirect(url_for("account.password_page"))
     return auth.redirect_after_sign_in(target)
 
@@ -327,7 +331,6 @@ def enrol_submit() -> Response:
         if not accounts.may_sign_in(account):
             auth.abandon_second_factor()
             return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
-        assert account is not None  # noqa: S101 - narrowed by `may_sign_in` above
         codes = accounts.finish_enrolment(account, request.form.get("code"))
         if codes is None:
             return _refuse(f"the enrolment code for {username!r} did not match")

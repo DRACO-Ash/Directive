@@ -695,12 +695,15 @@ def test_several_credentials_on_the_one_exempt_line_are_refused(clone: Path) -> 
 def test_substituting_a_real_secret_for_the_declared_double_is_refused(clone: Path) -> None:
     """The allowance pins the line by digest, so an edit to it is a reviewed change."""
     suite = clone / "tests" / "test_local_sign_in.py"
-    suite.write_text(
-        suite.read_text(encoding="utf-8").replace(
-            '"not-a-real-secret"', '"P@ssw0rd-prod-entra-2026"'
-        ),
-        encoding="utf-8",
-    )
+    #: Asserted, not assumed. The literal this probe used to target went with the module it
+    #: lived in, so the replace became a no-op and the build it was meant to refuse
+    #: succeeded: the probe passed for the wrong reason until the suite named it. A
+    #: substitution count is the cheapest thing that catches that, and this is the second
+    #: place in this file to need one.
+    before = suite.read_text(encoding="utf-8")
+    after = before.replace('"a-bootstrap-password-long-enough"', '"P@ssw0rd-prod-directive-2026"')
+    assert after != before, "the probe no longer targets the declared double"
+    suite.write_text(after, encoding="utf-8")
     _commit(clone, "probe: substitute the declared double")
     result = _build(clone)
 
