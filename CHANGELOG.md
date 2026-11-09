@@ -427,17 +427,15 @@ checked in both orderings. What it costs is availability, under the one lock eve
 and every administration route takes, plus a half-authenticated caller writing to the
 credential store at request rate.
 
-**The bound is now per session, because no other scope can answer the question.** The
-account cannot distinguish "this sign-in has never minted" from "this sign-in minted and
-somebody took it", and those need opposite answers: mint, or start again. One bit on the
-session, `auth.ENROLMENT_MINTED_KEY`, set after the save rather than before it, so a save
-that fails does not lock the caller out of a page that wrote nothing. A sign-in that no
-longer owns the stored secret is redirected rather than handed a third one, which loses it
-nothing, because whatever it scanned stopped working the moment the secret was replaced. The
-reload the page exists for is untouched: the owning session is still served its own secret
-with no write. The same 50 loads now write twice, one per password verification, and
-`test_two_pending_sign_ins_on_one_account_mint_once_each_not_once_per_load` holds it, proved
-red by deleting the bound: 20 writes where 2 are required.
+**The bound was made per session, and the eleventh round defeated it in one line.** The
+reasoning was that the account cannot distinguish "this sign-in has never minted" from "this
+sign-in minted and somebody took it", and those need opposite answers, so one bit went on the
+session. The bit lives in a cookie the SERVER sets, and a client that never carries the
+cookie back never presents it: two pre-mint cookies replayed alternately from fresh clients
+gave 50 secrets and 50 writes again, from two password verifications. **A bound held in state
+the caller holds is not a bound**, and that sentence cost three rounds. The fix, and what
+replaced all of this, is in the eleventh round below; `ENROLMENT_MINTED_KEY` was added here
+and deleted there.
 
 **The round's MINOR, fixed for the same reason the MAJOR's record half was.**
 `abandon_second_factor` popped the pending marker and its clock and left both enrolment keys
@@ -447,6 +445,53 @@ same session planted, `pending_actor` returns None so no second-factor route pro
 the next `begin_second_factor` clears the session outright. It is fixed anyway, because a
 docstring reaching past its code is what this release keeps being caught for. The epoch
 deliberately stays, and the docstring now says which keys go and which does not.
+
+**The eleventh round defeated the tenth round's fix in one line, and the line is worth
+quoting: do not carry the server's cookie back.** The bit deciding whether a sign-in had
+already minted lived in the session cookie, so two pre-mint cookies replayed alternately
+from fresh clients never presented it. 50 loads, 50 secrets, 50 fsynced rewrites of the
+credential store at 383 a second from 0.89 seconds of password hashing, with a legitimate
+administration write going from a 6.3 millisecond median to 14.5 beside it. That is the
+eighth round's figure unchanged after two fixes aimed at it; reproduced here at 431 a second
+before anything was touched. Seven statements across the code, the tests and two shipped
+records had asserted the bound as a property of the route when it was a property of a
+cooperating client, which is the tenth round's own finding arriving one round later against
+the author who wrote it down.
+
+**So the page stopped writing.** The unconfirmed secret is now a keyed derivation over the
+account name and the random token `begin_second_factor` already puts on the session, under
+the application's session signing key with an explicit label. The page recomputes it on
+every load, writes nothing and takes no lock; the single write happens on the
+CSRF-protected POST by a caller who has proved possession of a code. Measured at zero writes
+across 50 loads driven three ways at once, including the cookie-discarding replay that
+defeated the last fix. **A bound held in state the caller holds is not a bound**, and that
+sentence is recorded at the derivation because it cost three rounds to buy.
+
+Three things that needed controls became arithmetic. Two half-finished sign-ins cannot
+derive the same secret, so the ownership comparison, the shared field it compared and the
+clause recorded beside it as reachable-and-not-exploitable are all gone with the state. A
+reload derives what was scanned. And a password change or a factor reset still ends an
+in-flight enrolment, through the epoch on the pending marker rather than by clearing a
+field. The enrolment-denial residual closed with them: an attacker can no longer displace
+the owner's secret, because it does not depend on anything the attacker can reach.
+
+**And it opened a factor replacement, which an existing test found and which was measured
+before it was closed.** Confirming used to clear the stored unconfirmed secret, and that
+clearing was the only thing refusing a second pass through `finish_enrolment`, because
+`enrol_submit` never checked `is_enrolled`. The docstring of the test that held the clearing
+said so in those words. Removing the state inherited its dependency on it: an attacker
+holding the password loads the page before the owner enrols and keeps the secret it is
+shown, the owner enrols, the attacker POSTs a code that still derives from its own session
+token, and the owner's confirmed factor was replaced by the attacker's with a live session
+on `/api/registers`. `is_enrolled` now rides with `may_sign_in` in one branch, symmetric
+with `enrol_page`, and a test drives the whole sequence. Recorded at this length because the
+lesson is not the hole, it is that deleting state silently deletes the guards nobody wrote
+down as guards.
+
+The round's two MINORs were controls held by no test, both proved survivors by the gate: the
+ordering that set the per-session bit after its save, now moot because the bit is gone, and
+`abandon_second_factor` clearing the enrolment keys, now held by an assertion over the
+session keys.
 
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
@@ -760,8 +805,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 33 findings
-  on 33 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 32 findings
+  on 32 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

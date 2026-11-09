@@ -226,10 +226,11 @@ def begin_second_factor(username: str, *, epoch: int) -> None:
     #: the credential store at request rate.
     #:
     #: This alone did NOT bound the page's writes, and the sentence above claimed it did for
-    #: one round. It bounds the ONE-cookie case. Two half-finished sign-ins on one unenrolled
-    #: account still took the stored secret back from each other on every load, because the
-    #: mint-or-reuse decision read the account rather than the session. `ENROLMENT_MINTED_KEY`
-    #: is the other half and the comment there carries the measurement.
+    #: one round. Two further rounds went at that bound and the page stopped writing
+    #: altogether: the token is now the input an enrolment secret is DERIVED from, so what it
+    #: buys is that a replayed cookie derives the same secret rather than causing a write, and
+    #: that two half-finished sign-ins can never derive each other's. The measurement is in
+    #: `accounts.enrolment_secret`.
     session[ENROLMENT_KEY] = accounts.new_enrolment_token()
     session.permanent = False
 

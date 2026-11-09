@@ -1419,6 +1419,41 @@ def test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start
         )
 
 
+def test_abandoning_a_half_finished_sign_in_clears_its_enrolment_token(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """`abandon_second_factor` says it forgets a half-finished sign-in. Nothing held it.
+
+    A gate reverted it to leave the enrolment token behind and the whole suite stayed green.
+    Nothing can be built from the residue, which the gate agreed with after tracing it:
+    `pending_actor` returns None, so every second-factor route redirects before the token is
+    read, and the next `begin_second_factor` clears the session outright. So this is not a
+    security control, it is a behaviour the docstring asserts, and the reason it gets a test
+    anyway is the quality bar: a control that is correct today and unheld is one edit from
+    being wrong, and this build has been bitten by that five times.
+
+    Driven through the route that calls it on the path where the token is the thing in
+    question, rather than by calling the function, so the assertion covers the wiring too.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+    with caller.session_transaction() as held:
+        assert auth.ENROLMENT_KEY in held, "the first factor minted no token, so nothing is proved"
+
+    _post(admin, f"/accounts/{MEMBER}/reset-factor")
+    assert caller.get("/sign-in/enrol").status_code == 302, "the stale sign-in was not refused"
+
+    with caller.session_transaction() as held:
+        survived = [
+            name
+            for name in (auth.PENDING_KEY, auth.PENDING_SINCE_KEY, auth.ENROLMENT_KEY)
+            if name in held
+        ]
+
+    assert not survived, f"an abandoned sign-in kept these: {survived}"
+
+
 def test_the_enrolment_page_refuses_a_sign_in_the_epoch_has_moved_past(
     app: Flask, admin: FlaskClient
 ) -> None:
