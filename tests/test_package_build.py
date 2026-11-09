@@ -129,13 +129,32 @@ def _build(work: Path, *, keep_archives: bool = False) -> subprocess.CompletedPr
     return _run([_tool("sh"), "scripts/build-package.sh"], cwd=work)
 
 
-# A measured allowance, not a guess. These two let the simulation run all the way through:
-# a fresh virtual environment, a hash-locked install, and the entire suite inside it. They
-# take about 28 and 27 seconds on an idle machine against the project-wide 60 second cap,
-# and a loaded runner ate that margin and reddened the loop on a documentation-only commit.
-# The cap exists to turn a hang in the audit path into a red test in seconds, and it still
-# does for every other test; these two are long by nature rather than stuck.
-SIMULATION_TIMEOUT_SECONDS = 300
+# A measured allowance, not a guess, and RE-measured at V2.5's tenth security round because
+# the figures below had been overtaken. Two of the three tests carrying this marker let the
+# simulation run all the way through: a fresh virtual environment, a hash-locked install,
+# and the entire suite inside it. The cap exists to turn a hang in the audit path into a red
+# test in seconds, and it still does for every other test; these are long by nature rather
+# than stuck.
+#
+# The previous allowance was 300 seconds and the comment here said the two long tests took
+# "about 28 and 27 seconds on an idle machine". That was true when it was written and was
+# wrong by an order of magnitude by this round, because each of them pays for the whole
+# suite and the suite has grown every round. Measured on an idle machine at this commit:
+# 300.05 seconds for `test_the_simulation_refuses_a_red_suite`, 297.22 for
+# `test_the_simulation_asserts_the_coverage_artefact`, and 1.08 for
+# `test_the_simulations_cleanup_trap_survives_a_signal`, which builds no environment. The
+# two long ones therefore sat inside their own budget by about one percent, which is not a
+# margin: one loop passed and the next reddened on the coverage-artefact test with nothing
+# between them but host noise, and a figure that close to its cap is a flapping test rather
+# than a control.
+#
+# The budget is three times the measured cost rather than twice it, deliberately. The
+# nested cost has gone from about 28 seconds to about 300 over this build, so doubling
+# would be overtaken within a few rounds and this comment would be stale again. Two nested
+# whole-suite runs are about ten minutes of the loop's sixteen; that is the price of
+# checking the platform's own test stage locally and it is recorded here rather than
+# discovered by somebody timing the loop.
+SIMULATION_TIMEOUT_SECONDS = 900
 
 
 @pytest.fixture
