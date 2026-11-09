@@ -377,6 +377,29 @@ writing to the credential store after revocation, which is the case the `may_sig
 on this route was added to close one round earlier; that fix swept the disabled and locked
 half and left this one open.
 
+**Six of the round's forty-three mutants survived, and each is accounted for rather than
+left as a number.** Two are equivalent mutants: dropping either guard in
+`pending_secret_for` on its own leaves the comparison returning the same answer, because an
+empty stored token still fails `compare_digest` against a real one and an empty request
+token still fails against a real stored one. Only dropping BOTH is dangerous, since
+`compare_digest("", "")` is True, and reaching that needs a record hand-edited on the volume
+to hold a secret with no token, which no code path produces. One is unobservable by any
+functional test: replacing `compare_digest` with `==` changes no verdict, and that is why the
+docstring there now says the comparison is not a boundary control. Two are the second layer
+at the POST, already recorded in `finish_enrolment` as reachable and not exploitable: making
+`enrol_submit` pass the STORED token, or `finish_enrolment` ignore the token entirely, cannot
+be exploited because the GET has already replaced any secret whose token does not match, so
+the caller cannot produce a code for it. The sixth mutated a line that no longer exists,
+`reset_factor`'s own call to `clear_pending_enrolment`, deleted a commit earlier as redundant
+with `bump_epoch`.
+
+**One control was added in the same commit as the hole it closes and arrived uncovered.** The
+coverage report put lines 458 and 459 of `views/auth_routes.py`, the refusal that replaced
+the minting, in the missing list on the run that otherwise passed. It is held now by
+`test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start`, proved red by
+deleting those two lines: 200 where 302 is required. Writing it down because the pattern is
+this build's own: a control that is correct today and unheld is one edit from being wrong.
+
 **Three MINORs, all of them a record reaching further than the code.** `recordable`'s
 docstring said it covered "the source address, the user agent, and the one `resource_id` on
 the sign-in refusal path. Those three, and no others", and two shipped documents repeated

@@ -1386,6 +1386,43 @@ def test_a_replayed_pre_enrolment_cookie_mints_once_not_once_per_request(
     assert len(file_states) == 1, f"{len(file_states)} writes to the credential store"
 
 
+def test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The refusal that replaced the minting, which the coverage report showed held nothing.
+
+    The page now refuses a pending sign-in that carries no token rather than minting one,
+    and that branch arrived with the fix in the same commit, uncovered: lines 458 and 459
+    of `views/auth_routes.py` in the run that passed. A control added in the same breath as
+    the hole it closes is exactly the kind this build has narrowed and re-defeated five
+    times, so it gets a test on arrival rather than at the next gate.
+
+    A session reaches this state two ways and both end here: a cookie minted before this
+    release, which carried the pending marker and no token, and a forgery. Starting again
+    is the only safe answer, so the marker is abandoned too and the caller cannot simply
+    reload into a fresh secret.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    victim = app.test_client()
+    _give_first_factor(victim, MEMBER, PHRASE)
+    with victim.session_transaction() as held:
+        held.pop(auth.ENROLMENT_KEY, None)
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    before = stored.stat().st_mtime_ns
+
+    served = victim.get("/sign-in/enrol")
+
+    assert served.status_code == 302, "a tokenless sign-in was served a secret"
+    assert stored.stat().st_mtime_ns == before, "a tokenless GET wrote to the credential store"
+    assert not str(_stored(app, MEMBER).get("totp_pending") or ""), (
+        "a tokenless GET planted a pending secret"
+    )
+    with victim.session_transaction() as held:
+        assert auth.PENDING_KEY not in held, (
+            "the half-finished sign-in survived, so the caller can reload into a secret"
+        )
+
+
 def test_the_enrolment_page_refuses_a_sign_in_the_epoch_has_moved_past(
     app: Flask, admin: FlaskClient
 ) -> None:
