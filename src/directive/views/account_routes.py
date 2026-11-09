@@ -13,6 +13,12 @@ registers that the compliance registers cannot evidence.
 administrator is refused, because an application whose account list nobody can administer
 needs the bootstrap variables and a restart to recover, and the person who would notice is
 the one who just locked themselves out.
+
+That guard only ever governed the LIST. It said nothing about sessions, and for four
+security rounds the decorators decided from the signed cookie, so a removed administrator
+kept the role until the cookie expired and could simply restore themselves. `auth.live_role`
+closes that: the stored account is the authority on every authenticated request. Both halves
+are needed and neither is the other, which is why this paragraph now names the second one.
 """
 
 from __future__ import annotations

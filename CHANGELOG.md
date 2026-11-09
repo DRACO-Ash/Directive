@@ -175,6 +175,40 @@ noticed. The target is now read before the session boundary, and the origin guar
 carrying it safe is held on that path by four hostile payloads rather than assumed from the
 one-step path.
 
+**The fourth round found the one that matters: revoking an account did not revoke its
+session.** The decorators decided from the signed session cookie, which carries a copy of
+the role taken at sign-in, so a revocation took effect at the next sign-in rather than the
+next request. Within the eight-hour session window the gate drove a disabled account into
+reading every register, writing a compliance record and pulling the whole evidence export;
+a demoted administrator into undoing their own demotion; and a disabled administrator into
+re-enabling themselves, disabling the administrator who had disabled them, and creating a
+fresh administrator to persist with. Reproduced here before it was fixed.
+
+Three shipped records said otherwise, which is the part that makes this worse than a bug.
+`docs/ACCREDITATION-REVIEW.md` told an assessor that local accounts outlive employment
+"unless somebody disables an account"; `docs/DEPLOYMENT.md` said the `admin` role governs
+account administration only; and `views/account_routes.py` said the last administrator
+cannot be removed. Each is now corrected to say what disabling and demoting actually do and
+when they take effect.
+
+`auth.live_role` is the fix: every authenticated request re-reads the stored account and
+answers from it. Absent, disabled or locked grants nothing; the ROLE is read live rather
+than compared against the session's copy, so a demoted administrator is simply a member
+from the next request with their session intact; an unreadable account list grants nothing
+at all; and development, which has no account list, is exempt. The cost is one small JSON
+read per authenticated request, which is the price of a revocation that takes effect.
+Fifteen tests hold it and three mutations kill it.
+
+Four MINORs with it. The break-glass fixture agreed with two more wrong selection rules:
+the administrator is both the last row of the account file and the lowest username, so
+"last locked" and "alphabetically first" each still picked the right account. A third
+locked account now disagrees on all three axes. The structural short-circuit pin was evaded
+two ways, by a `continue` guard and by a `while` whose own test watches the flag, so it now
+refuses `Continue` and `Raise` and a `while` testing a name its body assigns, with a
+counting assertion beside it that holds the property rather than a spelling of it. The
+stored `next` target was uncapped and is now 512 characters. And the previous commit
+message said 1583 passed where the tree gives 1584; the coverage figure was right.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign

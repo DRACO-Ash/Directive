@@ -27,6 +27,7 @@ see it.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -134,13 +135,78 @@ def test_a_scanning_comparison_runs_to_completion(path: str, name: str) -> None:
     assert loops, f"{path}::{name} no longer loops; this pin is stale and the control unheld"
 
     for loop in loops:
+        #: `Continue` and `Raise` as well as `Return` and `Break`, because a gate evaded
+        #: the first version with a `continue` guard: `if found: continue` runs no further
+        #: comparison after the first match while containing neither of the two exits the
+        #: pin looked for. `Raise` is the same shape through the exception machinery.
         exits = [
             type(node).__name__
             for node in ast.walk(loop)
-            if isinstance(node, ast.Return | ast.Break)
+            if isinstance(node, ast.Return | ast.Break | ast.Continue | ast.Raise)
         ]
         assert not exits, (
-            f"{path}::{name} leaves its comparison loop early via {exits}. Stopping at the "
-            "first match leaks which iteration matched, whatever the comparison inside it "
-            "costs. Set a flag and fall out of the loop."
+            f"{path}::{name} leaves or skips its comparison loop early via {exits}. "
+            "Stopping at the first match leaks which iteration matched, whatever the "
+            "comparison inside it costs. Set a flag and fall out of the loop."
         )
+        #: And a `while` can short-circuit in its own TEST, which no statement inside the
+        #: body spells: rewriting the drift loop as
+        #: `while drift <= DRIFT_STEPS and matched is None:` leaves the body exit-free and
+        #: still stops at the first match. The gate demonstrated it. So a `while` here may
+        #: not test any name the body assigns.
+        if isinstance(loop, ast.While):
+            assigned = {
+                target.id
+                for node in ast.walk(loop)
+                if isinstance(node, ast.Assign)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            } | {
+                node.target.id
+                for node in ast.walk(loop)
+                if isinstance(node, ast.AugAssign | ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+            }
+            tested = {node.id for node in ast.walk(loop.test) if isinstance(node, ast.Name)}
+            overlap = sorted(assigned & tested)
+            assert not overlap, (
+                f"{path}::{name} has a `while` testing {overlap}, which its own body "
+                "assigns. The loop then stops as soon as the comparison succeeds, which is "
+                "the same leak as a `break` written in the body."
+            )
+
+
+def test_the_recovery_loop_compares_every_held_code_even_after_a_match() -> None:
+    """Behavioural, not structural, because the structural pin has been evaded twice.
+
+    The AST check above refuses the shapes a short-circuit is usually written in. This
+    counts the comparisons instead, which is the property itself rather than a spelling of
+    it: with the FIRST of ten held codes matching, `hmac.compare_digest` must still be
+    called ten times. A `continue` guard, a `while` whose test watches the flag, a helper
+    that returns early and anything else anyone invents are all caught by a count.
+    """
+    import hmac  # noqa: PLC0415 - only this test needs it
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from directive import accounts  # noqa: PLC0415 - after the path insert
+
+    codes, hashes = accounts.new_recovery_codes()
+    account = {"recovery": hashes}
+    calls: list[int] = []
+    real = hmac.compare_digest
+
+    def counted(a: object, b: object) -> bool:
+        calls.append(1)
+        return real(a, b)  # type: ignore[arg-type]
+
+    original = accounts.hmac.compare_digest
+    accounts.hmac.compare_digest = counted  # type: ignore[assignment]
+    try:
+        assert accounts.spend_recovery_code(account, codes[0]) is True
+    finally:
+        accounts.hmac.compare_digest = original  # type: ignore[assignment]
+
+    assert len(calls) == len(hashes), (
+        f"the loop compared {len(calls)} of {len(hashes)} held codes, so it stopped at the "
+        "first match and leaks which recovery code was presented"
+    )

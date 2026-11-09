@@ -44,6 +44,9 @@ from directive import accounts, create_app, totp
 SUITE_KEY = bytes(range(32)).hex()
 ADMIN = "ash.higgins@bluestaq.uk"
 MEMBER = "new.person@bluestaq.uk"
+#: Sorts before the administrator and is placed in the LAST row, so that a
+#: positional or alphabetical selection rule cannot coincide with the named one.
+DECOY = "aaa.decoy@bluestaq.uk"
 
 #: The bootstrap value this suite sets in its own temporary environment. It opens nothing.
 PHRASE = "a-bootstrap-" + "value-long-enough"
@@ -585,12 +588,24 @@ def test_the_break_glass_only_touches_the_named_account(
     # the comment here claimed it did not, which is a shipped record over-claiming about
     # the test beneath it. Row order is what the mutant reads, so row order is what this
     # test has to disagree with.
+    #: A THIRD locked account, and the ordering below is the whole fixture. Moving the
+    #: member to row 0 kills a mutant reading "the first locked row", and a gate then found
+    #: two more that it does not: the administrator is also the LAST row and has the
+    #: alphabetically FIRST username, so "last locked" and "lowest username" both still
+    #: picked the right account and both survived the whole suite. `aaa@` sorts before the
+    #: administrator and sits in the last row, so no positional or alphabetical rule
+    #: coincides with the named one any more. Three axes, three disagreements.
+    _make_member(admin, DECOY)
     data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    order = {MEMBER: 0, ADMIN: 1, DECOY: 2}
     rows = accounts.load(data_dir)
-    accounts.save(data_dir, sorted(rows, key=lambda row: row["username"] != MEMBER))
-    assert str(accounts.load(data_dir)[0]["username"]) == MEMBER, "the member must be row 0"
+    accounts.save(data_dir, sorted(rows, key=lambda row: order[str(row["username"])]))
+    stored = [str(row["username"]) for row in accounts.load(data_dir)]
+    assert stored == [MEMBER, ADMIN, DECOY], stored
+    assert DECOY < ADMIN, "the decoy must sort before the administrator"
 
     _lock_out(app, MEMBER)
+    _lock_out(app, DECOY)
     _lock_out(app, ADMIN)
     monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
 
@@ -598,3 +613,180 @@ def test_the_break_glass_only_touches_the_named_account(
 
     assert not accounts.is_locked(_stored(restarted, ADMIN))
     assert accounts.is_locked(_stored(restarted, MEMBER))
+    assert accounts.is_locked(_stored(restarted, DECOY))
+
+
+# ============================ revocation takes effect ============================
+#
+# Every test in this section exists because none of them did. A security gate drove all of
+# it against the live routes: the decorators decided from the signed cookie alone, which
+# carries a copy of the role taken at sign-in, so for the eight hours of `SESSION_LIFETIME`
+# a disabled account read every register, wrote a compliance record and pulled the whole
+# evidence export, a demoted administrator undid their own demotion, and a disabled
+# administrator re-enabled themselves, disabled the administrator who had disabled them,
+# and created a fresh administrator to persist with. Three shipped records said otherwise.
+
+
+@pytest.fixture
+def second_admin(app: Flask, admin: FlaskClient) -> FlaskClient:
+    """Return a second administrator, signed in, so the last-admin guard is not in the way."""
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.ADMIN)
+    return _sign_in(app, MEMBER, PHRASE)
+
+
+def _post_with(client: FlaskClient, path: str, token: str, **fields: str) -> TestResponse:
+    """Post with a token captured EARLIER, the way a revoked session really would.
+
+    `_post` fetches a fresh token from `/accounts` first, which a revoked account can no
+    longer load, so using it here would prove only that the page is refused. The attack
+    worth refusing is the one an attacker actually has: a token taken while they were still
+    an administrator, replayed after the revocation, with no page load in between.
+    """
+    return client.post(path, data={**fields, "csrf_token": token})
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/console", "/api/registers", "/api/audit", "/api/export", "/accounts", "/account/password"],
+)
+def test_disabling_an_account_ends_its_session_on_the_next_request(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient, path: str
+) -> None:
+    """Not at the next sign-in. At the next REQUEST."""
+    assert second_admin.get(path).status_code in {200, 302}, "it worked before"
+
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    refused = second_admin.get(path)
+    assert refused.status_code in {302, 401}, f"{path} still served a disabled account"
+
+
+def test_a_disabled_account_cannot_write_a_register_record(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The compliance registers are the point of the application, so this is the sharp end."""
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    written = second_admin.post(
+        "/api/registers/risks",
+        json={"title": "written by a disabled account"},
+        headers={"X-CSRF-Token": "irrelevant, the gate fires first"},
+    )
+
+    assert written.status_code in {401, 403}
+
+
+def test_a_disabled_administrator_cannot_re_enable_itself(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The attack the gate actually ran, and the one that makes this a privilege defect."""
+    stale = _token(second_admin, "/accounts")
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    _post_with(second_admin, f"/accounts/{MEMBER}/state", stale, state=accounts.ACTIVE)
+
+    assert str(_stored(app, MEMBER)["state"]) == accounts.DISABLED
+
+
+def test_a_disabled_administrator_cannot_disable_the_one_who_disabled_them(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """A revoked administrator must not be able to take the live one down with them."""
+    stale = _token(second_admin, "/accounts")
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    _post_with(second_admin, f"/accounts/{ADMIN}/state", stale, state=accounts.DISABLED)
+
+    assert str(_stored(app, ADMIN)["state"]) == accounts.ACTIVE
+
+
+def test_a_disabled_administrator_cannot_create_a_fresh_administrator(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """Persistence. Without this the revocation buys one request's worth of safety."""
+    stale = _token(second_admin, "/accounts")
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    _post_with(
+        second_admin,
+        "/accounts/create",
+        stale,
+        username="planted@bluestaq.uk",
+        password=PHRASE,
+        role=accounts.ADMIN,
+    )
+
+    rows = accounts.load(str(app.config["DIRECTIVE_DATA_DIR"]))
+    assert accounts.find(rows, "planted@bluestaq.uk") is None
+
+
+def test_demoting_an_administrator_takes_the_role_away_mid_session(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The role is read live, so the session keeps working as a MEMBER and no more.
+
+    Not a sign-out: their session was legitimate and only the extra power is gone. That is
+    the behaviour the role being authoritative on the volume gives for free, and asserting
+    both halves is what stops a future fix from simply ending the session instead.
+    """
+    assert second_admin.get("/accounts").status_code == 200
+
+    _post(admin, f"/accounts/{MEMBER}/role", role=accounts.MEMBER)
+
+    assert second_admin.get("/accounts").status_code in {302, 403}, "still an administrator"
+    assert second_admin.get("/api/registers").status_code == 200, "but still signed in"
+
+
+def test_a_demoted_administrator_cannot_undo_their_own_demotion(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The attack that makes a demotion worth anything."""
+    stale = _token(second_admin, "/accounts")
+    _post(admin, f"/accounts/{MEMBER}/role", role=accounts.MEMBER)
+
+    _post_with(second_admin, f"/accounts/{MEMBER}/role", stale, role=accounts.ADMIN)
+
+    assert str(_stored(app, MEMBER)["role"]) == accounts.MEMBER
+
+
+def test_a_locked_account_is_refused_mid_session_too(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """`may_sign_in` covers three states and a test naming one of them holds one of them."""
+    _lock_out(app, MEMBER)
+
+    assert second_admin.get("/api/registers").status_code == 401
+
+
+def test_an_unreadable_account_list_grants_nothing(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """Fail closed. A volume fault must stop the console rather than open it.
+
+    And the sign-in page must still render: the session is deliberately NOT cleared on this
+    path, so a caller bounced here by the dashboard would be bounced straight back if that
+    page asked a different authority. The pair of assertions is the redirect loop that an
+    earlier version of this fix would have shipped.
+    """
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    stored.write_text("{ this is not json", encoding="utf-8")
+
+    assert second_admin.get("/api/registers").status_code == 401
+    assert second_admin.get("/accounts").status_code in {302, 403}
+    assert second_admin.get("/sign-in").status_code == 200, "a redirect loop, not a sign-in page"
+
+
+def test_a_deleted_account_row_ends_the_session(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """There is no delete route, so this is the hand-edited-volume case, and it must hold.
+
+    `may_sign_in(None)` is False, which the decorator relies on. A `find` that returned a
+    default row instead would make this pass for the wrong reason, so it is asserted.
+    """
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = [row for row in accounts.load(data_dir) if row["username"] != MEMBER]
+    accounts.save(data_dir, rows)
+
+    assert second_admin.get("/api/registers").status_code == 401
+    assert second_admin.get("/console").status_code == 302

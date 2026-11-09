@@ -49,7 +49,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
-from flask import Flask, redirect, request, session, url_for
+from flask import Flask, current_app, redirect, request, session, url_for
 from werkzeug.wrappers.response import Response
 
 from . import accounts, config
@@ -223,8 +223,82 @@ def sign_out() -> None:
     session.clear()
 
 
+def live_role() -> str | None:
+    """Return the actor's role as the ACCOUNT LIST has it now, or ``None`` if revoked.
+
+    **This exists because disabling an account did not end its session.** The decorators
+    below decided from the signed cookie alone, and the cookie carries a copy of the role
+    taken at sign-in, so for the eight hours of `SESSION_LIFETIME` a security gate drove
+    all of this against the live routes: a disabled account read every register, wrote a
+    compliance record and pulled the whole evidence export; a demoted administrator undid
+    their own demotion; and a disabled administrator re-enabled themselves, disabled the
+    administrator who had disabled them, and created a fresh administrator to persist with.
+    Three shipped records asserted the opposite, `docs/ACCREDITATION-REVIEW.md` among them
+    with the sentence that access ends when somebody disables an account.
+
+    So the session is a cached claim and this is the authority. Every authenticated request
+    re-reads the stored account and answers from it.
+
+    ● **Revoked means revoked**: an account that is absent, disabled or locked grants
+      nothing, whatever its cookie says.
+    ● **The ROLE is read live too**, rather than compared against the session's copy. A
+      demoted administrator is simply a member from the next request, which is the right
+      behaviour: their session was legitimate and only the extra power is gone.
+    ● **An unreadable account list grants nothing.** Fail closed, per CLAUDE.md. A volume
+      fault stops the console rather than opening it, and `/api/diagnostics` plus the pod
+      log stay reachable to say why.
+    ● **Development is exempt**, because there is no account list to consult: the
+      self-asserted mode has no stored record for the actor and never did.
+
+    No lock is taken. `accounts.save` writes a temporary file and renames it, so a reader
+    sees the whole of one version or the whole of the other, never a half-written list, and
+    taking the write lock on every read would serialise the console behind the slowest
+    administrative action.
+
+    The cost is one small JSON read per authenticated request. That is the price of a
+    revocation that takes effect, and it is paid on the same volume every register read
+    already touches.
+    """
+    actor = current_actor()
+    if actor is None:
+        return None
+    if not local_accounts_only():
+        return current_role()
+    try:
+        rows = accounts.load(str(current_app.config["DIRECTIVE_DATA_DIR"]))
+        account = accounts.find(rows, actor)
+    except (accounts.AccountError, KeyError, OSError):
+        return None
+    if not accounts.may_sign_in(account):
+        return None
+    role = str(account.get("role", accounts.MEMBER))
+    return role if role in accounts.ROLES else accounts.MEMBER
+
+
+def _refuse_stale_session() -> object:
+    """Answer a request whose session no longer grants anything.
+
+    The session is cleared on the way out. Not for tidiness: `sign_in_page` redirects a
+    signed-in caller to the dashboard, and the dashboard would redirect a revoked one back
+    to the sign-in page, so leaving the cookie in place is a redirect loop. `sign_in_page`
+    reads `live_role` for the same reason, which covers the case this cannot: an account
+    list that is temporarily unreadable, where the session should survive the fault rather
+    than be destroyed by it.
+
+    No audit entry. The revocation itself was recorded when an administrator made it, and
+    a row per refused request would let a revoked browser on a refresh loop fill the log,
+    which is the amplifier `views/refusals.py` exists to bound on the sign-in path.
+    """
+    if request.path.startswith("/api/"):
+        sign_out()
+        return {"error": "sign-in required"}, 401
+    target = request.path
+    sign_out()
+    return redirect(url_for("auth.sign_in_page", next=target))
+
+
 def required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
-    """Refuse a request that carries no signed-in actor.
+    """Refuse a request that carries no signed-in actor, or whose account is revoked.
 
     Fails closed by construction: the decorator returns before the handler runs, so a route
     that forgets to check has already been checked.
@@ -232,10 +306,8 @@ def required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
 
     @functools.wraps(handler)
     def guarded(*args: object, **kwargs: object) -> object:
-        if current_actor() is None:
-            if request.path.startswith("/api/"):
-                return {"error": "sign-in required"}, 401
-            return redirect(url_for("auth.sign_in_page", next=request.path))
+        if live_role() is None:
+            return _refuse_stale_session()
         return handler(*args, **kwargs)
 
     return guarded  # type: ignore[return-value]
@@ -255,11 +327,13 @@ def admin_required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
 
     @functools.wraps(handler)
     def guarded(*args: object, **kwargs: object) -> object:
-        if current_actor() is None:
-            if request.path.startswith("/api/"):
-                return {"error": "sign-in required"}, 401
-            return redirect(url_for("auth.sign_in_page", next=request.path))
-        if current_role() != accounts.ADMIN:
+        role = live_role()
+        if role is None:
+            return _refuse_stale_session()
+        if role != accounts.ADMIN:
+            # The LIVE role, not the session's copy of it. A demoted administrator is
+            # refused here from the next request, including the request that would undo
+            # their own demotion, which a gate drove successfully against the old code.
             if request.path.startswith("/api/"):
                 return {"error": "not permitted"}, 403
             return redirect(url_for(DASHBOARD_ENDPOINT))

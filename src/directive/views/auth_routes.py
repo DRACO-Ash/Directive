@@ -47,6 +47,17 @@ NEXT_KEY = "directive_signin_next"
 #: The longest self-asserted actor accepted, well inside the audit field's 320-byte cap.
 MAXIMUM_ACTOR_LENGTH = 200
 
+#: The cap on the post-sign-in target held across the second factor. Longer than any route
+#: this application serves and shorter than anything worth carrying in a cookie.
+#:
+#: Capped at the WRITE rather than at the read, because the value is stored: uncapped, a
+#: 200,000-character `next` went into the session verbatim, and although `itsdangerous`
+#: compresses it to a few hundred cookie bytes the server re-inflates the whole of it on
+#: every later request in that session. Reachable only after a correct password and bounded
+#: by the worker's own header limit, so the amplification is small; it is still an untrusted
+#: value crossing a boundary without a bound, which the hard rules do not allow.
+MAXIMUM_NEXT_LENGTH = 512
+
 
 def _client_ip() -> str:
     """Return the caller's address as the audit entry should record it.
@@ -144,8 +155,16 @@ def record_event(  # noqa: PLR0913
 
 @auth_bp.get("/sign-in")
 def sign_in_page() -> str | Response:
-    """Show the sign-in form."""
-    if auth.current_actor():
+    """Show the sign-in form.
+
+    The bounce to the dashboard asks `live_role` rather than `current_actor`, and the
+    difference matters in exactly one case: an account list that cannot be read. There the
+    session is NOT cleared, deliberately, so a volume fault does not destroy everybody's
+    session, and a caller holding a valid cookie would otherwise be bounced here by the
+    dashboard and bounced straight back by this line. Asking the same authority both routes
+    ask leaves the form rendered instead of a redirect loop.
+    """
+    if auth.live_role() is not None:
         return redirect(url_for(auth.DASHBOARD_ENDPOINT))
     return render_template(
         "sign_in.html",
@@ -218,7 +237,7 @@ def sign_in_submit() -> Response:
         enrolled = accounts.is_enrolled(account)
 
     auth.begin_second_factor(username)
-    session[NEXT_KEY] = request.form.get("next", "")
+    session[NEXT_KEY] = request.form.get("next", "")[:MAXIMUM_NEXT_LENGTH]
     return redirect(url_for("auth.enrol_page" if not enrolled else "auth.verify_page"))
 
 
@@ -311,8 +330,13 @@ def _complete_sign_in(
 
     Carrying the value across the boundary is safe because it is not trusted on the other
     side: `auth.redirect_after_sign_in` resolves it against this origin and falls back to
-    the dashboard, and a security gate drove twelve payloads through it, scheme-relative,
-    absolute, backslash, tab, encoded-tab, NUL and a CRLF header split among them.
+    the dashboard. The suite holds that on this path with four hostile payloads and on the
+    one-step path with six more; a gate separately drove thirty-three through the live
+    routes, scheme-relative, absolute, backslash, tab, encoded-tab, NUL, fullwidth solidus
+    and a CRLF header split among them, and found every one landing same-origin. That last
+    figure describes a gate run rather than anything a reader of this repository can check,
+    which is why the tests are named first: an earlier version of this sentence cited only
+    the gate, and a gate pointed out that nothing in the tree supported it.
     """
     target = session.get(NEXT_KEY, "")
     auth.sign_in(username, verified=True, role=role)

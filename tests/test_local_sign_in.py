@@ -22,6 +22,7 @@ from flask.testing import FlaskClient
 from werkzeug.test import TestResponse
 
 from directive import accounts, create_app, totp
+from directive.views import auth_routes
 
 SUITE_KEY = bytes(range(32)).hex()
 USERNAME = "ash.higgins@bluestaq.uk"
@@ -687,3 +688,28 @@ def test_a_hostile_next_still_lands_on_the_console(
     )
 
     assert arrived.headers["Location"] == "/console"
+
+
+def test_the_next_target_is_capped_where_it_is_stored(client: FlaskClient) -> None:
+    """An untrusted value that gets STORED must be bounded at the write.
+
+    Uncapped, a 200,000-character target went into the session verbatim and the server
+    re-inflated the whole of it on every later request in that session. Small, because the
+    path needs a correct password first and the worker caps the header anyway, and still
+    against the rule that every untrusted value is bounded at the boundary.
+    """
+    give_password(client, password=WRONG_PASSWORD)
+    client.post(
+        "/sign-in",
+        data={
+            "username": USERNAME,
+            "password": PASSWORD,
+            "next": "/" + "a" * 200_000,
+            "csrf_token": form_token(client),
+        },
+    )
+
+    with client.session_transaction() as stored:
+        held = str(stored.get(auth_routes.NEXT_KEY, ""))
+
+    assert len(held) == auth_routes.MAXIMUM_NEXT_LENGTH, f"stored {len(held)} characters"
