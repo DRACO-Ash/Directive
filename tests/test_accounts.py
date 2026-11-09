@@ -564,17 +564,21 @@ def test_a_corrupted_factor_secret_refuses_rather_than_raising() -> None:
 
 
 def test_two_sign_ins_get_different_unguessable_enrolment_tokens() -> None:
-    """A unique token that is SHORT is still guessable, which the route test cannot see.
+    """A unique token that is SHORT still collides, which the route tests cannot see.
 
-    The route-level test refuses a second session the live secret, and a one-byte token
-    would satisfy it while being guessable in a few hundred attempts. So the length is
-    asserted here, at the source, alongside the uniqueness.
+    They drive two sign-ins and assert the secrets differ, and a one-byte token satisfies
+    that almost always while colliding roughly once in 256. So the length is asserted here,
+    at the source, alongside the uniqueness.
+
+    Be exact about what it buys, because the sentence here said the length is "what stops a
+    guesser deriving somebody else's" and a gate called that an over-claim. A guessed token
+    derives nothing without the server-held key, and no caller can present a chosen token
+    anyway: it rides in a signed cookie, and a tampered or forged one is refused. The length
+    is what keeps two half-finished sign-ins apart.
 
     Minted at the first factor rather than by the enrolment page, because the token has to
     exist before that page can be loaded: created inside it, it could never be in a replayed
-    cookie and every replay minted a secret and wrote the credential store. It is now also
-    the only input that separates one half-finished sign-in's derived secret from another's,
-    so its length is what stops a guesser deriving somebody else's. See
+    cookie and every replay minted a secret and wrote the credential store. See
     `accounts.enrolment_secret` for the three rounds of measurement behind that.
     """
     first = accounts.new_enrolment_token()

@@ -1419,6 +1419,76 @@ def test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start
         )
 
 
+def test_the_served_secret_is_derived_under_the_deployments_own_session_key(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The key the ROUTE supplies, which nothing checked.
+
+    A gate replaced the whole body of `auth.enrolment_key` with a constant in the source and
+    all 1626 tests stayed green, reproduced here against the three enrolment modules. One
+    test asserts the key is an input to the pure derivation; none asserted that the value the
+    route hands it is this deployment's own.
+
+    What a constant would cost is specific rather than theoretical. The derived value becomes
+    the account's permanent confirmed `totp_secret` at the POST, so anyone holding the source
+    plus one captured pre-enrolment cookie could compute a victim's live second factor long
+    after that cookie expired. The server-held key is the only thing preventing it.
+
+    Asserted by recomputing the served secret outside the route, from `app.secret_key` and
+    the token on the caller's own session, and separately by showing a different key does not
+    reproduce it, so a constant fails on the first assertion rather than passing by accident.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+
+    served = re.search(
+        r'class="secret mono">([A-Z2-7]+)<', caller.get("/sign-in/enrol").get_data(as_text=True)
+    )
+    assert served is not None, "the enrolment page showed no secret"
+    with caller.session_transaction() as held:
+        token = held[auth.ENROLMENT_KEY]
+
+    key = app.secret_key
+    assert isinstance(key, bytes | str), "the application has no session signing key"
+    material = key.encode("utf-8") if isinstance(key, str) else bytes(key)
+
+    assert accounts.enrolment_secret(MEMBER, token, material) == served.group(1), (
+        "the served secret does not derive from this deployment's session key, so the key "
+        "the route supplies is not the one the secret depends on"
+    )
+    assert accounts.enrolment_secret(MEMBER, token, b"a-different-key") != served.group(1), (
+        "the key is not an input, so anyone holding the source can derive a live factor"
+    )
+
+
+def test_the_enrolment_page_refuses_an_account_that_already_has_a_factor(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The symmetric half of the branch that stops a confirmed factor being replaced.
+
+    A gate deleted `is_enrolled` from this route's refusal and the suite stayed green. Its
+    sibling on the POST is lethal when removed and has a test; this one is a disclosure
+    rather than a session, because `enrol_submit` refuses an enrolled account anyway, so what
+    it costs is a derivable setup key handed to a caller who can never confirm it, and a dead
+    end with nothing on screen to explain it. The two branches are the same decision written
+    at both ends of the flow, and a decision held at one end only is the shape this build has
+    been caught by repeatedly.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    _sign_in(app, MEMBER, PHRASE)
+    assert accounts.is_enrolled(_stored(app, MEMBER)), "the account did not enrol"
+
+    returning = app.test_client()
+    _give_first_factor(returning, MEMBER, PHRASE)
+    page = returning.get("/sign-in/enrol")
+
+    assert page.status_code == 302, "an enrolled account was sent to the enrolment page"
+    assert not re.search(r'class="secret mono">([A-Z2-7]+)<', page.get_data(as_text=True)), (
+        "an enrolled account was shown a setup key it can never confirm"
+    )
+
+
 def test_abandoning_a_half_finished_sign_in_clears_its_enrolment_token(
     app: Flask, admin: FlaskClient
 ) -> None:

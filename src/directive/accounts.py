@@ -55,11 +55,14 @@ from .audit.validation import FORMULA_LEAD
 #: The directory under `DATA_DIR`. Deliberately not `records`, which the export globs.
 ACCOUNTS_DIRNAME = "accounts"
 
-#: Bytes of randomness in the token that owns an unconfirmed enrolment secret. Sized like a
-#: session identifier because guessing one would hand the guesser another sign-in's
-#: unconfirmed secret. NOT a bearer value, and that phrase stood here until a gate called it
-#: an over-claim: the token rides inside the server-signed session cookie, so a caller can
-#: neither choose one nor write one, and on its own it opens nothing.
+#: Bytes of randomness in the token one half-finished sign-in derives its enrolment secret
+#: from. Be exact about what the length buys, because this comment has now been corrected
+#: twice for reaching past it. It is NOT what stops a third party deriving somebody's secret:
+#: the server-held key does that, and a guessed token is worth nothing without it. It is also
+#: not a bearer value, the phrase that stood here before, because the token rides inside the
+#: server-signed session cookie and a caller can neither choose one nor write one. What the
+#: length and the randomness buy is that two half-finished sign-ins never collide on one
+#: token and so never derive one secret, which is the whole of the separation between them.
 ENROLMENT_TOKEN_BYTES = 32
 
 #: The counter value meaning "no code has been accepted yet". Not zero: counter zero is a
@@ -667,23 +670,21 @@ def finish_enrolment(
     same secret, so there is nothing to own.
     """
     if not secret:
-        #: No secret, or a secret this session does not own.
+        #: The session carried no enrolment token, so the caller derived nothing and there is
+        #: nothing it can confirm. Fail closed.
         #:
-        #: **The ownership half here is a second layer. It IS reachable, and it is held by
-        #: no test, and both halves of that sentence are corrections.** The previous version
-        #: said it could not be reached, reasoning that `enrol_page` replaces the secret on
-        #: a mismatch so a caller could never arrive here with a stale token. That is wrong:
-        #: the request token is per SESSION rather than per form, so a POST needs no
-        #: intervening GET, and a gate measured this clause entered with the stored token
-        #: and the session's token both present and the comparison refusing.
+        #: Eighteen lines of analysis stood here about an ownership comparison being a second
+        #: layer, reachable, unexploitable and untestable. All of it described a stored
+        #: `totp_pending_token` that the same commit which rewrote the docstring above
+        #: deleted, so this function asserted two contradictory things ten lines apart and a
+        #: gate had to tell the author which was current. Recorded rather than quietly
+        #: swapped, because it is the same failure the commit claimed to have learned from:
+        #: deleting state leaves the sentences about it behind, and a maintainer who believes
+        #: a second layer still stands here is one edit from removing `enrol_submit`'s
+        #: `is_enrolled` branch or its token guard, neither of which has a second layer.
         #:
-        #: It is nonetheless not exploitable, and therefore not testable: reaching it needs
-        #: a stale token, and a stale token means the stored secret has already been
-        #: replaced by the session that took ownership, so the caller cannot produce a code
-        #: for it. No code path changes the token while leaving the secret. So this is
-        #: recorded as reachable and untested rather than given a test that would pass on
-        #: the code mismatch and prove nothing, which is the failure this release has
-        #: already made twice.
+        #: What is true now: this branch is reachable by any POST from a session without a
+        #: token, which needs no stale state and no race, and it is held by a test.
         return None
     try:
         matched = totp.matching_step(secret, code if isinstance(code, str) else "", now=now)
