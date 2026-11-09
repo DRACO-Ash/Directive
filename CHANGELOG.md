@@ -368,8 +368,10 @@ unconfirmed secret was minted BY the page, so a cookie captured at the first fac
 no token and every replay of it was served a freshly minted secret: twelve replays, twelve
 secrets, twelve writes to the credential store, from one password verification. The token is
 now minted in `begin_second_factor`, at the first factor, where a replayed cookie already
-carries it; a session that arrives without one is redirected rather than served, so the page
-writes at most once per half-finished sign-in. Beside it sat a second hole the same fix
+carries it; a session that arrives without one is redirected rather than served. **That
+sentence used to end "so the page writes at most once per half-finished sign-in", and it was
+a bound measured on one cookie rather than a property of the route. The tenth round below
+shows what it missed and what now makes it true.** Beside it sat a second hole the same fix
 exposed: `enrol_page` alone did not check the session epoch, where both its siblings do, so
 a password change or a factor reset stopped the sign-in completing while this page went on
 serving it fresh secrets and writing them to the record. That is a half-authenticated caller
@@ -410,6 +412,41 @@ carry a username the account boundary has already narrowed; the boot unlock carr
 entry genuinely can name its subject `unrecordable`. The enrolment token was called "a
 bearer value" when it never leaves a server-signed cookie a caller cannot write. And the two
 accepted-residual rows above carried figures from the code as it stood before this round.
+
+**The tenth round repriced the ninth round's MAJOR rather than finding a new one, and that
+is the more useful outcome.** The enrolment page's writes were bounded for one captured
+cookie and the record claimed they were bounded full stop, in five places: this file, two
+accepted-residual rows, and two code comments in the past tense. The decision that mints or
+reuses asked whether the ACCOUNT's stored token belonged to this session, and an account's
+token is shared state, so two half-finished sign-ins on one unenrolled account took it back
+from each other on every load. The gate measured 50 alternating loads buying 50 secrets and
+50 staged, fsynced rewrites of the credential store at 450 a second, for two password
+verifications, with no audit entry behind any of them; reproduced here at 460 a second
+before anything was touched. Nothing is disclosed and no second factor is stolen, which was
+checked in both orderings. What it costs is availability, under the one lock every sign-in
+and every administration route takes, plus a half-authenticated caller writing to the
+credential store at request rate.
+
+**The bound is now per session, because no other scope can answer the question.** The
+account cannot distinguish "this sign-in has never minted" from "this sign-in minted and
+somebody took it", and those need opposite answers: mint, or start again. One bit on the
+session, `auth.ENROLMENT_MINTED_KEY`, set after the save rather than before it, so a save
+that fails does not lock the caller out of a page that wrote nothing. A sign-in that no
+longer owns the stored secret is redirected rather than handed a third one, which loses it
+nothing, because whatever it scanned stopped working the moment the secret was replaced. The
+reload the page exists for is untouched: the owning session is still served its own secret
+with no write. The same 50 loads now write twice, one per password verification, and
+`test_two_pending_sign_ins_on_one_account_mint_once_each_not_once_per_load` holds it, proved
+red by deleting the bound: 20 writes where 2 are required.
+
+**The round's MINOR, fixed for the same reason the MAJOR's record half was.**
+`abandon_second_factor` popped the pending marker and its clock and left both enrolment keys
+behind, while its docstring said it forgets a half-finished sign-in. Nothing could be built
+from the residue, and the gate said so plainly: a surviving token can only match a secret the
+same session planted, `pending_actor` returns None so no second-factor route proceeds, and
+the next `begin_second_factor` clears the session outright. It is fixed anyway, because a
+docstring reaching past its code is what this release keeps being caught for. The epoch
+deliberately stays, and the docstring now says which keys go and which does not.
 
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every

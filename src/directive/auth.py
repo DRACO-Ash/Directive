@@ -75,6 +75,16 @@ PENDING_SINCE_KEY = "directive_pending_since"
 #: than carrying the secret itself: the session cookie is signed and not encrypted.
 ENROLMENT_KEY = "directive_enrolment"
 
+#: Whether THIS half-finished sign-in has already been shown a secret. One bit, and it is
+#: what bounds the enrolment page's writes. The decision to mint used to be made against the
+#: ACCOUNT's stored token, which is shared state: two half-finished sign-ins on one
+#: unenrolled account took ownership back from each other on every load, so 50 alternating
+#: loads bought 50 secrets and 50 fsynced rewrites of the credential store for two password
+#: verifications. The stored token not being ours means one of two things, and only the
+#: session can tell them apart: we have never minted, or ours was taken. Per SESSION, never
+#: per account, for that reason.
+ENROLMENT_MINTED_KEY = "directive_enrolment_minted"
+
 #: How long a half-finished sign-in stays open. Long enough to read a code off a phone,
 #: short enough that a borrowed browser is not a standing invitation.
 PENDING_SECONDS = 300
@@ -223,6 +233,12 @@ def begin_second_factor(username: str, *, epoch: int) -> None:
     #: already carries it. Minted inside the page, it could never be in a replayed cookie
     #: and every replay minted afresh: one password hash bought five minutes of writes to
     #: the credential store at request rate.
+    #:
+    #: This alone did NOT bound the page's writes, and the sentence above claimed it did for
+    #: one round. It bounds the ONE-cookie case. Two half-finished sign-ins on one unenrolled
+    #: account still took the stored secret back from each other on every load, because the
+    #: mint-or-reuse decision read the account rather than the session. `ENROLMENT_MINTED_KEY`
+    #: is the other half and the comment there carries the measurement.
     session[ENROLMENT_KEY] = accounts.new_enrolment_token()
     session.permanent = False
 
@@ -257,9 +273,23 @@ def pending_epoch_matches(account: dict[str, Any]) -> bool:
 
 
 def abandon_second_factor() -> None:
-    """Forget a half-finished sign-in."""
+    """Forget a half-finished sign-in: the marker, its clock, and its enrolment state.
+
+    The two enrolment keys go with the marker. They did not, and nothing could be built
+    from the residue, because a surviving token can only ever match a secret the same
+    session planted and `pending_actor` returns None so no second-factor route proceeds.
+    It was a docstring reaching past its code, which is this build's recurring defect, and
+    the route that calls this on the tokenless path is the one place where the token is the
+    very thing in question.
+
+    `EPOCH_KEY` deliberately stays: it is not part of the half-finished sign-in, it names
+    the account state this session was born against, and both `sign_in` and
+    `begin_second_factor` clear the whole session before setting it afresh.
+    """
     session.pop(PENDING_KEY, None)
     session.pop(PENDING_SINCE_KEY, None)
+    session.pop(ENROLMENT_KEY, None)
+    session.pop(ENROLMENT_MINTED_KEY, None)
 
 
 def sign_out() -> None:

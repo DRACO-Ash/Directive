@@ -1386,6 +1386,57 @@ def test_a_replayed_pre_enrolment_cookie_mints_once_not_once_per_request(
     assert len(file_states) == 1, f"{len(file_states)} writes to the credential store"
 
 
+def test_two_pending_sign_ins_on_one_account_mint_once_each_not_once_per_load(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The write the ninth round's fix did NOT bound, and the record said it had.
+
+    That fix stopped one captured cookie minting per request, and the test beside this one
+    holds it. It left the mint-or-reuse decision asking whether the ACCOUNT's stored token
+    is this session's, and the account's token is shared state: two half-finished sign-ins
+    on one unenrolled account take ownership back from each other on every load, so each
+    load minted and wrote. Measured at the tenth security round, 50 alternating loads
+    bought 50 secrets and 50 staged, fsynced rewrites of the credential store at 460 a
+    second, each under the one global lock every sign-in and every administration route
+    also takes, for two password verifications. Nothing is disclosed and no factor is
+    stolen; it is availability, plus a half-authenticated caller writing to the credential
+    store at request rate with no audit entry behind it.
+
+    The bound is now per SESSION, which is the only scope that can answer the question, and
+    this test is what holds it: one write per password verification, whatever the load
+    count, and the session that loses the stored secret starts again rather than being
+    handed a third one.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    first, second = app.test_client(), app.test_client()
+    _give_first_factor(first, MEMBER, PHRASE)
+    _give_first_factor(second, MEMBER, PHRASE)
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+
+    file_states: set[int] = set()
+    secrets_served: set[str] = set()
+    codes: list[int] = []
+    for index in range(20):
+        who = first if index % 2 == 0 else second
+        page = who.get("/sign-in/enrol")
+        codes.append(page.status_code)
+        found = re.search(r'class="secret mono">([A-Z2-7]+)<', page.get_data(as_text=True))
+        if found:
+            secrets_served.add(found.group(1))
+        file_states.add(stored.stat().st_mtime_ns)
+
+    assert len(file_states) == 2, (
+        f"{len(file_states)} writes to the credential store from two password verifications"
+    )
+    assert len(secrets_served) == 2, (
+        f"{len(secrets_served)} secrets minted, one per half-finished sign-in expected"
+    )
+    assert codes[2] == 302, (
+        "the sign-in that lost the stored secret was handed another one instead of "
+        f"starting again: {codes[:4]}"
+    )
+
+
 def test_a_pending_sign_in_carrying_no_enrolment_token_is_sent_back_to_the_start(
     app: Flask, admin: FlaskClient
 ) -> None:

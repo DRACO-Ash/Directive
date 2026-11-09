@@ -451,16 +451,35 @@ def enrol_page() -> str | Response:
         #: Refused outright without one, rather than minting. A pending sign-in always
         #: carries a token, because `begin_second_factor` mints it; a request that does not
         #: is either a cookie from before this release or a forgery, and in both cases the
-        #: safe answer is to start again. Minting here instead is what made the page a
-        #: write amplifier.
+        #: safe answer is to start again. Minting here instead is half of what made the page
+        #: a write amplifier; the per-session bound below is the other half, and this comment
+        #: said "what made" for one round while the two-session case was still open.
         owned = session.get(auth.ENROLMENT_KEY)
         if not isinstance(owned, str) or not owned:
             auth.abandon_second_factor()
             return redirect(url_for(SIGN_IN_ENDPOINT))
         secret = accounts.pending_secret_for(account, owned)
         if not secret:
+            #: Minted at most ONCE per half-finished sign-in, and the bit that bounds it
+            #: lives on the session because the account cannot answer the question. The
+            #: decision above asks whether the ACCOUNT's stored token is ours; two pending
+            #: sign-ins on one unenrolled account therefore took it back from each other on
+            #: every load, and 50 alternating loads bought 50 secrets and 50 fsynced
+            #: rewrites of the credential store, at 460 a second, for two password
+            #: verifications. The ninth round bounded the ONE-cookie case and this was
+            #: measured at the tenth. A session that has minted and no longer owns the
+            #: stored secret starts again rather than being handed a third one: whatever it
+            #: scanned is dead either way, so the redirect loses nothing and the write is
+            #: what an attacker was buying.
+            if session.get(auth.ENROLMENT_MINTED_KEY):
+                auth.abandon_second_factor()
+                return redirect(url_for(SIGN_IN_ENDPOINT))
             secret = accounts.begin_enrolment(account, token=owned)
             accounts.save(_data_dir(), rows)
+            #: After the save, never before. A save that raises leaves the volume with no
+            #: pending secret, and a bit set ahead of it would refuse this sign-in every
+            #: load thereafter.
+            session[auth.ENROLMENT_MINTED_KEY] = True
     return _never_stored(
         render_template(
             "enrol.html",
