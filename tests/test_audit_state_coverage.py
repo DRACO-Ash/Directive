@@ -1287,8 +1287,14 @@ def test_the_source_address_pin_covers_every_view_that_writes_one() -> None:
 #: Collecting every attribute in the body catches `environ`, `headers`, and any other
 #: spelling; collecting every loaded name catches the alias, because the alias is a name
 #: the shipped readers do not load.
+#: `has_request_context` was added deliberately, which is what this whitelist asks for. It
+#: is a Flask predicate taking no arguments and returning a bool: it reads nothing off the
+#: request and so cannot carry a header value into the entry, which is the property this pin
+#: protects. It is loaded because the break-glass unlock writes an audit entry from the
+#: application factory, where there is no request at all, and the reader answers `boot`
+#: rather than inventing an address for an action nobody made over HTTP.
 ADDRESS_ATTRIBUTES = frozenset({"remote_addr"})
-ADDRESS_NAMES = frozenset({"request", "recordable"})
+ADDRESS_NAMES = frozenset({"request", "recordable", "has_request_context"})
 
 
 def test_neither_client_address_reader_reaches_past_the_socket() -> None:

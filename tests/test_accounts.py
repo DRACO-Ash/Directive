@@ -9,6 +9,7 @@ from starving the liveness probe of threads.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -134,12 +135,77 @@ def test_an_absurdly_long_password_is_refused() -> None:
         accounts.check_password_rules("a" * (accounts.MAXIMUM_PASSWORD + 1))
 
 
-def test_the_decoy_spends_real_effort_rather_than_sleeping() -> None:
-    """`absorb_timing` must do the work, not wait for a constant.
+def test_the_decoy_spends_real_effort_rather_than_sleeping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`absorb_timing` must do the HASHING work, not wait for a constant.
 
     A timed sleep is a constant an attacker subtracts; real hashing tracks the machine.
+
+    Counted rather than timed, and asserted rather than merely called. The version of this
+    test that shipped first called `absorb_timing()` with no assertion on it at all, so
+    replacing its whole body with `return` left all 1547 tests green: a security gate
+    proved it by mutation. It was a test named for a property it did not hold, which is the
+    exact failure this project's own record says it repeated over five releases. A count
+    into `_scrypt` is deterministic where a timing band would be flaky on a loaded runner,
+    and it fails for the one reason that matters: no hashing happened.
     """
+    calls: list[int] = []
+    real = accounts._scrypt
+
+    def counted(*args: object, **kwargs: object) -> bytes:
+        calls.append(1)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(accounts, "_scrypt", counted)
+    accounts.absorb_timing()
+
+    assert calls, "absorb_timing spent no hashing effort, so it is a sleep by another name"
+
+
+def test_the_decoy_matches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """And the effort it spends is wasted on purpose: no supplied value can match it."""
     assert accounts.verify_password(accounts._DECOY, GOOD) is False
+    assert accounts.verify_password(accounts._DECOY, "") is False
+
+
+def test_a_busy_hash_is_not_a_wrong_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The distinction the sign-in route depends on, held at its source.
+
+    `verify_password` used to swallow the busy case and return False, so a capacity event
+    was indistinguishable from a wrong credential and spent the account's lockout budget.
+    It must RAISE, and it must raise something a caller can tell apart from an unreadable
+    stored value, which still returns a verdict.
+    """
+    stored = accounts.hash_password(GOOD)
+
+    def busy(*args: object, **kwargs: object) -> bytes:
+        raise accounts.ServiceBusyError("no slot")
+
+    monkeypatch.setattr(accounts, "_scrypt", busy)
+
+    with pytest.raises(accounts.ServiceBusyError):
+        accounts.verify_password(stored, GOOD)
+
+
+def test_an_unreadable_stored_value_is_still_a_verdict() -> None:
+    """The other half of the pair above: this one must NOT raise."""
+    assert accounts.verify_password("not-a-stored-password", GOOD) is False
+    assert accounts.verify_password("scrypt$n=notanumber,r=8,p=1$aaaa$bbbb", GOOD) is False
+
+
+def test_absorb_timing_swallows_the_busy_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raising here would make an absent account answer differently under load.
+
+    Which is the enumeration oracle `absorb_timing` exists to close, so the one place the
+    busy signal must NOT propagate is this one.
+    """
+
+    def busy(*args: object, **kwargs: object) -> bytes:
+        raise accounts.ServiceBusyError("no slot")
+
+    monkeypatch.setattr(accounts, "_scrypt", busy)
+
     accounts.absorb_timing()
 
 
@@ -331,7 +397,94 @@ def test_enrolment_is_two_steps_and_the_pending_secret_grants_nothing() -> None:
 
     assert codes is not None
     assert accounts.is_enrolled(account)
-    assert accounts.verify_code(account, totp.code_now(secret))
+    # And NOT the confirming code again: enrolment spends it. A later step's code works,
+    # which is what says the factor is live rather than that every code is refused.
+    assert not accounts.verify_code(account, totp.code_now(secret))
+    later = time.time() + totp.STEP_SECONDS * 2
+    assert accounts.verify_code(account, totp.code_now(secret, now=later), now=later)
+
+
+# ============================ a one-time code is one-time ============================
+
+
+def test_a_code_cannot_be_spent_twice() -> None:
+    """RFC 6238 section 5.2, the one normative MUST NOT in the specification.
+
+    This shipped broken: nothing recorded the counter, so one six-digit code signed in an
+    unlimited number of fresh sessions for the ninety seconds the drift window spans, and a
+    security gate demonstrated it three times over. The sibling control already had the
+    property, which is what makes the omission a plain gap rather than a judgement call: a
+    recovery code works once and there was no equivalent here.
+    """
+    from directive import totp  # noqa: PLC0415 - only this test needs it
+
+    account = accounts.new_account("a@b.uk", GOOD)
+    secret = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret))
+    moment = time.time() + totp.STEP_SECONDS * 4
+    code = totp.code_now(secret, now=moment)
+
+    assert accounts.verify_code(account, code, now=moment) is True
+    assert accounts.verify_code(account, code, now=moment) is False
+    assert accounts.verify_code(account, code, now=moment + 1) is False
+
+
+def test_a_code_from_earlier_in_the_window_is_refused_after_a_later_one() -> None:
+    """Strictly greater, not merely different.
+
+    The drift window spans three steps, so after a code from step N is accepted, the code
+    for step N-1 is still arithmetically valid and still inside the window. A comparison
+    that only refused an EQUAL counter would have let it through, which is a replay by
+    another name.
+    """
+    from directive import totp  # noqa: PLC0415 - only this test needs it
+
+    account = accounts.new_account("a@b.uk", GOOD)
+    secret = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret))
+    moment = time.time() + totp.STEP_SECONDS * 4
+    earlier = totp.code_now(secret, now=moment - totp.STEP_SECONDS)
+
+    assert accounts.verify_code(account, totp.code_now(secret, now=moment), now=moment) is True
+    assert accounts.verify_code(account, earlier, now=moment) is False
+
+
+def test_an_unreadable_counter_refuses_every_code() -> None:
+    """Fails CLOSED. This is the field an attacker holding the volume would corrupt.
+
+    Reading a bad counter as "never" would turn one corrupt value into an unlimited replay
+    window, which is the opposite of what the field is for.
+    """
+    from directive import totp  # noqa: PLC0415 - only this test needs it
+
+    account = accounts.new_account("a@b.uk", GOOD)
+    secret = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret))
+    account["totp_last_step"] = "not a number"
+
+    moment = time.time() + totp.STEP_SECONDS * 4
+    assert accounts.verify_code(account, totp.code_now(secret, now=moment), now=moment) is False
+    assert accounts.last_step(account) == accounts.FAR_FUTURE_STEP
+
+
+def test_resetting_the_factor_resets_the_counter() -> None:
+    """The counter goes with the secret.
+
+    A new secret produces unrelated codes, so a counter held against the old one would
+    refuse good codes from the new device until the clock caught up with it, and on a
+    corrupt value never.
+    """
+    from directive import totp  # noqa: PLC0415 - only this test needs it
+
+    account = accounts.new_account("a@b.uk", GOOD)
+    secret = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret))
+    accounts.reset_factor(account)
+
+    assert account["totp_last_step"] == accounts.NO_STEP
+
+    fresh = accounts.begin_enrolment(account)
+    assert accounts.finish_enrolment(account, totp.code_now(fresh)) is not None
 
 
 def test_enrolment_with_a_wrong_code_confirms_nothing() -> None:

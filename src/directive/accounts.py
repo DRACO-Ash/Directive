@@ -54,6 +54,15 @@ from . import totp
 #: The directory under `DATA_DIR`. Deliberately not `records`, which the export globs.
 ACCOUNTS_DIRNAME = "accounts"
 
+#: The counter value meaning "no code has been accepted yet". Not zero: counter zero is a
+#: real RFC 6238 step, the one covering the Unix epoch, and a sentinel that collides with a
+#: legitimate value is not a sentinel.
+NO_STEP = -1
+
+#: What an unreadable counter reads as. Far beyond any counter a real clock will produce,
+#: so a corrupt field refuses every code rather than accepting every code.
+FAR_FUTURE_STEP = 2**62
+
 #: What a field holds once it has been cleared: the second-factor secret and its pending
 #: half, and nothing else. A named constant rather than a bare empty string, and the reason
 #: is worth stating because it looks like noise. The static analyser AMD-001 section 10.6
@@ -126,6 +135,24 @@ class AccountError(RuntimeError):
     """Raised for a fault a caller can fix. Never raised for a wrong password."""
 
 
+class ServiceBusyError(AccountError):
+    """No hashing slot came free, or the machine could not honour the parameters.
+
+    **A load-shedding refusal, and never a wrong credential.** It has its own class because
+    the two were indistinguishable and the consequence was a false record: `verify_password`
+    swallowed the busy case and returned False, so the sign-in route counted it as a failed
+    attempt, and ten of them locked the account for 900 seconds and wrote an AUD-001
+    `ACCOUNT_LOCKED` entry attributing a capacity event to failed credentials. A security
+    gate demonstrated it against the CORRECT password. An immutable log that says somebody
+    got their password wrong when they did not is a record that over-claims, in front of an
+    assessor, and that is the binding ground here rather than the availability one.
+
+    It stays an `AccountError` so that a caller who only wants a verdict and catches the
+    base class is no worse off than before; the routes that write audit entries catch this
+    one FIRST and refuse without recording a failure.
+    """
+
+
 def normalise_username(raw: object) -> str:
     """Return a username in its canonical form, or raise.
 
@@ -170,7 +197,7 @@ def _scrypt(password: str, salt: bytes, *, n: int, r: int, p: int) -> bytes:
     if not _hash_slots.acquire(timeout=HASH_WAIT_SECONDS):
         #: Refused rather than queued. A queued caller holds a worker thread, and eight held
         #: threads leave nothing to answer the liveness probe, which restarts the pod.
-        raise AccountError("the sign-in service is busy. Try again in a moment.")
+        raise ServiceBusyError("the sign-in service is busy. Try again in a moment.")
     try:
         return hashlib.scrypt(
             password.encode("utf-8"),
@@ -183,6 +210,11 @@ def _scrypt(password: str, salt: bytes, *, n: int, r: int, p: int) -> bytes:
             #: need and scrypt raises rather than silently using less memory.
             maxmem=2 * (128 * r * n + 128 * r * p),
         )
+    except MemoryError as error:
+        #: The same class of event as a full slot: the machine cannot do the work right
+        #: now. It says nothing about the credential, so it must not be recorded as if it
+        #: did. Raised rather than returned for exactly that reason.
+        raise ServiceBusyError("the sign-in service is out of memory for hashing.") from error
     finally:
         _hash_slots.release()
 
@@ -244,10 +276,11 @@ def verify_password(stored: str, supplied: object) -> bool:
         return False
     try:
         n, r, p, salt, digest = _parse_stored(stored)
-        candidate = _scrypt(supplied, salt, n=n, r=r, p=p)
     except AccountError:
         return False
-    except (ValueError, MemoryError):
+    try:
+        candidate = _scrypt(supplied, salt, n=n, r=r, p=p)
+    except ValueError:
         #: scrypt itself refuses parameters it cannot honour. Same reasoning: a verdict.
         return False
     return hmac.compare_digest(candidate, digest)
@@ -259,6 +292,8 @@ def needs_rehash(stored: str) -> bool:
         n, r, p, _, _ = _parse_stored(stored)
     except AccountError:
         return True
+    # No hashing here, so `ServiceBusyError` cannot arise and the broad catch above is the
+    # parse alone.
     return (n, r, p) != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
 
 
@@ -271,8 +306,18 @@ _DECOY = hash_password("decoy-account-password-never-used-" + secrets.token_hex(
 
 
 def absorb_timing() -> None:
-    """Spend the same hashing effort a real verification would, and discard it."""
-    verify_password(_DECOY, "any value at all, it will not match")
+    """Spend the same hashing effort a real verification would, and discard it.
+
+    Swallows the busy case rather than propagating it. This runs on the path where the
+    named account does not exist, and raising here would make an absent account answer
+    differently from a present one under load, which is the enumeration oracle this
+    function exists to close. A caller that could not get a slot has already spent the
+    wait, so the effort was spent either way.
+    """
+    try:
+        verify_password(_DECOY, "any value at all, it will not match")
+    except ServiceBusyError:
+        return
 
 
 # ---------------------------------------------------------------- recovery codes
@@ -398,6 +443,10 @@ def new_account(username: str, password: str, *, role: str = MEMBER) -> dict[str
         "role": role,
         "state": ACTIVE,
         "totp_secret": CLEARED,
+        #: The last counter a one-time code was accepted at, so the same code cannot be
+        #: spent twice. `-1` rather than `0`: counter zero is a real RFC 6238 step (the
+        #: Unix epoch) and a sentinel that collides with a legitimate value is not one.
+        "totp_last_step": NO_STEP,
         "recovery": [],
         "must_change_password": True,
         "failures": 0,
@@ -469,18 +518,32 @@ def begin_enrolment(account: dict[str, Any]) -> str:
     return secret
 
 
-def finish_enrolment(account: dict[str, Any], code: object) -> list[str] | None:
+def finish_enrolment(
+    account: dict[str, Any], code: object, *, now: float | None = None
+) -> list[str] | None:
     """Confirm enrolment with a code from the app. Returns recovery codes, or None.
 
     Returning the codes exactly once is the design: they are hashed on the account and the
     plaintext exists only in this return value and the page that renders it.
+
+    The confirming code is SPENT here, not merely checked. Enrolment completes a sign-in,
+    so without this the code the person has just typed into the enrolment form stays valid
+    at `/sign-in/verify` for the rest of the window, which is the same replay the sign-in
+    path was found to allow and the gate demonstrated from a second session.
     """
     pending = str(account.get("totp_pending") or "")
-    if not pending or not totp.verify(pending, code if isinstance(code, str) else ""):
+    if not pending:
+        return None
+    try:
+        matched = totp.matching_step(pending, code if isinstance(code, str) else "", now=now)
+    except totp.TotpError:
+        return None
+    if matched is None:
         return None
     codes, hashes = new_recovery_codes()
     account["totp_secret"] = pending
     account["totp_pending"] = CLEARED
+    account["totp_last_step"] = matched
     account["recovery"] = hashes
     account["updated"] = _now_text()
     return codes
@@ -491,23 +554,66 @@ def is_enrolled(account: dict[str, Any]) -> bool:
     return bool(str(account.get("totp_secret") or ""))
 
 
-def verify_code(account: dict[str, Any], code: object) -> bool:
-    """Return whether this one-time code is valid for the account. A verdict, never a raise."""
+def verify_code(account: dict[str, Any], code: object, *, now: float | None = None) -> bool:
+    """Spend this one-time code if it is valid and has not been spent. Mutates ``account``.
+
+    **A one-time password that can be presented twice is not one.** RFC 6238 section 5.2
+    carries exactly one normative MUST NOT and it is this. The first version of this
+    function asked `totp.verify` for a boolean and nothing remembered the counter, so one
+    six-digit code signed in as many fresh sessions as a caller cared to open for the
+    ninety seconds the drift window spans, and the code shown on the enrolment page could
+    be replayed from another session into a complete sign-in. A security gate demonstrated
+    both. The sibling control already had this property: a recovery code works once.
+
+    The counter is written onto the account, so the CALLER must persist it. Every call site
+    is inside `accounts.with_lock()` and followed by `accounts.save`, which is the same
+    discipline `spend_recovery_code` and `record_failure` already require, and
+    `test_account_admin.py` holds the end-to-end property rather than the discipline.
+
+    Strictly greater than the stored counter, not merely different. Equal is the replay;
+    LESS than is a code from earlier in the window arriving after a later one has been
+    accepted, which is a replay too and is what a `!=` comparison would have let through.
+
+    A verdict, never a raise.
+    """
     secret = str(account.get("totp_secret") or "")
     if not secret:
         return False
     try:
-        return totp.verify(secret, code if isinstance(code, str) else "")
+        matched = totp.matching_step(secret, code if isinstance(code, str) else "", now=now)
     except totp.TotpError:
         #: A stored secret that cannot be decoded refuses the sign-in rather than raising,
         #: for the same reason an unreadable password hash does.
         return False
+    if matched is None or matched <= last_step(account):
+        return False
+    account["totp_last_step"] = matched
+    account["updated"] = _now_text()
+    return True
+
+
+def last_step(account: dict[str, Any]) -> int:
+    """Return the last counter a code was accepted at, failing CLOSED on a bad value.
+
+    An unreadable counter reads as "the far future", so every code is refused until an
+    administrator resets the factor. The alternative, treating it as "never", turns one
+    corrupt field into an unlimited replay window, and this field is exactly the one an
+    attacker holding the volume would corrupt.
+    """
+    try:
+        return int(account.get("totp_last_step", NO_STEP))
+    except (TypeError, ValueError):
+        return FAR_FUTURE_STEP
 
 
 def reset_factor(account: dict[str, Any]) -> None:
     """Remove the second factor and its recovery codes, forcing re-enrolment."""
     account["totp_secret"] = CLEARED
     account["totp_pending"] = CLEARED
+    #: Reset with the secret. A new secret produces unrelated codes, so a counter held
+    #: against the old one would refuse perfectly good codes from the new device until the
+    #: clock caught up with it, which on a corrupt value means never.
+    account["totp_last_step"] = NO_STEP
     account["recovery"] = []
     account["updated"] = _now_text()
 

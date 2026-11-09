@@ -19,7 +19,7 @@ from .version import __version__
 from .views import health_bp
 from .views.account_routes import account_bp
 from .views.api import api_bp
-from .views.auth_routes import auth_bp
+from .views.auth_routes import auth_bp, record_event
 from .views.console import console_bp
 from .views.health import probe_storage
 
@@ -68,9 +68,9 @@ def create_app() -> Flask:
     security_headers.register(app)
 
     # The presence map FIRST. `_install_application` refuses to boot in production without
-    # Entra ID or SESSION_KEY, and that refusal used to suppress the very read-out an
-    # operator needs to see which variable the pod actually received. Nothing in here can
-    # prevent boot, and now nothing can prevent it either.
+    # `SESSION_KEY`, and that refusal used to suppress the very read-out an operator needs
+    # to see which variable the pod actually received. Nothing in here can prevent boot,
+    # and now nothing can prevent it either.
     _log_input_presence(app)
     _install_application(app)
 
@@ -129,6 +129,39 @@ def _install_application(app: Flask) -> None:
     app.extensions["directive_chain"] = chain
     app.extensions["directive_audit_status"] = verdict.summary()
     app.logger.info("boot: audit log resumed, %s", verdict.summary())
+    _break_glass(app, data_dir)
+
+
+def _break_glass(app: Flask, data_dir: str) -> None:
+    """Clear a lockout on the bootstrap administrator if the operator asked at boot.
+
+    Placed AFTER the chain is resumed and not before, because the whole value of this
+    recovery over hand-editing the account file is that it leaves a record. A lock cleared
+    with no audit entry is a lock that was never cleared as far as an assessor is
+    concerned. If the chain is unavailable the early return above means this never runs,
+    which is the correct direction: the operator still has the volume, and the application
+    will not change who can sign in while it cannot evidence the change.
+
+    Nothing in here may prevent boot, for the same reason nothing else in this factory may.
+    """
+    try:
+        if not auth.break_glass_unlock(data_dir):
+            return
+        # An application context, because `record_event` reaches `current_app` for the
+        # chain and the factory has not pushed one. NOT a request context: there is no
+        # caller, and `_client_ip` and `_user_agent` record `boot` rather than inventing
+        # an address for an action nobody made over HTTP.
+        with app.app_context():
+            record_event(
+                "ACCOUNT_UNLOCKED",
+                "bootstrap",
+                "SUCCESS",
+                resource_id=config.env("BOOTSTRAP_ADMIN")[:64],
+                resource="account",
+                fields_changed="locked_until,failures",
+            )
+    except Exception:
+        app.logger.exception("boot: the break-glass unlock did not complete")
 
 
 def _audit_status(error: BaseException) -> str:
@@ -170,10 +203,10 @@ def _log_input_presence(app: Flask) -> None:
     """Write the credential presence map to the log, as booleans and length bands only.
 
     This is the recovery channel for an operator who cannot sign in. The same map is on
-    `/api/diagnostics`, but that half is signed-in only, and `entra_is_configured` tests
-    presence rather than correctness: a PRESENT BUT WRONG `CLIENT_SECRET` disables the
-    self-asserted sign-in path while the real one cannot complete, so nobody can reach the
-    read-out that would explain it. The pod log is readable from the App Store console
+    `/api/diagnostics`, but that half is signed-in only, and there is a configuration in
+    which nobody can sign in to reach it: an empty account list with `BOOTSTRAP_ADMIN` or
+    `BOOTSTRAP_ADMIN_PASSWORD` missing or stale, which production does not offer the
+    self-asserted path to work around. The pod log is readable from the App Store console
     without authenticating to this application, which is exactly what that case needs.
 
     Never a value and never an exact length, the same rule the route follows.

@@ -389,6 +389,58 @@ def ensure_bootstrap(data_dir: str) -> bool:
     return True
 
 
+def break_glass_unlock(data_dir: str) -> bool:
+    """Clear a lockout on the bootstrap administrator, when the operator asks at boot.
+
+    **This exists because the documented recovery did not work.** An unauthenticated caller
+    can lock any account by guessing its password 10 times, usernames here are work email
+    addresses and therefore guessable, and 10 guesses every 15 minutes holds a lock open
+    indefinitely. `/accounts/<username>/unlock` is behind `admin_required`, so it is
+    reachable only from an administrator session that was already open when the lock
+    landed. With one administrator and no live session, the application could not be
+    administered at all until somebody hand-edited the account file on the volume, and
+    `docs/DEPLOYMENT.md` told the operator to correct the environment and restart, which
+    `ensure_bootstrap` ignores the moment any account exists. A security gate found it.
+
+    Three things bound what this can do, and each is deliberate.
+
+    ● **It runs only when `BOOTSTRAP_UNLOCK` is set to `true`.** Not on every boot: a
+      container that is crash-looping would otherwise clear the lock as fast as the lock
+      was earned, which hands the attacker the lockout's removal for free. The operator
+      sets the variable, restarts, signs in, and removes it again.
+    ● **It clears the LOCKOUT and nothing else.** Not the password, not the second factor,
+      not the role, not the state. Whoever holds the environment channel can already
+      replace this application wholesale, but a recovery that silently reset a credential
+      would be a back door with a runbook, and the narrow one is as useful.
+    ● **It writes to the log before it is useful to anybody.** The entry is written by the
+      caller, in the application factory, where the audit chain exists.
+
+    Returns whether a lock was actually cleared, so the caller writes an entry only when
+    something happened.
+    """
+    if config.env("BOOTSTRAP_UNLOCK").strip().lower() != "true":
+        return False
+    username = config.env("BOOTSTRAP_ADMIN")
+    if not username:
+        return False
+    with accounts.with_lock():
+        rows = accounts.load(data_dir)
+        try:
+            account = accounts.find(rows, accounts.normalise_username(username))
+        except accounts.AccountError:
+            return False
+        if account is None or not accounts.is_locked(account):
+            return False
+        accounts.clear_failures(account)
+        accounts.save(data_dir, rows)
+    LOGGER.warning(
+        "bootstrap: cleared the lockout on %r because BOOTSTRAP_UNLOCK is set. Remove that "
+        "variable once the sign-in has succeeded.",
+        account["username"],
+    )
+    return True
+
+
 def describe(data_dir: str | None = None) -> dict[str, object]:
     """Return the authentication posture, for the diagnostics read-out.
 

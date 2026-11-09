@@ -47,7 +47,11 @@ MUST_BE_CONSTANT_TIME = [
     #: exists for: a password hash, a one-time code, and a recovery code.
     ("src/directive/accounts.py", "verify_password"),  # the scrypt hash of a password
     ("src/directive/accounts.py", "spend_recovery_code"),  # a single-use recovery code hash
-    ("src/directive/totp.py", "verify"),  # a time-based one-time password
+    #: `matching_step`, not `verify`. `verify` is now a boolean view over it and compares
+    #: nothing itself, so pinning `verify` would have pinned a function with no comparison
+    #: in it: green by construction, which is the shape of unheld control this file exists
+    #: to catch. The loop caught the rename, which is the pin working.
+    ("src/directive/totp.py", "matching_step"),  # a time-based one-time password
 ]
 
 

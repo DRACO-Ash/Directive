@@ -39,6 +39,7 @@ The correct console state for a code-defaults app is an EMPTY environment tab fo
 | `DIRECTIVE_ENV` | Operator-set, not secret | **Set this to `production`, explicitly.** It governs three fail-closed controls: the `Secure` flag on the session cookie, whether a real credential is required to sign in, and whether `SESSION_KEY` is required at boot. `development` selects the self-asserted local mode; anything else, an unset variable included, is production. It was previously absent from this table while defaulting to `development`, so a deploy following this table exactly ran with all three guards off. The default is now the safe direction, and the row exists so nobody has to rely on it. |
 | `BOOTSTRAP_ADMIN` | Operator-set, not secret | The username of the FIRST administrator, created at boot only when the account list is empty. Use a real work address, because it is the actor on every audit entry that account writes. Leave it set after the first boot; it does nothing once an account exists. |
 | `BOOTSTRAP_ADMIN_PASSWORD` | Operator-set, SECRET | The first administrator's starting password, at least 12 characters. It is required to change at first sign-in, so the value that travelled through the platform's environment is replaced by one only the person knows. **Remove it from the console once that first sign-in is done.** See the channel warning below. |
+| `BOOTSTRAP_UNLOCK` | Operator-set, not secret | Leave unset. Set it to `true` and restart ONLY to recover from a locked-out administrator, then remove it. See **Locked out of the console** below. |
 | `SESSION_KEY` | Operator-set, SECRET | The Flask session signing key. |
 | `BUILD_ID` | Operator-set, not secret | The deployed commit SHA, surfaced by `/api/diagnostics`. |
 | `LOG_VIEW_EVENTS` | Operator-set, not secret | `false` unless the ISM decides otherwise. |
@@ -95,6 +96,18 @@ unavailable, every register mutation answers 503, and this line is how an operat
 why. It carries the same presence map as the signed-in half of `/api/diagnostics`, as a boolean and a length band per input, never a value and never an exact length. It is emitted from the application factory rather than from the storage narrative, so a storage probe failure cannot suppress it, and nothing in it can prevent boot. `TBC, re-verify` with the platform team that pod logs are readable from the App Store console without authenticating to the application; that is the assumption this recovery path rests on and it has not been confirmed here.
 
 If an operator cannot sign in: read the pod log, correct the value on the environment channel, and restart. Recorded plainly rather than left to be discovered during an outage.
+
+### Locked out of the console
+
+**This is a real exposure, not a theoretical one, and the recovery below exists because the one above did not work.** An account locks for 15 minutes after 10 wrong passwords, and the sign-in form is unauthenticated by necessity. Usernames here are work email addresses, so they are guessable, and nothing in the application limits attempts per source address. Ten guesses every 15 minutes therefore holds an account locked indefinitely, and a security gate demonstrated it against the sole administrator. `/accounts/<username>/unlock` is behind the administrator role, so it is reachable only from a session that was already open when the lock landed. The bootstrap variables do nothing once any account exists, so correcting them and restarting restores nothing.
+
+Three steps, and the middle one is the point:
+
+1. Confirm it from the pod log. A locked account logs `cannot sign in: absent, disabled or locked`. The presence map on the line above says whether the bootstrap variables arrived.
+2. Set `BOOTSTRAP_UNLOCK=true` in the environment tab and restart the pod. At boot the application clears the lockout on the account named by `BOOTSTRAP_ADMIN`, writes an `ACCOUNT_UNLOCKED` audit entry with a source address of `boot`, and logs a warning. It clears the lock and NOTHING else: not the password, not the second factor, not the role, not the state.
+3. Sign in, then remove `BOOTSTRAP_UNLOCK` and restart again. Leaving it set means a crash-looping container clears the lock as fast as it is earned, which gives an attacker the lockout's removal for free.
+
+**What this does not fix.** The denial of service itself is still open: an attacker who keeps guessing keeps the account locked between restarts. Closing it needs a rate limiter at the edge, which the platform does not provide and this application cannot do credibly while `remote_addr` may be the ingress's own address rather than the caller's. Recorded as accepted residual in `docs/GATE-RECORDS.md`. Mitigate it operationally by not using a guessable username for the break-glass administrator.
 
 Request-time fail-closed behaviour IS implemented as of V2.1: the application refuses to boot in production without `SESSION_KEY`, and every register mutation fails closed without a usable `AUDIT_HMAC_KEY`. From V2.5 the identity-provider half of that boot check is gone with the identity provider, and it is deliberately not replaced by a check that an account exists.
 

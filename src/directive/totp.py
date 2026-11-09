@@ -13,6 +13,17 @@ implementation is held against the specification rather than against its own out
 is the difference between writing an algorithm and inventing one. Nothing here is novel
 cryptography: the primitive is `hmac` from the standard library.
 
+**Be exact about what "held against the specification" covers, because this docstring said
+it while the one normative MUST NOT in the specification was missing.** RFC 6238 section
+5.2 requires that a verifier not accept the same one-time password twice. Nothing here
+recorded which counter a code was accepted at, so one six-digit code signed in an unlimited
+number of fresh sessions for the whole ninety-second window, and the code shown at
+enrolment could be replayed from another session into a complete sign-in. A security gate
+demonstrated it three times over. The single-use half lives in `accounts.verify_code`,
+because it needs the account record to remember the counter, and `matching_step` below
+exists to give it the counter to remember. The vectors cover the arithmetic; they never
+covered the protocol.
+
 SHA-1 is the hash, deliberately. It is the default every authenticator application
 implements, and a secret that only works in some of them is a support problem rather than a
 security improvement. Its use here is as a message authentication code over a counter, not
@@ -101,8 +112,15 @@ def code_now(secret: str, *, now: float | None = None, digits: int = DIGITS) -> 
     return code_at(secret, int(moment // STEP_SECONDS), digits=digits)
 
 
-def verify(secret: str, supplied: str, *, now: float | None = None) -> bool:
-    """Return whether ``supplied`` is a valid code, within the drift window.
+def matching_step(secret: str, supplied: str, *, now: float | None = None) -> int | None:
+    """Return the counter ``supplied`` is the code for, or ``None``.
+
+    The counter, not a boolean, and that is the whole point of this function existing.
+    RFC 6238 section 5.2 carries one normative MUST NOT: a verifier must not accept the
+    same one-time password twice. A caller cannot honour that without knowing WHICH step
+    matched, because the window spans three of them and a code accepted at the previous
+    step must still be refused later. `verify` below is the boolean view for the tests and
+    the tools that only need a verdict; the sign-in path uses this one.
 
     Returns a verdict for every input including a hostile one. A malformed secret is the
     one case that raises, because it is a configuration fault rather than a wrong code and
@@ -120,17 +138,28 @@ def verify(secret: str, supplied: str, *, now: float | None = None) -> bool:
     #: grammar and the identifier grammar, and the answer is the same every time: name the
     #: ten characters that are allowed.
     if len(candidate) != DIGITS or not all(character in "0123456789" for character in candidate):
-        return False
+        return None
     moment = time.time() if now is None else now
     step = int(moment // STEP_SECONDS)
     #: Every step in the window is checked, and the loop does NOT stop at the first match.
     #: Short-circuiting would make a code from the current step verify faster than one from
     #: the edge of the window, which is a timing signal about which step matched.
-    matched = False
+    matched: int | None = None
     for drift in range(-DRIFT_STEPS, DRIFT_STEPS + 1):
-        if hmac.compare_digest(code_at(secret, step + drift), candidate):
-            matched = True
+        counter = step + drift
+        if hmac.compare_digest(code_at(secret, counter), candidate):
+            matched = counter
     return matched
+
+
+def verify(secret: str, supplied: str, *, now: float | None = None) -> bool:
+    """Return whether ``supplied`` is a valid code, within the drift window.
+
+    A boolean view of `matching_step`. It says nothing about whether the code has already
+    been spent, so it is NOT sufficient on its own for a sign-in: `accounts.verify_code`
+    carries the single-use half.
+    """
+    return matching_step(secret, supplied, now=now) is not None
 
 
 def provisioning_uri(secret: str, *, actor: str, issuer: str) -> str:

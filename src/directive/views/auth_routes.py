@@ -9,7 +9,17 @@ an accident to be minimised away.
 
 from __future__ import annotations
 
-from flask import Blueprint, current_app, redirect, render_template, request, session, url_for
+from flask import (
+    Blueprint,
+    current_app,
+    has_request_context,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.wrappers.response import Response
 
 from .. import accounts, auth, csrf, records, totp
@@ -45,12 +55,21 @@ def _client_ip() -> str:
     evidence, and recording a spoofable value as though it were fact is worse than
     recording the proxy's own address. The platform terminates at a known ingress, so the
     resolved address is what the container actually saw.
+
+    Outside a request it is `boot`, not `unknown`. The break-glass unlock writes an entry
+    from the application factory where there is no caller at all, and `unknown` would read
+    as "a caller whose address we failed to resolve", which is a different and misleading
+    claim. A reader of the log can tell the two apart.
     """
+    if not has_request_context():
+        return "boot"
     return recordable("source_ip", request.remote_addr or "unknown")
 
 
 def _user_agent() -> str:
     """Return the caller's user agent, capped to the audit field's limit."""
+    if not has_request_context():
+        return "boot"
     return recordable("user_agent", request.headers.get("User-Agent") or "unknown")
 
 
@@ -173,12 +192,29 @@ def sign_in_submit() -> Response:
             accounts.absorb_timing()
             return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
         stored = str(account.get("password", ""))
-        if not accounts.verify_password(stored, request.form.get("password")):
-            locked = accounts.record_failure(account)
-            accounts.save(_data_dir(), rows)
-            if locked:
-                record_event("ACCOUNT_LOCKED", username, "FAILURE", resource_id=username)
-            return _refuse(f"the password for {username!r} did not match")
+        refusal = ""
+        try:
+            matched = accounts.verify_password(stored, request.form.get("password"))
+        except accounts.ServiceBusyError:
+            # Caught BEFORE anything is recorded, and this clause is the whole finding.
+            # The busy case used to arrive here as a plain `False`, so a capacity event
+            # counted against the lockout budget: ten of them locked the account for 900
+            # seconds and wrote an AUD-001 `ACCOUNT_LOCKED` entry blaming credentials that
+            # were correct. Nothing about this says the password was wrong, so nothing is
+            # written, nothing is saved, and the attempt is not counted.
+            refusal = f"the sign-in for {username!r} could not be hashed: service busy"
+        else:
+            if not matched:
+                locked = accounts.record_failure(account)
+                accounts.save(_data_dir(), rows)
+                if locked:
+                    record_event("ACCOUNT_LOCKED", username, "FAILURE", resource_id=username)
+                refusal = f"the password for {username!r} did not match"
+        if refusal:
+            # One exit for both refusals rather than two, to stay inside the analyser's
+            # return-statement cap. They do different things on the way here and say
+            # different things in the log, which is what matters.
+            return _refuse(refusal)
         enrolled = accounts.is_enrolled(account)
 
     auth.begin_second_factor(username)
@@ -309,11 +345,13 @@ def enrol_page() -> str | Response:
         if not secret:
             secret = accounts.begin_enrolment(account)
             accounts.save(_data_dir(), rows)
-    return render_template(
-        "enrol.html",
-        username=username,
-        secret=secret,
-        uri=totp.provisioning_uri(secret, actor=username, issuer="Directive"),
+    return _never_stored(
+        render_template(
+            "enrol.html",
+            username=username,
+            secret=secret,
+            uri=totp.provisioning_uri(secret, actor=username, issuer="Directive"),
+        )
     )
 
 
@@ -346,11 +384,53 @@ def enrol_submit() -> Response:
     record_event("FACTOR_ENROLLED", auth.audit_actor(), "SUCCESS", resource_id=username)
     # The ONLY time these exist in plaintext. They are hashed on the account and this
     # response is the one place they are rendered.
-    return render_template(
-        "recovery.html",
-        codes=codes,
-        must_change=must_change,
-    )  # type: ignore[return-value]
+    return _never_stored(
+        render_template(
+            "recovery.html",
+            codes=codes,
+            must_change=must_change,
+        )
+    )
+
+
+def _never_stored(body: str) -> Response:
+    """Return a response carrying a plaintext secret, marked so no cache may keep it.
+
+    The two pages this wraps are the only ones that render a secret in plaintext: the
+    enrolment page carries the base32 setup key and the whole `otpauth://` URI, and the
+    recovery page carries all ten codes. Without this a browser may heuristically write
+    the only plaintext copy of somebody's second factor to disk, and the back button
+    re-renders it on a shared machine. `no-store` is the one directive that covers both,
+    and `Pragma` is there for a proxy old enough to ignore `Cache-Control`.
+
+    Nothing else on this blueprint needs it: the sign-in and verify forms carry a request
+    token, which is per-session and short-lived, and the console's own responses carry
+    register data that the person is entitled to see again.
+    """
+    response = make_response(body)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@auth_bp.errorhandler(accounts.AccountError)
+def _unreadable_account_list(error: accounts.AccountError) -> Response:
+    """Turn an unreadable account file into a recorded refusal, never a 500.
+
+    Every route on this blueprint is unauthenticated by necessity and every one of them
+    reads the account list. With the file corrupt, `accounts.load` raised out of the view
+    and Flask answered 500 with NO audit entry at all, against `_refuse`'s stated contract
+    that the refusal path always leaves a record. A security gate demonstrated it. The
+    generic 500 page leaked nothing, so this is about the missing evidence rather than
+    about disclosure: AUD-001 wants a row for a failed authentication, and "the volume is
+    corrupt" is a failed authentication.
+
+    Registered as a handler rather than wrapped around each of the four reads, because a
+    `try` per call site is four places to forget and this is one. `ServiceBusyError` is a
+    subclass and is caught explicitly upstream, so it never reaches here.
+    """
+    current_app.logger.error("sign-in refused: the account list could not be read: %s", error)
+    return _refuse("the account list could not be read")
 
 
 def _refuse(reason: str) -> Response:

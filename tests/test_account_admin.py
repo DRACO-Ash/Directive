@@ -445,3 +445,114 @@ def test_the_redaction_is_an_allowlist_in_the_route_as_well(app: Flask, admin: F
     body = admin.get("/accounts").get_data(as_text=True)
 
     assert "must-not-be-rendered" not in body
+
+
+# ============================ the lockout recovery ============================
+
+
+def _lock_out(app: Flask, username: str, phrase: str = WRONG_PHRASE) -> None:
+    """Drive an account into its lockout window the way an attacker would: from outside."""
+    anonymous = app.test_client()
+    for _ in range(accounts.MAXIMUM_FAILURES):
+        _give_first_factor(anonymous, username, phrase)
+    assert accounts.is_locked(_stored(app, username)), f"{username} did not lock"
+
+
+def test_an_unauthenticated_caller_can_lock_the_only_administrator_out(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """Stated as a test because it is a real exposure, not because it is acceptable.
+
+    Ten wrong passwords lock any account for 900 seconds, usernames here are work email
+    addresses and so are guessable, and nothing in the application rate-limits the sign-in
+    form per source address. With one administrator and no live session there was then no
+    way back in at all: `/accounts/<username>/unlock` is behind the role gate, and
+    `ensure_bootstrap` does nothing once any account exists. A security gate found it.
+
+    The exposure is held here so that any future narrowing of it is deliberate, and the
+    recovery below is what stops it being terminal. The denial of service itself is not
+    closed in the application and is recorded as accepted residual in `docs/GATE-RECORDS.md`
+    pending an edge rate limiter.
+    """
+    _lock_out(app, ADMIN)
+
+    assert _give_first_factor(app.test_client(), ADMIN, PHRASE).status_code == 302
+    assert app.test_client().get("/accounts").status_code in {302, 401}
+
+
+def test_the_break_glass_unlock_clears_the_lock_and_records_it(
+    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented recovery, and it must actually work from a cold restart.
+
+    `docs/DEPLOYMENT.md` used to say "correct the value on the environment channel and
+    restart", which restored nothing, because the bootstrap path refuses to act once any
+    account exists. This is the narrow replacement: it clears the LOCKOUT and nothing else,
+    and it writes an audit entry, which is the whole reason to prefer it over somebody
+    editing the account file on the volume by hand.
+    """
+    _lock_out(app, ADMIN)
+    monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
+
+    restarted = create_app()
+
+    assert not accounts.is_locked(_stored(restarted, ADMIN))
+    entries = restarted.extensions["directive_chain"].entries
+    unlocks = [entry for entry in entries if entry.action == "ACCOUNT_UNLOCKED"]
+    assert unlocks, "a lock cleared with no record is a lock nobody can evidence"
+    assert unlocks[-1].source_ip == "boot", "it came from the factory, not from a caller"
+    assert _give_first_factor(restarted.test_client(), ADMIN, PHRASE).status_code == 302
+
+
+def test_the_break_glass_does_nothing_without_the_variable(app: Flask, admin: FlaskClient) -> None:
+    """It must NOT run on every boot.
+
+    A container that is crash-looping would otherwise clear the lock as fast as it was
+    earned, which hands an attacker the lockout's removal for free. The operator sets the
+    variable deliberately, restarts, signs in, and removes it again.
+    """
+    _lock_out(app, ADMIN)
+
+    restarted = create_app()
+
+    assert accounts.is_locked(_stored(restarted, ADMIN))
+
+
+def test_the_break_glass_changes_nothing_but_the_lock(
+    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not the password, not the factor, not the role, not the state.
+
+    Whoever holds the environment channel can already replace this application wholesale,
+    so this is not about stopping them. It is about the recovery not being a back door with
+    a runbook: a narrow one is as useful and says what it does.
+    """
+    _make_member(admin)
+    before = dict(_stored(app, ADMIN))
+    _lock_out(app, ADMIN)
+    monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", f"{PHRASE}-a-different-value")
+
+    restarted = create_app()
+    after = _stored(restarted, ADMIN)
+
+    assert after["password"] == before["password"], "the password must not be reset"
+    assert after["totp_secret"] == before["totp_secret"]
+    assert after["role"] == before["role"]
+    assert after["state"] == before["state"]
+    assert accounts.find(accounts.load(str(restarted.config["DIRECTIVE_DATA_DIR"])), MEMBER)
+
+
+def test_the_break_glass_only_touches_the_named_account(
+    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It names `BOOTSTRAP_ADMIN`, so another locked account stays locked."""
+    _make_member(admin)
+    _lock_out(app, MEMBER)
+    _lock_out(app, ADMIN)
+    monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
+
+    restarted = create_app()
+
+    assert not accounts.is_locked(_stored(restarted, ADMIN))
+    assert accounts.is_locked(_stored(restarted, MEMBER))

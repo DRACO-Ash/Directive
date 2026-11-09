@@ -283,3 +283,146 @@ def test_the_accounts_page_shows_no_secret(client: FlaskClient) -> None:
     assert USERNAME in body
     assert secret not in body
     assert "scrypt" not in body
+
+
+# ============================ a code is spent when it is used ============================
+
+
+def test_a_code_that_signed_in_cannot_sign_in_again(app: Flask, client: FlaskClient) -> None:
+    """The end-to-end half of RFC 6238 section 5.2, over HTTP and across sessions.
+
+    This is the test that did not exist, and its absence was a working bypass rather than a
+    gap in coverage: a security gate took one six-digit code and signed in three
+    consecutive fresh clients with it, each reaching the console. `tests/test_accounts.py`
+    holds the property at the function; this holds that the ROUTE persists the counter,
+    which is a different claim. The counter is written onto the account record inside the
+    file lock, so a route that forgot to save would pass the unit test and fail here.
+    """
+    secret, _ = sign_in_fully(client)
+    code = totp.code_now(secret)
+
+    second = app.test_client()
+    give_password(second, user=USERNAME)
+    replayed = second.post(
+        "/sign-in/verify",
+        data={"code": code, "csrf_token": form_token(second, "/sign-in/verify")},
+    )
+
+    assert second.get("/api/registers").status_code == 401, "a spent code signed in again"
+    assert replayed.status_code == 302
+    assert "/console" not in replayed.headers.get("Location", "")
+
+
+def test_the_enrolment_code_cannot_be_replayed_at_the_verify_step(
+    app: Flask, client: FlaskClient
+) -> None:
+    """Enrolment completes a sign-in, so the code it consumed is spent like any other.
+
+    Demonstrated by the gate from a second session: the code typed into the enrolment form
+    stayed valid at `/sign-in/verify` for the rest of the window.
+    """
+    give_password(client)
+    page = client.get("/sign-in/enrol")
+    secret = re.search(r'class="secret mono">([A-Z2-7]+)<', page.get_data(as_text=True))
+    assert secret is not None
+    code = totp.code_now(secret.group(1))
+    client.post(
+        "/sign-in/enrol",
+        data={"code": code, "csrf_token": form_token(client, "/sign-in/enrol")},
+    )
+
+    second = app.test_client()
+    give_password(second)
+    second.post(
+        "/sign-in/verify",
+        data={"code": code, "csrf_token": form_token(second, "/sign-in/verify")},
+    )
+
+    assert second.get("/api/registers").status_code == 401
+
+
+def test_the_pages_that_show_a_secret_are_never_stored(client: FlaskClient) -> None:
+    """The only two responses that carry a plaintext secret must not be cached to disk."""
+    give_password(client)
+    enrolment = client.get("/sign-in/enrol")
+    page = enrolment.get_data(as_text=True)
+    found = re.search(r'class="secret mono">([A-Z2-7]+)<', page)
+    assert found is not None
+    recovery = client.post(
+        "/sign-in/enrol",
+        data={
+            "code": totp.code_now(found.group(1)),
+            "csrf_token": form_token(client, "/sign-in/enrol"),
+        },
+    )
+
+    for response in (enrolment, recovery):
+        assert "no-store" in response.headers.get("Cache-Control", "")
+
+
+# ============================ busy is not wrong ============================
+
+
+def test_a_busy_hash_does_not_count_against_the_lockout(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capacity event must not be recorded as a failed credential, or spend the budget.
+
+    `verify_password` used to swallow the busy case and return False, so the route counted
+    it as a wrong password: a security gate locked the administrator for 900 seconds using
+    the CORRECT password, and the log carried an AUD-001 `ACCOUNT_LOCKED` entry blaming
+    credentials that were right. An immutable log that says so is a record that over-claims
+    in front of an assessor, which is the binding ground rather than the availability one.
+    """
+    # One real attempt first, so the bootstrap administrator exists. Creating it hashes a
+    # password, which the patch below would refuse, and the test would then measure an
+    # empty account list rather than a busy one.
+    give_password(client, password=WRONG_PASSWORD)
+
+    def busy(*args: object, **kwargs: object) -> bytes:
+        raise accounts.ServiceBusyError("no slot came free")
+
+    monkeypatch.setattr(accounts, "_scrypt", busy)
+    for _ in range(accounts.MAXIMUM_FAILURES + 5):
+        give_password(client)
+
+    monkeypatch.undo()
+    rows = accounts.load(str(app.config["DIRECTIVE_DATA_DIR"]))
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    assert account["failures"] == 1, (
+        "a busy hash spent the lockout budget: only the one real wrong password above "
+        "should have been counted"
+    )
+    assert not accounts.is_locked(account)
+    actions = {entry.action for entry in app.extensions["directive_chain"].entries}
+    assert "ACCOUNT_LOCKED" not in actions
+    assert give_password(client).headers["Location"].endswith("/sign-in/enrol"), (
+        "and the correct password still works once the pressure is off"
+    )
+
+
+# ============================ the account list cannot be read ============================
+
+
+def test_a_corrupt_account_file_refuses_and_records_rather_than_raising(
+    app: Flask, client: FlaskClient
+) -> None:
+    """An unauthenticated route must leave a record even when the volume is unreadable.
+
+    It answered 500 with no audit entry at all, against the refusal path's stated contract.
+    The generic error page leaked nothing, so this is about the missing AUD-001 row: "the
+    volume is corrupt" is a failed authentication and wants one.
+    """
+    # One request first, so the bootstrap administrator exists and there is a file to
+    # corrupt. Without it this would measure the "no accounts yet" path instead.
+    give_password(client, password=WRONG_PASSWORD)
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    stored.write_text("{ this is not json", encoding="utf-8")
+
+    refused = give_password(client)
+
+    assert refused.status_code == 302, "a 500 is not a refusal"
+    assert client.get("/api/registers").status_code == 401
+    actions = [entry.action for entry in app.extensions["directive_chain"].entries]
+    assert "LOGIN_FAILED" in actions, "the refusal must still be recorded"

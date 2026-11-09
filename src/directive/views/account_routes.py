@@ -99,9 +99,20 @@ def password_submit() -> Response:
         account = accounts.find(rows, actor)
         if account is None:
             return _password_error("that account no longer exists")
-        if not accounts.verify_password(str(account.get("password", "")), current):
-            _audit("PASSWORD_CHANGE_FAILED", actor, "FAILURE")
-            return _password_error("the current password did not match")
+        refusal = ""
+        try:
+            matched = accounts.verify_password(str(account.get("password", "")), current)
+        except accounts.ServiceBusyError:
+            # Not a wrong password, so not an audit entry that says one. Same reasoning as
+            # the sign-in route: a capacity event recorded as a credential failure is a
+            # false record in an immutable log.
+            refusal = "the service is busy. Try again in a moment"
+        else:
+            if not matched:
+                _audit("PASSWORD_CHANGE_FAILED", actor, "FAILURE")
+                refusal = "the current password did not match"
+        if refusal:
+            return _password_error(refusal)
         try:
             accounts.set_password(account, proposed)
         except accounts.AccountError as error:
@@ -277,6 +288,21 @@ def _is_last_admin(rows: list[dict[str, object]], account: dict[str, object]) ->
     """Return whether this account is the only enabled administrator left."""
     enabled = accounts.active_admins(rows)
     return len(enabled) <= 1 and any(row is account for row in enabled)
+
+
+@account_bp.errorhandler(accounts.AccountError)
+def _unreadable_account_list(error: accounts.AccountError) -> tuple[str, int]:
+    """Answer 503 rather than 500 when the account list cannot be read.
+
+    A different answer from the sign-in blueprint's, deliberately. There the refusal must
+    write an AUD-001 row and send the caller back to the form; here the caller is already
+    an authenticated administrator, nothing has changed, and the honest answer is that the
+    service cannot serve this request right now. A redirect would be wrong in particular:
+    every error path on this blueprint redirects to `/accounts`, and `/accounts` is one of
+    the routes that cannot be served, so it would loop.
+    """
+    current_app.logger.error("account administration unavailable: %s", error)
+    return "The account list could not be read. An operator should check the volume.", 503
 
 
 def _admin_error(reason: str) -> Response:

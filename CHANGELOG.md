@@ -79,6 +79,45 @@ measured figure in a fourth place is how this project shipped a wrong one three 
   test password was collapsed into one derived from it so the exempt surface stayed at one
   line rather than growing to two.
 
+**What the binding security gate found, and what it changed.** The gate failed this
+release at `0445d61` with four MAJORs. Three of them were in the running application rather
+than in machinery or records, which has not happened since `896ee9f`, and the first was a
+working bypass.
+
+● **A one-time password was not one-time.** Nothing recorded the counter a code was
+  accepted at, so one six-digit code signed in three consecutive fresh clients and the
+  enrolment code was replayed from a second session into a complete sign-in. RFC 6238
+  section 5.2 carries exactly one normative MUST NOT and it is this. `totp.py` claimed to be
+  "held against the specification rather than against its own output" while omitting it: the
+  Appendix B vectors cover the arithmetic and never covered the protocol. The counter now
+  lives on the account as `totp_last_step`, a code must match a counter strictly greater
+  than it, enrolment spends its own confirming code, and an unreadable counter refuses every
+  code rather than accepting every code. Four mutations killed, including the subtler `==`
+  form that would still have allowed a code from earlier in the window.
+● **A busy hash slot was counted as a wrong password.** `verify_password` swallowed the
+  load-shedding case, so ten of them locked the account and wrote an AUD-001
+  `ACCOUNT_LOCKED` entry blaming credentials that were correct. `ServiceBusyError` now has
+  its own class and the two routes that write audit entries catch it first and record
+  nothing. The binding ground is the evidence rule, not the availability one: an immutable
+  log that says somebody got their password wrong when they did not is a record that
+  over-claims in front of an assessor.
+● **The sole administrator could be locked out with no way back.** Ten guesses every
+  fifteen minutes holds any account locked, the unlock route is behind the administrator
+  role, and the recovery `docs/DEPLOYMENT.md` documented restored nothing. `BOOTSTRAP_UNLOCK`
+  is the narrow replacement: set it, restart, sign in, remove it. It clears the lockout and
+  nothing else, and it writes an audit entry with a source address of `boot`, which is the
+  whole reason to prefer it over hand-editing the volume. The denial of service itself is
+  not closed and is recorded as accepted residual, because a per-address limiter belongs at
+  an edge this platform does not provide.
+● **The timing half of the enumeration defence was held by nothing.** Replacing
+  `absorb_timing`'s body with `return` left all 1547 tests green: the test named for it
+  called it and asserted nothing. It now counts hashing calls, which is deterministic where
+  a timing band would flake.
+
+Three MINORs with it: `Cache-Control: no-store` on the two pages that render a plaintext
+secret, a corrupt account file answering 500 with no audit entry on the unauthenticated
+sign-in route, and stale Entra prose in `__init__.py`.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
