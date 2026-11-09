@@ -40,6 +40,7 @@ from flask.testing import FlaskClient
 from werkzeug.test import TestResponse
 
 from directive import accounts, auth, create_app, totp
+from directive.views import auth_routes
 
 SUITE_KEY = bytes(range(32)).hex()
 ADMIN = "ash.higgins@bluestaq.uk"
@@ -1257,3 +1258,92 @@ def test_an_epoch_bump_clears_an_unconfirmed_enrolment_secret(
     after = _stored(app, MEMBER)
     assert not str(after.get("totp_pending") or ""), "the planted secret survived the bump"
     assert not str(after.get("totp_pending_token") or ""), "the token survived the bump"
+
+
+def test_a_second_load_is_never_shown_another_sessions_secret(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The token COMPARISON, which the takeover test above cannot reach.
+
+    That test has the owner arrive with no enrolment token at all, so
+    `pending_secret_for` returns on its empty-token guard before comparing anything. A gate
+    measured the consequence: bypassing the comparison, or making the token a constant,
+    left all 1614 tests green while the attack came back.
+
+    The attack needs a SECOND load. The attacker loads the page once, which puts a token on
+    their session; the owner then loads it, which replaces the account's secret and token;
+    and the attacker loads it again, arriving with a token that is present and wrong. That
+    is the only path on which the comparison decides anything, and it is the path that
+    serves the owner's live secret to the attacker when the comparison is gone.
+
+    Reproduced here before the test was written: with the comparison bypassed the
+    attacker's second load returns the owner's exact secret, and with it in place it does
+    not.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+
+    def shown(client: FlaskClient) -> str:
+        found = re.search(
+            r'class="secret mono">([A-Z2-7]+)<', client.get("/sign-in/enrol").get_data(as_text=True)
+        )
+        assert found is not None, "the enrolment page showed no secret"
+        return found.group(1)
+
+    attacker = app.test_client()
+    _give_first_factor(attacker, MEMBER, PHRASE)
+    shown(attacker)
+
+    owner = app.test_client()
+    _give_first_factor(owner, MEMBER, PHRASE)
+    owners = shown(owner)
+
+    assert shown(attacker) != owners, (
+        "a second load was served the secret another session is about to confirm"
+    )
+
+
+def test_a_completed_enrolment_clears_the_pending_secret_and_its_token(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The clearing is the only thing standing between one enrolment and a second run.
+
+    `enrol_submit` checks `may_sign_in` and the pending gate but never `is_enrolled`, so
+    nothing else refuses a second pass through `finish_enrolment`, which would rotate the
+    recovery codes the person has just been shown. A gate found the clearing held by no
+    test. It is not reachable as an attack, because the token dies with the session that
+    held it, which is why this asserts the state rather than driving a second attempt: a
+    test that drove one would pass on the session check and tell us nothing.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = _sign_in(app, MEMBER, PHRASE)
+
+    assert caller.get("/account/password").status_code == 200, "the enrolment did not complete"
+    after = _stored(app, MEMBER)
+    assert str(after.get("totp_secret") or ""), "no factor was confirmed"
+    assert not str(after.get("totp_pending") or ""), "the unconfirmed secret was left behind"
+    assert not str(after.get("totp_pending_token") or ""), "its token was left behind"
+
+
+def test_no_pre_authentication_key_survives_a_completed_sign_in(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """`sign_in` clears the session first, and its docstring says so. Nothing checked it.
+
+    A gate removed the `session.clear()` and the whole suite stayed green, with
+    `directive_pending`, `directive_pending_since` and `directive_enrolment` all carrying
+    into the signed-in session. No exploit was built from it on its own, which is why the
+    gate graded it a MINOR; the property is still asserted in the code and was asserted by
+    nothing else.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = _sign_in(app, MEMBER, PHRASE)
+
+    with caller.session_transaction() as held:
+        survived = [
+            name
+            for name in (auth.PENDING_KEY, auth.PENDING_SINCE_KEY, auth_routes.ENROLMENT_KEY)
+            if name in held
+        ]
+        assert held.get(auth.ACTOR_KEY) == MEMBER, "the sign-in did not complete"
+
+    assert not survived, f"these outlived the session boundary: {survived}"

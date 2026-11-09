@@ -316,6 +316,41 @@ operations, `KeyError` sat in a catch while the key it protects was read outside
 `epoch_of(None)` was dead fail-closed code that read as a held control and is now excluded
 by the type, and `docs/AUTH-REPLACEMENT-PLAN.md` cites code deleted in V2.5 and now says so.
 
+**The eighth round found the takeover's own fix held by nothing, and the reason is worth
+reading twice.** Bypassing the token comparison, or replacing the random token with a
+constant, left all 1614 tests green while the attack came back. The test written for the
+takeover could not see it: the owner in that test arrives with no token at all, so the
+comparison is never reached, and the empty-token guard above it is what refuses. The attack
+needs a SECOND load by the attacker, after the owner has minted, which is the only path on
+which the comparison decides anything. One test covering that path kills all three mutants
+of the family.
+
+**A claim written in the previous commit is wrong and is corrected here.** That commit said
+`finish_enrolment`'s ownership check is a second layer that cannot be reached, reasoning
+that the enrolment page replaces the secret whenever the token does not match. The request
+token is per session rather than per form, so a POST needs no intervening GET, and the gate
+measured the clause entered with both tokens present and refusing. It remains unexploitable,
+because a stale token means the stored secret has already been replaced and no code path
+changes one without the other, so it is now recorded as reachable and untested rather than
+given a test that would pass on the code mismatch and prove nothing. The correction stands
+in the code; the sentence was never in this file, which is one detail of the gate's report
+that was itself wrong and is not accepted.
+
+Three more things were held by nothing and now are: the clearing of the pending secret at
+confirmation, which is the only guard on a second pass through `finish_enrolment`;
+`session.clear()` in `sign_in`, whose own docstring asserts that no pre-authentication value
+crosses the boundary; and the token's LENGTH, which the route-level test cannot see because
+a one-byte token is still unique. And `reset_factor`'s own call to `clear_pending_enrolment`
+was redundant with the one inside `bump_epoch`, so it was fail-closed code that read as a
+held control and held nothing: the same class as the `epoch_of(None)` branch removed a
+commit earlier, and it is deleted the same way.
+
+**Two residuals are recorded rather than fixed**, both measured: a second party who knows an
+account's password can stop its owner completing a first enrolment by re-loading the page,
+which is strictly weaker than that party simply enrolling first; and `GET /sign-in/enrol`
+writes to the credential store without a request token, which gains a cross-site caller
+nothing because they cannot read the response.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign

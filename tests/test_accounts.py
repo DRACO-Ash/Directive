@@ -510,3 +510,20 @@ def test_a_reset_factor_forces_re_enrolment_and_drops_recovery_codes() -> None:
 
 def test_a_corrupted_factor_secret_refuses_rather_than_raising() -> None:
     assert accounts.verify_code({"totp_secret": "not!base32!"}, "123456") is False
+
+
+def test_two_enrolments_on_one_account_get_different_unguessable_tokens() -> None:
+    """A unique token that is SHORT is still guessable, which the route test cannot see.
+
+    The route-level test refuses a second session the live secret, and a one-byte token
+    would satisfy it while being guessable in a few hundred attempts. So the length is
+    asserted here, at the source, alongside the uniqueness.
+    """
+    account = accounts.new_account("a@b.uk", GOOD)
+
+    _, first = accounts.begin_enrolment(account)
+    _, second = accounts.begin_enrolment(account)
+
+    assert first != second, "two enrolments shared a token"
+    assert len(first) >= 43, f"a {len(first)}-character token is guessable"
+    assert account["totp_pending_token"] == second, "the account holds the latest token"

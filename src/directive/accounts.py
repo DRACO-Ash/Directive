@@ -594,8 +594,17 @@ def begin_enrolment(account: dict[str, Any]) -> tuple[str, str]:
 def pending_secret_for(account: dict[str, Any], token: object) -> str:
     """Return the unconfirmed secret this token owns, or an empty string.
 
-    Constant-time on the token, because it is a bearer value for a secret that is about to
-    become an account's second factor.
+    Compared in constant time, and that is belt and braces here rather than a boundary: the
+    token arrives from a server-signed session the caller cannot write, so there is no
+    oracle to time. The sentence here called it "a bearer value", which overstates the
+    exposure and a gate said so; the comparison stays because the cost is nil and because
+    the day something does hand this a caller-chosen value, the control is already right.
+
+    The COMPARISON, not the guards above it, is what refuses a second session the live
+    secret, and it is reachable only on a second load: a session arriving with no token at
+    all is refused by the empty-token guard without comparing anything. That distinction is
+    why the obvious test of the takeover could not catch a bypass of this line, and it is
+    held now by `test_a_second_load_is_never_shown_another_sessions_secret`.
     """
     held = str(account.get("totp_pending_token") or "")
     secret = str(account.get("totp_pending") or "")
@@ -631,13 +640,21 @@ def finish_enrolment(
     if not pending:
         #: No secret, or a secret this session does not own.
         #:
-        #: **The ownership half here is a SECOND layer and is not independently reachable**,
-        #: which is worth saying rather than leaving for a gate to measure. `enrol_page`
-        #: checks the same token and mints a fresh secret when it does not match, so a
-        #: caller arriving here with a stale token has already had the stored secret
-        #: replaced and cannot produce a code for the new one. No test holds this clause on
-        #: its own for that reason, and it is kept because a route that forgets the first
-        #: check should not be one edit from confirming another session's secret.
+        #: **The ownership half here is a second layer. It IS reachable, and it is held by
+        #: no test, and both halves of that sentence are corrections.** The previous version
+        #: said it could not be reached, reasoning that `enrol_page` replaces the secret on
+        #: a mismatch so a caller could never arrive here with a stale token. That is wrong:
+        #: the request token is per SESSION rather than per form, so a POST needs no
+        #: intervening GET, and a gate measured this clause entered with the stored token
+        #: and the session's token both present and the comparison refusing.
+        #:
+        #: It is nonetheless not exploitable, and therefore not testable: reaching it needs
+        #: a stale token, and a stale token means the stored secret has already been
+        #: replaced by the session that took ownership, so the caller cannot produce a code
+        #: for it. No code path changes the token while leaving the secret. So this is
+        #: recorded as reachable and untested rather than given a test that would pass on
+        #: the code mismatch and prove nothing, which is the failure this release has
+        #: already made twice.
         return None
     try:
         matched = totp.matching_step(pending, code if isinstance(code, str) else "", now=now)
@@ -763,15 +780,20 @@ def bump_epoch(account: dict[str, Any]) -> int:
 def reset_factor(account: dict[str, Any]) -> None:
     """Remove the second factor and its recovery codes, forcing re-enrolment."""
     account["totp_secret"] = CLEARED
-    clear_pending_enrolment(account)
     #: Reset with the secret. A new secret produces unrelated codes, so a counter held
     #: against the old one would refuse perfectly good codes from the new device until the
     #: clock caught up with it, which on a corrupt value means never.
     account["totp_last_step"] = NO_STEP
     account["recovery"] = []
-    #: And every session this account holds stops being honoured. A factor reset is the
+    #: And every session this account holds stops being honoured, AND any unconfirmed
+    #: enrolment secret goes with them, both inside `bump_epoch`. A factor reset is the
     #: recovery path for a lost phone, so the phone is in somebody else's hands: leaving
     #: their open sessions working would make the reset a formality.
+    #:
+    #: This function used to call `clear_pending_enrolment` itself as well. Deleting that
+    #: call changed nothing, which a gate demonstrated, so it was fail-closed code that
+    #: read as a held control and held nothing: the same class as the `epoch_of(None)`
+    #: branch removed one commit earlier. One caller, named here.
     bump_epoch(account)
     account["updated"] = _now_text()
 
