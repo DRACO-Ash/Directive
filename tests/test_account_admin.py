@@ -936,3 +936,157 @@ def test_a_deleted_account_row_ends_the_session(
 
     assert second_admin.get("/api/registers").status_code == 401
     assert second_admin.get("/console").status_code == 302
+
+
+def test_a_sign_in_after_a_bump_carries_the_live_epoch(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The line that copies the stored epoch onto a NEW session, held at last.
+
+    Nothing in the suite signed a client in after that account's epoch had moved, so
+    replacing `session[EPOCH_KEY] = epoch` with `= 0` left the whole suite green. The
+    direction was fail-closed, which is why nobody noticed: it silently locks out everybody
+    who has ever changed their password. A gate measured the survival.
+    """
+    # A factor reset rather than a password change, because it bumps the epoch AND clears
+    # the second factor, so the fresh sign-in below enrols a new one instead of needing a
+    # code at a step the first enrolment already spent.
+    _post(admin, f"/accounts/{MEMBER}/reset-factor")
+    assert accounts.epoch_of(_stored(app, MEMBER)) == 1
+
+    fresh = _sign_in(app, MEMBER, PHRASE)
+
+    assert fresh.get("/api/registers").status_code == 200, "a fresh sign-in was locked out"
+    with fresh.session_transaction() as held:
+        assert held[auth.EPOCH_KEY] == 1, "the session did not take the live epoch"
+
+
+def test_a_non_integer_session_epoch_is_refused_against_a_fresh_account(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The fail-closed `-1` in `_session_epoch`, which the other epoch test cannot reach.
+
+    That test moves the account to epoch 1 first, so five of its six planted values are
+    refused by `1 != anything` rather than by this guard. An account still at epoch 0,
+    which every account is until its first password change, is the case where returning `0`
+    instead of `-1` grants: a cookie minted before the field existed carries nothing, and
+    nothing would match zero. A gate measured that mutant surviving the whole suite.
+    """
+    assert accounts.epoch_of(_stored(app, MEMBER)) == 0, "the account must still be at 0"
+    with second_admin.session_transaction() as held:
+        good = dict(held)
+
+    for planted in (None, "0", [0], {}):
+        with second_admin.session_transaction() as held:
+            held.clear()
+            held.update(good)
+            if planted is None:
+                held.pop(auth.EPOCH_KEY, None)
+            else:
+                held[auth.EPOCH_KEY] = planted
+        assert second_admin.get("/api/registers").status_code == 401, f"{planted!r} was honoured"
+
+
+def test_an_unreadable_stored_epoch_refuses_every_session_and_every_sign_in(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """Both halves, because closing one of them is what the docstring used to over-claim.
+
+    `epoch_of` returning zero on a corrupt value was green across the whole suite, and its
+    own docstring warns against exactly that: it would turn one corrupt field into a session
+    that cannot be evicted. And a FRESH sign-in copied the sentinel and matched it, so the
+    corruption evicted every old session and minted one it could not touch.
+    """
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, MEMBER)
+    assert account is not None
+    account["session_epoch"] = "corrupt"
+    accounts.save(data_dir, rows)
+
+    assert accounts.epoch_of(_stored(app, MEMBER)) == accounts.FAR_FUTURE_STEP
+    assert second_admin.get("/api/registers").status_code == 401, "an old session survived"
+    refused = _give_first_factor(app.test_client(), MEMBER, PHRASE)
+    assert refused.status_code == 302
+    assert "/sign-in" in refused.headers["Location"], "a fresh sign-in was minted"
+
+
+def test_a_missing_account_file_is_a_fault_not_a_revocation(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """A lost mount is the likeliest volume fault, and it must not sign everybody out.
+
+    This is the sibling of the unreadable-list case one trigger over: `load` returns an
+    empty list for an absent file, `find` returns nothing, and that read as a revocation,
+    so deleting the file, making one request and restoring it byte for byte signed everybody
+    out for good. `load` already distinguishes the two; `live_standing` does now as well.
+    """
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    kept = stored.read_bytes()
+    stored.unlink()
+
+    assert second_admin.get("/api/registers").status_code == 401, "refused during the fault"
+    stored.write_bytes(kept)
+
+    assert second_admin.get("/api/registers").status_code == 200, (
+        "a missing file signed the session out for good"
+    )
+
+
+def test_a_disabled_account_stays_evicted_after_being_re_enabled(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """Disabling must be durable, not a pause.
+
+    `may_sign_in` refuses a session while the state is DISABLED, so a cookie presented
+    during that window is refused; a cookie that simply waits was honoured again on
+    re-enablement. A gate measured it. The epoch bump on the transition makes the
+    disablement outlive the state change.
+    """
+    taken = app.test_client()
+    taken.set_cookie("directive_session", _session_cookie(second_admin))
+    assert taken.get("/api/registers").status_code == 200
+
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.ACTIVE)
+
+    assert taken.get("/api/registers").status_code == 401, "the cookie outlived a disablement"
+
+
+def test_a_revoked_session_cannot_read_the_diagnostics_credential_map(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The last authenticated response still deciding from the cookie.
+
+    A disabled account's cookie read `dataDir`, `auditLog` and the whole credential-presence
+    map while every other route answered 401 for it. No value is disclosed and the field set
+    is a declared residual, and it is still the one place that contradicted "the stored
+    account is the authority on every authenticated request".
+    """
+    assert "inputs" in second_admin.get("/api/diagnostics").get_json()
+
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    body = second_admin.get("/api/diagnostics").get_json()
+    assert "inputs" not in body
+    assert "dataDir" not in body
+    assert "auditLog" not in body
+    assert body["version"], "the operational half must still answer"
+
+
+def test_the_diagnostics_map_survives_an_unreadable_account_list(
+    app: Flask, admin: FlaskClient, second_admin: FlaskClient
+) -> None:
+    """The fault case keeps the read-out.
+
+    Withholding it on a fault would close the recovery channel during the one incident that
+    needs it, so the gate is on REVOKED rather than on GRANTED.
+    """
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    kept = stored.read_bytes()
+    stored.write_text("{ this is not json", encoding="utf-8")
+
+    body = second_admin.get("/api/diagnostics").get_json()
+    stored.write_bytes(kept)
+
+    assert "inputs" in body, "the recovery channel closed during the fault it diagnoses"

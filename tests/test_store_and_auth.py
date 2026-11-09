@@ -306,22 +306,6 @@ def test_the_development_banner_is_shown_exactly_when_identities_are_self_assert
 
 
 @pytest.mark.parametrize(
-    ("expected", "received", "matches"),
-    [
-        ("abc", "abc", True),
-        ("abc", "abd", False),
-        ("", "abc", False),
-        ("abc", None, False),
-        (None, None, False),
-    ],
-)
-def test_a_secret_comparison_is_constant_time_and_fails_closed(
-    expected: str | None, received: str | None, matches: bool
-) -> None:
-    assert auth.constant_time_equal(expected, received) is matches
-
-
-@pytest.mark.parametrize(
     ("target", "lands_on"),
     [
         ("/console", "/console"),
@@ -352,9 +336,9 @@ def test_the_audit_actor_is_marked_when_self_asserted(
     monkeypatch.setenv("AUDIT_HMAC_KEY", SUITE_KEY)
     app: Flask = create_app()
     with app.test_request_context("/"):
-        auth.sign_in("ash.higgins@bluestaq.uk", verified=False)
+        auth.sign_in("ash.higgins@bluestaq.uk", verified=False, epoch=0)
         assert auth.audit_actor().endswith(auth.SELF_ASSERTED_SUFFIX)
-        auth.sign_in("ash.higgins@bluestaq.uk", verified=True)
+        auth.sign_in("ash.higgins@bluestaq.uk", verified=True, epoch=0)
         assert auth.audit_actor() == "ash.higgins@bluestaq.uk"
 
 

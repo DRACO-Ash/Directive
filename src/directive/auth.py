@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import enum
 import functools
-import hmac
 import logging
 import secrets
 import time
@@ -178,8 +177,13 @@ def audit_actor() -> str:
     return actor if actor_is_verified() else f"{actor}{SELF_ASSERTED_SUFFIX}"
 
 
-def sign_in(actor: str, *, verified: bool, role: str = accounts.MEMBER, epoch: int = 0) -> None:
+def sign_in(actor: str, *, verified: bool, epoch: int, role: str = accounts.MEMBER) -> None:
     """Record a fully signed-in actor on the session.
+
+    `epoch` has no default, deliberately. It had one of `0`, which is the epoch every
+    never-bumped account holds, so a future call site that forgot it would GRANT rather than
+    refuse. A security parameter whose default is the permissive value is a trap with a type
+    annotation on it.
 
     `session.clear()` first, so a pending marker from the first half cannot survive into the
     signed-in session and so no value set before authentication is carried across it.
@@ -192,14 +196,24 @@ def sign_in(actor: str, *, verified: bool, role: str = accounts.MEMBER, epoch: i
     session.permanent = True
 
 
-def begin_second_factor(username: str) -> None:
+def begin_second_factor(username: str, *, epoch: int) -> None:
     """Record that a password was accepted and a second factor is awaited.
 
     This grants nothing. It names who is halfway through, and when, so the wait can expire.
+
+    The epoch rides along for the same reason it rides on a full session, and the hole it
+    closes was measured end to end. An attacker who knew the OLD password started a sign-in
+    and held the pending marker; the owner then changed their password, which refused that
+    old password at the first factor from then on and bumped the epoch; and the attacker
+    posted a one-time code against the marker they already held and got a complete session.
+    "Change your password" has to mean the half-finished sign-ins too, or it means less
+    than the documents say. The window is `PENDING_SECONDS` and the attacker still needs the
+    second factor, which is why this was a MINOR and not worse.
     """
     session.clear()
     session[PENDING_KEY] = username
     session[PENDING_SINCE_KEY] = time.time()
+    session[EPOCH_KEY] = epoch
     session.permanent = False
 
 
@@ -217,6 +231,16 @@ def pending_actor(*, now: float | None = None) -> str | None:
     if age < 0 or age > PENDING_SECONDS:
         return None
     return username
+
+
+def pending_epoch_matches(account: dict[str, Any] | None) -> bool:
+    """Return whether the pending sign-in predates no change to this account.
+
+    Compared where the second factor is accepted, not where the marker is read, because a
+    marker that has merely gone stale should refuse THIS attempt rather than look like a
+    corrupt session elsewhere.
+    """
+    return accounts.epoch_of(account) == _session_epoch()
 
 
 def abandon_second_factor() -> None:
@@ -300,17 +324,24 @@ def live_standing() -> tuple[Standing, str]:
         #: Development has no account list to consult, so there is nothing to revoke
         #: against and nothing that can be unreadable.
         return Standing.GRANTED, current_role()
+    data_dir = str(current_app.config["DIRECTIVE_DATA_DIR"])
     try:
-        rows = accounts.load(str(current_app.config["DIRECTIVE_DATA_DIR"]))
+        rows = accounts.load(data_dir)
         account = accounts.find(rows, actor)
     except (accounts.AccountError, KeyError, OSError):
         return Standing.UNKNOWN, accounts.MEMBER
-    if not accounts.may_sign_in(account):
-        return Standing.REVOKED, accounts.MEMBER
-    if accounts.epoch_of(account) != _session_epoch():
-        #: A password change or a factor reset since this session began. Revoked rather
-        #: than unknown: somebody decided it, even if that somebody was the account's own
-        #: owner evicting whoever had taken their session.
+    if account is None and not accounts.file_present(data_dir):
+        #: The actor is absent because the LIST is absent, which is a fault rather than a
+        #: decision: a lost mount is the likeliest one. Classifying it as a revocation
+        #: cleared every cookie, so deleting the file, making one request and restoring it
+        #: byte for byte signed everybody out for good. That is the previous round's finding
+        #: one trigger over, and `load` already distinguishes the two cases.
+        return Standing.UNKNOWN, accounts.MEMBER
+    #: Two revocations in one exit, to stay inside the analyser's return-statement cap. The
+    #: second is an epoch that has moved since this session began, meaning a password change
+    #: or a factor reset: revoked rather than unknown, because somebody decided it, even if
+    #: that somebody was the account's own owner evicting whoever had taken their session.
+    if not accounts.may_sign_in(account) or accounts.epoch_of(account) != _session_epoch():
         return Standing.REVOKED, accounts.MEMBER
     role = str(account.get("role", accounts.MEMBER))
     return Standing.GRANTED, role if role in accounts.ROLES else accounts.MEMBER
@@ -446,20 +477,6 @@ def development_banner() -> str | None:
     )
 
 
-def constant_time_equal(expected: str | None, received: str | None) -> bool:
-    """Compare two strings in constant time, failing closed on either missing.
-
-    Non-ASCII fails closed rather than raising: `compare_digest` raises TypeError on a
-    non-ASCII str, and this runs on unauthenticated routes, so an unhandled 500 would also
-    skip the LOGIN_FAILED entry the refusal path writes.
-    """
-    if not expected or not received:
-        return False
-    if not expected.isascii() or not received.isascii():
-        return False
-    return hmac.compare_digest(expected, received)
-
-
 def redirect_after_sign_in(target: str | None) -> Response:
     """Return a redirect to ``target`` when it is a safe local path, else to the console.
 
@@ -485,11 +502,6 @@ def redirect_after_sign_in(target: str | None) -> Response:
 
 
 # ---------------------------------------------------------------- the account list
-
-
-def bootstrap_configured() -> bool:
-    """Return whether a first administrator can be created from the environment."""
-    return bool(config.env("BOOTSTRAP_ADMIN") and config.env("BOOTSTRAP_ADMIN_PASSWORD"))
 
 
 def ensure_bootstrap(data_dir: str) -> bool:
@@ -587,30 +599,18 @@ def break_glass_unlock(data_dir: str) -> bool:
     return True
 
 
-def describe(data_dir: str | None = None) -> dict[str, object]:
-    """Return the authentication posture, for the diagnostics read-out.
-
-    Counts, never names. The number of accounts tells an operator whether a deployment is
-    usable; the list of who they are is not something an unauthenticated caller needs, and
-    `/api/diagnostics` splits exactly on that line.
-    """
-    posture: dict[str, object] = {
-        "mode": "local-accounts" if local_accounts_only() else "self-asserted",
-        "production": is_production(),
-        "actorVerified": actor_is_verified() if current_actor() else False,
-        "bootstrapConfigured": bootstrap_configured(),
-    }
-    if data_dir:
-        try:
-            rows = accounts.load(data_dir)
-        except accounts.AccountError:
-            posture["accounts"] = "unreadable"
-            posture["administrators"] = "unreadable"
-        else:
-            posture["accounts"] = len(rows)
-            posture["administrators"] = len(accounts.active_admins(rows))
-    return posture
-
+#: Three functions were removed here when the identity provider went, and the removal is
+#: recorded rather than silent because each had a test or a docstring describing a role it
+#: did not have. `constant_time_equal` compared the Entra sign-in state and had no caller in
+#: `src/` afterwards, while `tests/test_constant_time.py` pinned it as "a secret on an
+#: unauthenticated route" that no route passed through. `describe` said it fed the
+#: diagnostics read-out; `views/health.py` builds its own report and never called it.
+#: `bootstrap_configured` was called only by `describe`. A security gate found all three.
+#:
+#: Deleted rather than wired in. Wiring `describe` into `/api/diagnostics` would have added
+#: account and administrator counts to a shipped response that three records describe, which
+#: is a disclosure decision rather than a tidy-up, and it is not one this round is for. If an
+#: operator who cannot sign in turns out to need those counts, add them deliberately.
 
 #: The flight plan's figure: an eight-hour idle timeout on a signed-in session.
 SESSION_LIFETIME = timedelta(hours=8)

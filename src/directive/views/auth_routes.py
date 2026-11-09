@@ -9,6 +9,8 @@ an accident to be minimised away.
 
 from __future__ import annotations
 
+from typing import Any
+
 from flask import (
     Blueprint,
     current_app,
@@ -235,8 +237,9 @@ def sign_in_submit() -> Response:
             # different things in the log, which is what matters.
             return _refuse(refusal)
         enrolled = accounts.is_enrolled(account)
+        epoch = accounts.epoch_of(account)
 
-    auth.begin_second_factor(username)
+    auth.begin_second_factor(username, epoch=epoch)
     session[NEXT_KEY] = request.form.get("next", "")[:MAXIMUM_NEXT_LENGTH]
     return redirect(url_for("auth.enrol_page" if not enrolled else "auth.verify_page"))
 
@@ -256,11 +259,42 @@ def _self_asserted_sign_in() -> Response:
         # caller chose. `_refuse` below already does this.
         return _refuse("the submitted actor is empty or over the length cap")
 
-    auth.sign_in(actor, verified=False)
+    # Epoch zero, because there is no account record to take one from: the self-asserted
+    # path exists so the console can be driven without a credential store, and
+    # `live_standing` exempts development from the live check entirely, so nothing compares
+    # it. Passed explicitly rather than defaulted, because the parameter has no default.
+    auth.sign_in(actor, verified=False, epoch=0)
     if not record_event("LOGIN", auth.audit_actor(), "SUCCESS"):
         auth.sign_out()
         return _refuse("the actor could not be recorded on an audit entry")
     return auth.redirect_after_sign_in(request.form.get("next"))
+
+
+def _pending_refusal(account: dict[str, Any], username: str) -> str:
+    """Return why this half-finished sign-in may not complete, or an empty string.
+
+    One helper for both second-factor routes, because the conditions are the same at each
+    and a check written twice is a check that diverges. It also keeps each route inside the
+    analyser's return-statement cap.
+
+    `may_sign_in` stays at the call sites rather than moving in here, and that is not an
+    oversight: it is a `TypeGuard`, so calling it inline is what narrows `account` from
+    `dict | None` for the rest of the handler. Wrapping it would hand the narrowing back and
+    put a `cast` or an `assert` in its place, and this module has just removed three such
+    asserts for being removable under `-O`.
+    """
+    if not auth.pending_epoch_matches(account):
+        # The password or the second factor changed after this sign-in started. An attacker
+        # holding the old password got the marker, the owner then changed the password, and
+        # the marker still completed: a gate drove that end to end.
+        return f"the sign-in for {username!r} began before a credential change"
+    if accounts.epoch_of(account) >= accounts.FAR_FUTURE_STEP:
+        # An unreadable `session_epoch` on the stored record. Refuse rather than mint a
+        # session carrying the sentinel: `epoch_of` fails closed for the sessions that
+        # already existed, and a fresh sign-in would otherwise match it and be the one
+        # session a corrupt field could not evict. An administrator fixes the record.
+        return f"the stored session epoch for {username!r} is unreadable"
+    return ""
 
 
 @auth_bp.get("/sign-in/verify")
@@ -287,6 +321,10 @@ def verify_submit() -> Response:
         if not accounts.may_sign_in(account):
             auth.abandon_second_factor()
             return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
+        blocked = _pending_refusal(account, username)
+        if blocked:
+            auth.abandon_second_factor()
+            return _refuse(blocked)
 
         used_recovery = False
         if accounts.verify_code(account, supplied):
@@ -422,6 +460,10 @@ def enrol_submit() -> Response:
         if not accounts.may_sign_in(account):
             auth.abandon_second_factor()
             return _refuse(f"{username!r} cannot sign in: absent, disabled or locked")
+        blocked = _pending_refusal(account, username)
+        if blocked:
+            auth.abandon_second_factor()
+            return _refuse(blocked)
         codes = accounts.finish_enrolment(account, request.form.get("code"))
         if codes is None:
             return _refuse(f"the enrolment code for {username!r} did not match")
@@ -469,7 +511,7 @@ def _never_stored(body: str) -> Response:
 
 @auth_bp.errorhandler(accounts.AccountError)
 def _unreadable_account_list(error: accounts.AccountError) -> Response:
-    """Turn an unreadable account file into a recorded refusal, never a 500.
+    """Turn an account list this process cannot READ into a recorded refusal, never a 500.
 
     Every route on this blueprint is unauthenticated by necessity and every one of them
     reads the account list. With the file corrupt, `accounts.load` raised out of the view
@@ -482,6 +524,14 @@ def _unreadable_account_list(error: accounts.AccountError) -> Response:
     Registered as a handler rather than wrapped around each of the four reads, because a
     `try` per call site is four places to forget and this is one. `ServiceBusyError` is a
     subclass and is caught explicitly upstream, so it never reaches here.
+
+    **The reach of this handler depends on `accounts.load` converting EVERY operating-system
+    error, and for one round it did not.** `Path.exists` sat outside that function's `try`,
+    and it swallows only a handful of errno values, so EACCES from a restricted mount came
+    through as a bare `OSError`, missed this handler, and answered 500 with no audit entry:
+    the opposite of what the paragraph above claims, measured by a gate. The class had been
+    narrowed to the unparseable-JSON trigger rather than closed. Fixed in `accounts.load`
+    rather than here, because a handler can only catch what the layer below it raises.
     """
     current_app.logger.error("sign-in refused: the account list could not be read: %s", error)
     return _refuse("the account list could not be read")

@@ -238,6 +238,47 @@ second-factor routes not to check `may_sign_in`, so an account disabled between 
 factor and the second was still shown a fresh secret and still wrote a pending one to its
 row in the credential store.
 
+**The sixth round failed on the same class twice over: a control narrowed rather than
+closed, and three epoch mutations nothing caught.**
+
+`accounts.load` called `Path.exists` outside its own `try`. `pathlib` swallows only a
+handful of errno values, so a restricted or differently-owned mount came through as a bare
+`OSError`, missed both blueprint error handlers, and answered `POST /sign-in` with 500 and
+no audit entry. The handler exists to prevent exactly that and its docstring said it did;
+the class had been narrowed to the unparseable-JSON trigger. Every operating-system error
+is an `AccountError` now, the existence check included, and the realistic trigger is named:
+a container running as `10001:10001` against a mount it cannot read.
+
+Three mutations on the epoch path survived the whole suite, two permissive. `epoch_of`
+returning zero on a corrupt value is the behaviour its own docstring warns against by name.
+`_session_epoch` returning zero instead of the fail-closed `-1` is the guard that refuses a
+cookie minted before the field existed, against any account still at epoch zero, which every
+account is until its first password change. And the line copying the live epoch onto a new
+session was held by nothing, because no test signed a client in after that account's epoch
+had moved. Three tests now, one per guard, each mutation-proved.
+
+Seven MINORs, every one acted on rather than filed. A missing account file read as a
+revocation and cleared every cookie, which is the sibling trigger of the fault case closed
+the round before. `epoch_of`'s docstring claimed an unreadable epoch returns a value no
+session can be carrying, while a fresh sign-in was handed exactly that value; a sign-in
+whose stored epoch is unreadable is refused now. A password change did not invalidate an
+outstanding half-finished sign-in, which a gate drove from the old password to a complete
+session; the marker carries the epoch too. `/api/diagnostics` was the last authenticated
+response still deciding from the session cookie, so a revoked account still read the
+credential-presence map; it gates on standing now, and deliberately still answers a session
+whose account list cannot be read, because that is the fault the read-out exists to
+diagnose. A cookie idle across a disable and a later re-enable was honoured again. And
+`sign_in`'s `epoch` parameter defaulted to zero, the permissive value, which is a trap with
+a type annotation on it.
+
+**Three Entra leftovers are deleted rather than left to look like controls.**
+`constant_time_equal` compared the sign-in state and had no caller in `src/` after that
+provider went, while a test pinned it as "a secret on an unauthenticated route" that no
+route passed through: a pin naming a function nothing calls cannot fail. `describe` said it
+fed the diagnostics read-out, which builds its own report and never called it.
+`bootstrap_configured` was called only by `describe`. Deleted rather than wired in, because
+adding account counts to a shipped response is a disclosure decision and not a tidy-up.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign

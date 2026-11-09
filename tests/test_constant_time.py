@@ -6,7 +6,6 @@ that one call site and the class was never swept. A security gate then replaced
 `hmac.compare_digest` with `==` at four OTHER sites and all 845 tests stayed green:
 
     csrf.valid            the cross-site request forgery token
-    auth.constant_time_equal  a secret compared on an unauthenticated route
     anchor._marker_is_valid   the first-use marker's tag
     anchor._validate      the anchor MAC, which CLAUDE.md calls the truncation detector
 
@@ -39,7 +38,10 @@ ROOT = Path(__file__).resolve().parents[1]
 #: asks and the answer is never in the function name.
 MUST_BE_CONSTANT_TIME = [
     ("src/directive/csrf.py", "valid"),  # the cross-site request forgery token
-    ("src/directive/auth.py", "constant_time_equal"),  # a secret on an unauthenticated route
+    #: `auth.constant_time_equal` stood here and is gone with the code. It compared the
+    #: Entra sign-in state, had no caller in `src/` after that provider went, and this line
+    #: described it as "a secret on an unauthenticated route" when no route passed a secret
+    #: through it. A pin naming a function nothing calls is a pin that cannot fail.
     ("src/directive/audit/hashing.py", "hashes_equal"),  # an entry's keyed digest
     ("src/directive/audit/anchor.py", "_marker_is_valid"),  # the first-use marker's tag
     ("src/directive/audit/anchor.py", "_validate"),  # the anchor MAC, the truncation detector

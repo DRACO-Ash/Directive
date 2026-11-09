@@ -221,6 +221,12 @@ def set_state(username: str) -> Response:
             accounts.set_state(account, wanted)
         except accounts.AccountError as error:
             return _admin_error(str(error))
+        if wanted == accounts.DISABLED:
+            #: End the account's sessions durably, not only until it is re-enabled.
+            #: `may_sign_in` already refuses them while the state is DISABLED, but a cookie
+            #: idle across a disable and a later re-enable was honoured again, which a gate
+            #: measured. Bumping the epoch makes the disablement outlive the state change.
+            accounts.bump_epoch(account)
         accounts.save(_data_dir(), rows)
         subject = str(account["username"])
 

@@ -369,17 +369,43 @@ def accounts_path(data_dir: str) -> Path:
     return Path(data_dir) / ACCOUNTS_DIRNAME / ACCOUNTS_FILENAME
 
 
+def file_present(data_dir: str) -> bool:
+    """Return whether an account file is THERE, as distinct from readable or parseable.
+
+    A caller that cannot find an actor needs to know which of two things happened: the
+    account was removed from a list it can read, or the list itself is not available. The
+    first is a revocation and the second is a fault, and `auth.live_standing` answers them
+    differently. An error reading the directory answers False here and is resolved by the
+    load that follows, which raises.
+    """
+    try:
+        return accounts_path(data_dir).exists()
+    except OSError:
+        return False
+
+
 def load(data_dir: str) -> list[dict[str, Any]]:
     """Return every account. An absent file is an empty list, not an error.
 
     A file that exists and cannot be parsed IS an error, and a loud one. An unreadable
     account list must never read as "no accounts", because the bootstrap path below creates
     an administrator when the list is empty.
+
+    **Every operating-system error is an `AccountError`, the existence check included.**
+    `Path.exists` swallows only a handful of errno values, ENOENT and ENOTDIR among them,
+    and lets EACCES, EIO, ESTALE and ENAMETOOLONG through as a bare `OSError`. That is not
+    an `AccountError`, so it missed both blueprint error handlers and a security gate
+    measured `POST /sign-in` answering 500 with NO audit entry against an accounts directory
+    at mode 0000, which is exactly what `_unreadable_account_list` exists to prevent and
+    what its docstring claimed it did. The class had been narrowed to the unparseable-JSON
+    trigger rather than closed. The realistic production trigger is a restricted or
+    differently-owned mount against a container running as `10001:10001`, which
+    `config.validate_data_dir` already names as expected.
     """
     target = accounts_path(data_dir)
-    if not target.exists():
-        return []
     try:
+        if not target.exists():
+            return []
         loaded = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError) as error:
         raise AccountError(f"the account list could not be read: {error}") from error
@@ -632,9 +658,15 @@ def last_step(account: dict[str, Any]) -> int:
 def epoch_of(account: dict[str, Any] | None) -> int:
     """Return the account's session epoch, failing CLOSED on an unreadable value.
 
-    An unreadable epoch returns a value no session can be carrying, so every session for
-    that account is refused until somebody looks at the record. Reading it as zero would
+    An unreadable epoch returns a value far beyond any the application writes, so every
+    session that EXISTED when the field was corrupted is refused. Reading it as zero would
     turn one corrupt field into a session that cannot be evicted.
+
+    Be exact about the scope, because the sentence here said "a value no session can be
+    carrying" and a gate showed a fresh sign-in being handed exactly that value: a sign-in
+    reads the stored epoch and copies it, so a new session matches a corrupt one. That is
+    closed at the sign-in routes rather than here, by refusing to complete a sign-in whose
+    stored epoch is unreadable; this function stays a pure reader and a verdict.
     """
     if account is None:
         return FAR_FUTURE_STEP

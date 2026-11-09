@@ -743,3 +743,82 @@ def test_the_enrolment_page_refuses_an_account_disabled_mid_sign_in(
     assert not str(after.get("totp_pending") or ""), (
         "a revoked caller wrote a pending secret to the credential store"
     )
+
+
+def test_a_password_change_invalidates_an_outstanding_half_finished_sign_in(
+    app: Flask, client: FlaskClient, clock: _MovableClock
+) -> None:
+    """A password change has to reach the half-finished sign-ins too.
+
+    Driven end to end by a gate before it was closed: an attacker who knew the OLD password
+    started a sign-in and held the pending marker; the owner then changed their password,
+    which refused that old password at the first factor from then on; and the attacker
+    posted a fresh one-time code against the marker they already held and got a complete
+    session. The attacker needs the second factor as well and the window is
+    `PENDING_SECONDS`, which bounds it, and the documents say a password change ends every
+    session, so the marker had to be included.
+    """
+    secret, _ = sign_in_fully(client)
+    _settle(client)
+    clock.advance(totp.STEP_SECONDS * 4)
+
+    # The attacker's half-finished sign-in, started with the password as it stands.
+    attacker = app.test_client()
+    give_password(attacker, password=SETTLED_PASSWORD)
+    assert attacker.get("/sign-in/verify").status_code == 200, "the marker was not issued"
+
+    # The owner changes it, from their own still-live session.
+    changed = f"{SETTLED_PASSWORD}-again"
+    client.post(
+        "/account/password",
+        data={
+            "current": SETTLED_PASSWORD,
+            "password": changed,
+            "confirm": changed,
+            "csrf_token": form_token(client, "/account/password"),
+        },
+    )
+
+    clock.advance(totp.STEP_SECONDS * 4)
+    completed = attacker.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(attacker, "/sign-in/verify")},
+    )
+
+    assert attacker.get("/api/registers").status_code == 401, "the stale marker completed"
+    assert completed.status_code == 302
+    assert client.get("/api/registers").status_code == 200, "and the owner stayed signed in"
+
+
+def test_an_unreadable_accounts_directory_is_a_refusal_not_a_500(
+    app: Flask, client: FlaskClient
+) -> None:
+    """Every operating-system error is an `AccountError`, the existence check included.
+
+    `Path.exists` swallows only a handful of errno values and lets EACCES, EIO, ESTALE and
+    ENAMETOOLONG through as a bare `OSError`, which is not an `AccountError` and so missed
+    both blueprint error handlers: a gate measured `POST /sign-in` answering 500 with no
+    audit entry against an accounts directory at mode 0000. The class had been narrowed to
+    the unparseable-JSON trigger rather than closed, and the realistic production trigger is
+    a restricted or differently-owned mount against a container running as `10001:10001`.
+
+    The failure is injected at `Path.exists` rather than by changing a mode, because the
+    suite runs as root and root is not denied by a mode.
+    """
+    give_password(client, password=WRONG_PASSWORD)
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+    real = Path.exists
+
+    def denied(self: Path, *args: object, **kwargs: object) -> bool:
+        if self == stored:
+            raise PermissionError(13, "Permission denied")
+        return bool(real(self, *args, **kwargs))
+
+    before = len(app.extensions["directive_chain"].entries)
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Path, "exists", denied)
+        refused = give_password(client)
+
+    assert refused.status_code == 302, "a 500 is not a refusal"
+    actions = [entry.action for entry in app.extensions["directive_chain"].entries[before:]]
+    assert "LOGIN_FAILED" in actions, "the refusal left no AUD-001 record"

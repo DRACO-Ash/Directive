@@ -32,8 +32,10 @@ from ..version import __version__
 PROBE_TIMEOUT_SECONDS = 3.0
 
 #: How long a storage verdict is reused by the diagnostics read-out. Readiness always
-#: probes live; diagnostics is unauthenticated in this release, so it must not perform a
-#: real filesystem write on every request.
+#: probes live; the operational half of diagnostics answers an unauthenticated caller, so
+#: it must not perform a real filesystem write on every request. (The sentence here used to
+#: say the route was unauthenticated outright, which has been false since V2.1 split it:
+#: the credential-presence half is behind the authorisation check ten lines below.)
 DIAGNOSTICS_CACHE_SECONDS = 10.0
 
 #: The environment variables the app cannot serve without. Reported as a boolean and a
@@ -370,7 +372,18 @@ def diagnostics() -> Response:
         "logViewEvents": settings.log_view_events,
         "authenticated": auth.current_actor() is not None,
     }
-    if auth.current_actor() is not None:
+    #: `Standing`, not the cookie, and NOT `GRANTED` alone. This was the last authenticated
+    #: response still deciding from the session cookie, so a disabled account and an
+    #: epoch-evicted one both still read the credential-presence map while every other
+    #: route answered 401 for the same cookie. A gate measured it.
+    #:
+    #: `UNKNOWN` is deliberately included. It means the account list could not be read,
+    #: which is precisely the fault this read-out exists to diagnose: gating on `GRANTED`
+    #: alone would close the recovery channel during the only incident that needs it. The
+    #: caller still holds a session this application issued, and the block carries booleans,
+    #: length bands and a path, never a value.
+    standing, _ = auth.live_standing()
+    if standing is not auth.Standing.REVOKED:
         report["dataDir"] = verdict.path
         report["auditLog"] = _audit_line()
         report["inputs"] = {name: input_report(name) for name in CRITICAL_INPUTS}
