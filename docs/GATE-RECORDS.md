@@ -309,7 +309,7 @@ that no sweep mistakes them for a live measurement.
 **What it does not, and why each is left open.**
 
 ● `NAME = value` with spaces around the equals. Measured rather than assumed: allowing them
-  gives 32 findings on 32 lines across every tracked file, so the rule would fire on
+  gives 33 findings on 33 lines across every tracked file, so the rule would fire on
   every build and be switched off within a week. The experiment is to replace `=`
   with `[ \t]*=[ \t]*` in that rule alone and scan every tracked file. The cost of closing
   it is a rule nobody keeps.
