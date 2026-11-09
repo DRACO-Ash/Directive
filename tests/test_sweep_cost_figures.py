@@ -40,9 +40,9 @@ ROOT = Path(__file__).resolve().parents[1]
 #: compares against this dict on every run. The provenance IS the run.
 EXPECTED = {
     "prose rule folded to ignore case": (27, 19),
-    "unquoted rule with spaces around the equals": (29, 29),
+    "unquoted rule with spaces around the equals": (30, 30),
     "unquoted rule with the leading part of the name optional": (14, 14),
-    "quoted rule with bare key and keys in its keyword group": (9, 9),
+    "quoted rule with bare key and keys in its keyword group": (10, 10),
 }
 
 #: The part of the third figure that names WHICH findings, because "9 in `src/`" was once
@@ -69,7 +69,7 @@ EXPECTED_SONAR_IN_PROJECT = 1
 #: finds; one of those is the declared test double the shipped rules already report, so six
 #: is what adding the keywords would cost that is not already paid. The two numbers say
 #: different things and recording only the total would read as six new findings too many.
-EXPECTED_BEYOND_THE_DOUBLE = 8
+EXPECTED_BEYOND_THE_DOUBLE = 9
 
 #: What the rules as they SHIP cost on this tree. One, and it is the declared test double
 #: the exemption ledger pins by path, digest and match count. It was written as the word
@@ -1136,7 +1136,7 @@ def _is_prose_comment(line: str) -> bool:
     [
         pytest.param(
             ".md",
-            "● A bullet. 8 beyond the declared double, in `auth.py`.\n\n"
+            "● A bullet. 9 beyond the declared double, in `auth.py`.\n\n"
             "  A continuation one blank line below.\n"
             "## A heading\n"
             "  Text under the heading.\n",
@@ -1146,21 +1146,21 @@ def _is_prose_comment(line: str) -> bool:
         ),
         pytest.param(
             ".md",
-            "● A bullet. 8 beyond the declared double, in `auth.py`.\n| a | table | row |\n",
+            "● A bullet. 9 beyond the declared double, in `auth.py`.\n| a | table | row |\n",
             "A bullet",
             "table",
             id="the record bullet ends at a table row",
         ),
         pytest.param(
             ".md",
-            "● A bullet. 8 beyond the declared double, in `auth.py`.\n● The next bullet.\n",
+            "● A bullet. 9 beyond the declared double, in `auth.py`.\n● The next bullet.\n",
             "A bullet",
             "The next bullet",
             id="the record bullet ends at the next bullet",
         ),
         pytest.param(
             ".sh",
-            "    # A paragraph. 8 beyond the declared double, in `auth.py`.\n"
+            "    # A paragraph. 9 beyond the declared double, in `auth.py`.\n"
             "    #\n"
             "    # The next paragraph.\n",
             "A paragraph",
@@ -1169,14 +1169,14 @@ def _is_prose_comment(line: str) -> bool:
         ),
         pytest.param(
             ".sh",
-            "    # A paragraph. 8 beyond the declared double, in `auth.py`.\n    code_line=1\n",
+            "    # A paragraph. 9 beyond the declared double, in `auth.py`.\n    code_line=1\n",
             "A paragraph",
             "codeline",
             id="the script paragraph ends at a line of code",
         ),
         pytest.param(
             ".sh",
-            "    # A paragraph. 8 beyond the declared double, in `auth.py`.\n"
+            "    # A paragraph. 9 beyond the declared double, in `auth.py`.\n"
             "    first_line=1  # a claim on the first code line\n",
             "a claim on the first code line",
             "firstline",
@@ -1184,7 +1184,7 @@ def _is_prose_comment(line: str) -> bool:
         ),
         pytest.param(
             ".sh",
-            "    # A paragraph. 8 beyond the declared double, in `auth.py`.\n"
+            "    # A paragraph. 9 beyond the declared double, in `auth.py`.\n"
             "    first_line=1\n"
             "    second_line=2\n"
             "    third_line=3  # a claim three lines down\n",
@@ -1194,7 +1194,7 @@ def _is_prose_comment(line: str) -> bool:
         ),
         pytest.param(
             ".sh",
-            "    # A paragraph. 8 beyond the declared double, in `auth.py`.\n"
+            "    # A paragraph. 9 beyond the declared double, in `auth.py`.\n"
             "    first_line=1\n"
             "    # The next paragraph.\n"
             "    later_line=2  # a claim past the next paragraph\n",
@@ -1204,7 +1204,7 @@ def _is_prose_comment(line: str) -> bool:
         ),
         pytest.param(
             ".md",
-            "● A bullet. 8 beyond the declared double, in `auth.py`.\n"
+            "● A bullet. 9 beyond the declared double, in `auth.py`.\n"
             "  is to add `key\n"
             "  |keys` to that rule.\n"
             "  A claim below the rewrapped span.\n"
@@ -1215,7 +1215,7 @@ def _is_prose_comment(line: str) -> bool:
         ),
         pytest.param(
             ".md",
-            "● A bullet. 8 beyond the declared double, in `auth.py`.\n"
+            "● A bullet. 9 beyond the declared double, in `auth.py`.\n"
             "  the shell comment marker\n"
             "  #comment, which is no heading without its space.\n"
             "  A claim below the rewrapped marker.\n"
@@ -1229,7 +1229,7 @@ def _is_prose_comment(line: str) -> bool:
             "    x = 1\n"
             "    #\n"
             "    # A claim above the clause.\n"
-            "    # 8 beyond the declared double, in `auth.py`.\n",
+            "    # 9 beyond the declared double, in `auth.py`.\n",
             "A claim above the clause",
             "x = 1",
             id="the script paragraph reaches back above the clause",
@@ -1238,14 +1238,14 @@ def _is_prose_comment(line: str) -> bool:
             ".md",
             "● The previous bullet.\n"
             "● A claim above the clause.\n"
-            "  8 beyond the declared double, in `auth.py`.\n",
+            "  9 beyond the declared double, in `auth.py`.\n",
             "A claim above the clause",
             "The previous bullet",
             id="the record bullet reaches back above the clause",
         ),
         pytest.param(
             ".sh",
-            "    # A paragraph. 8 beyond the declared double, in `auth.py`.\n"
+            "    # A paragraph. 9 beyond the declared double, in `auth.py`.\n"
             "    first_line=1\n"
             "\n"
             "    later_line=2  # a claim below a blank line\n"
@@ -1293,172 +1293,172 @@ def test_the_passage_bound_ends_where_the_structure_does(
 FROZEN_BAN_CASES = (
     (
         "a commit hash is exempt and the true clause is clean",
-        "8 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
+        "9 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
         [],
         [],
     ),
     (
         "a backticked run of decimal digits is not a hash",
-        "8 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
+        "9 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
         [],
         ["1000000"],
     ),
     (
         "a repeated entitled rendering is removed once, not twice",
-        "8 beyond the declared double, in `auth.py`. 8 beyond the declared "
+        "9 beyond the declared double, in `auth.py`. 9 beyond the declared "
         "double are in `auth.py`.",
         [],
-        ["8"],
+        ["9"],
     ),
     (
         "a bare ordinal is a fraction and is banned",
-        "8 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
         ["fifth"],
         [],
     ),
     (
         "a count at the start of a sentence is banned, case folded",
-        "8 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
         ["three"],
         [],
     ),
     (
         "a compound ordinal names a gate run and is not a count",
-        "8 beyond the declared double, asked for at the twenty-eighth run.",
+        "9 beyond the declared double, asked for at the twenty-eighth run.",
         [],
         [],
     ),
     (
         "a bare tens word is a count, not half an ordinal",
-        "8 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
         ["thirty"],
         [],
     ),
     (
         "an Arabic-Indic digit is a digit",
-        "8 beyond the declared double, in `auth.py`. ٦ sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. ٦ sit in `csrf.py`.",
         [],
         ["٦"],
     ),
     (
         "a vague count on the list is banned",
-        "8 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
         ["pair"],
         [],
     ),
     (
         "another experiment's figure is not this passage's to state",
-        "8 beyond the declared double, in `auth.py`. The split is 19 "
+        "9 beyond the declared double, in `auth.py`. The split is 19 "
         "Python keyword arguments in `auth.py`.",
         [],
         ["19"],
     ),
     (
         "a backticked hex run shorter than a hash is not exempt",
-        "8 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
         [],
         ["123"],
     ),
     (
         "a count split by markup is still a count",
-        "8 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
         ["three"],
         [],
     ),
     (
         "an unbackticked hex run is not exempt",
-        "8 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
+        "9 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
         [],
         ["1000000"],
     ),
     (
         "a compound fraction is a count, not a gate run",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a compound ordinal one word from its noun names a gate run",
-        "8 beyond the declared double, asked for at the twenty-second engineering pass.",
+        "9 beyond the declared double, asked for at the twenty-second engineering pass.",
         [],
         [],
     ),
     (
         "a hyphenated compound is not an ordinal just for being hyphenated",
-        "8 beyond the declared double, in `auth.py`. The three-module split covers them.",
+        "9 beyond the declared double, in `auth.py`. The three-module split covers them.",
         ["three"],
         [],
     ),
     (
         "a tens word beside a run noun is still a count",
-        "8 beyond the declared double, in `auth.py`. Thirty in each run sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Thirty in each run sit in `csrf.py`.",
         ["thirty"],
         [],
     ),
     (
         "a hyphenated compound beside a run noun is still a count",
-        "8 beyond the declared double, in `auth.py`. A three-module run covers them.",
+        "9 beyond the declared double, in `auth.py`. A three-module run covers them.",
         ["three"],
         [],
     ),
     (
         "a fraction's preposition pushes the noun out of reach",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth of each run sit here.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth of each run sit here.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a backticked hex run longer than a hash is not exempt",
-        "8 beyond the declared double, in `auth.py`. "
+        "9 beyond the declared double, in `auth.py`. "
         "`1234567890123456789012345678901234567890a` sit there.",
         [],
         ["1234567890123456789012345678901234567890"],
     ),
     (
         "a compound ordinal two words from its noun is a count again",
-        "8 beyond the declared double, asked for at the twenty-eighth big security run.",
+        "9 beyond the declared double, asked for at the twenty-eighth big security run.",
         ["twenty", "eighth"],
         [],
     ),
     (
         "a tens word one word from a run noun is still a count",
-        "8 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
         ["thirty"],
         [],
     ),
     (
         "a hyphenated non-tens word before an ordinal suffix is a count",
-        "8 beyond the declared double, in `auth.py`. A three-fifth per run sit here.",
+        "9 beyond the declared double, in `auth.py`. A three-fifth per run sit here.",
         ["three", "fifth"],
         [],
     ),
     (
         "a fraction one word from round, which is not a gate noun",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth per round sit here.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth per round sit here.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a fraction one word from gate, which is not a gate noun",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth per gate sit here.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth per gate sit here.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a capitalised compound ordinal still names a gate run",
-        "8 beyond the declared double. Twenty-eighth run, and the count stands.",
+        "9 beyond the declared double. Twenty-eighth run, and the count stands.",
         [],
         [],
     ),
     (
         "a compound ordinal separated by a space still names a gate run",
-        "8 beyond the declared double, asked for at the twenty second run.",
+        "9 beyond the declared double, asked for at the twenty second run.",
         [],
         [],
     ),
     (
         "a tens word outside the first two still names a gate run",
-        "8 beyond the declared double, asked for at the sixty-fifth run.",
+        "9 beyond the declared double, asked for at the sixty-fifth run.",
         [],
         [],
     ),
@@ -1468,172 +1468,172 @@ FROZEN_BAN_CASES = (
 BAN_CASES = (
     (
         "a commit hash is exempt and the true clause is clean",
-        "8 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
+        "9 beyond the declared double, in `auth.py`. Recorded at `9b3bba3`.",
         [],
         [],
     ),
     (
         "a backticked run of decimal digits is not a hash",
-        "8 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
+        "9 beyond the declared double, in `auth.py`. `1000000` lines were swept.",
         [],
         ["1000000"],
     ),
     (
         "a repeated entitled rendering is removed once, not twice",
-        "8 beyond the declared double, in `auth.py`. 8 beyond the declared "
+        "9 beyond the declared double, in `auth.py`. 9 beyond the declared "
         "double are in `auth.py`.",
         [],
-        ["8"],
+        ["9"],
     ),
     (
         "a bare ordinal is a fraction and is banned",
-        "8 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. A fifth sit in `csrf.py`.",
         ["fifth"],
         [],
     ),
     (
         "a count at the start of a sentence is banned, case folded",
-        "8 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Three sit in `csrf.py`.",
         ["three"],
         [],
     ),
     (
         "a compound ordinal names a gate run and is not a count",
-        "8 beyond the declared double, asked for at the twenty-eighth run.",
+        "9 beyond the declared double, asked for at the twenty-eighth run.",
         [],
         [],
     ),
     (
         "a bare tens word is a count, not half an ordinal",
-        "8 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Thirty sit in `csrf.py`.",
         ["thirty"],
         [],
     ),
     (
         "an Arabic-Indic digit is a digit",
-        "8 beyond the declared double, in `auth.py`. ٦ sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. ٦ sit in `csrf.py`.",
         [],
         ["٦"],
     ),
     (
         "a vague count on the list is banned",
-        "8 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. A pair sit in `csrf.py`.",
         ["pair"],
         [],
     ),
     (
         "another experiment's figure is not this passage's to state",
-        "8 beyond the declared double, in `auth.py`. The split is 19 "
+        "9 beyond the declared double, in `auth.py`. The split is 19 "
         "Python keyword arguments in `auth.py`.",
         [],
         ["19"],
     ),
     (
         "a backticked hex run shorter than a hash is not exempt",
-        "8 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. `123abc` sit in `csrf.py`.",
         [],
         ["123"],
     ),
     (
         "a count split by markup is still a count",
-        "8 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. th**ree** sit in `csrf.py`.",
         ["three"],
         [],
     ),
     (
         "an unbackticked hex run is not exempt",
-        "8 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
+        "9 beyond the declared double, in `auth.py`. 1000000a lines were swept.",
         [],
         ["1000000"],
     ),
     (
         "a compound fraction is a count, not a gate run",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth sit in `csrf.py`.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a compound ordinal one word from its noun names a gate run",
-        "8 beyond the declared double, asked for at the twenty-second engineering pass.",
+        "9 beyond the declared double, asked for at the twenty-second engineering pass.",
         [],
         [],
     ),
     (
         "a hyphenated compound is not an ordinal just for being hyphenated",
-        "8 beyond the declared double, in `auth.py`. The three-module split covers them.",
+        "9 beyond the declared double, in `auth.py`. The three-module split covers them.",
         ["three"],
         [],
     ),
     (
         "a tens word beside a run noun is still a count",
-        "8 beyond the declared double, in `auth.py`. Thirty in each run sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Thirty in each run sit in `csrf.py`.",
         ["thirty"],
         [],
     ),
     (
         "a hyphenated compound beside a run noun is still a count",
-        "8 beyond the declared double, in `auth.py`. A three-module run covers them.",
+        "9 beyond the declared double, in `auth.py`. A three-module run covers them.",
         ["three"],
         [],
     ),
     (
         "a fraction's preposition pushes the noun out of reach",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth of each run sit here.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth of each run sit here.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a backticked hex run longer than a hash is not exempt",
-        "8 beyond the declared double, in `auth.py`. "
+        "9 beyond the declared double, in `auth.py`. "
         "`1234567890123456789012345678901234567890a` sit there.",
         [],
         ["1234567890123456789012345678901234567890"],
     ),
     (
         "a compound ordinal two words from its noun is a count again",
-        "8 beyond the declared double, asked for at the twenty-eighth big security run.",
+        "9 beyond the declared double, asked for at the twenty-eighth big security run.",
         ["twenty", "eighth"],
         [],
     ),
     (
         "a tens word one word from a run noun is still a count",
-        "8 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
+        "9 beyond the declared double, in `auth.py`. Thirty per run sit in `csrf.py`.",
         ["thirty"],
         [],
     ),
     (
         "a hyphenated non-tens word before an ordinal suffix is a count",
-        "8 beyond the declared double, in `auth.py`. A three-fifth per run sit here.",
+        "9 beyond the declared double, in `auth.py`. A three-fifth per run sit here.",
         ["three", "fifth"],
         [],
     ),
     (
         "a fraction one word from round, which is not a gate noun",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth per round sit here.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth per round sit here.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a fraction one word from gate, which is not a gate noun",
-        "8 beyond the declared double, in `auth.py`. A twenty-fifth per gate sit here.",
+        "9 beyond the declared double, in `auth.py`. A twenty-fifth per gate sit here.",
         ["twenty", "fifth"],
         [],
     ),
     (
         "a capitalised compound ordinal still names a gate run",
-        "8 beyond the declared double. Twenty-eighth run, and the count stands.",
+        "9 beyond the declared double. Twenty-eighth run, and the count stands.",
         [],
         [],
     ),
     (
         "a compound ordinal separated by a space still names a gate run",
-        "8 beyond the declared double, asked for at the twenty second run.",
+        "9 beyond the declared double, asked for at the twenty second run.",
         [],
         [],
     ),
     (
         "a tens word outside the first two still names a gate run",
-        "8 beyond the declared double, asked for at the sixty-fifth run.",
+        "9 beyond the declared double, asked for at the sixty-fifth run.",
         [],
         [],
     ),
@@ -1680,29 +1680,29 @@ def test_every_banned_word_is_caught(word: str) -> None:
     the ban list had neither, and parametrising over the list itself is the cheaper answer:
     it anchors the set and exercises every entry in one test.
     """
-    assert word_counts_in(f"8 beyond the declared double. {word.capitalize()} sit here.") == [word]
+    assert word_counts_in(f"9 beyond the declared double. {word.capitalize()} sit here.") == [word]
 
 
 @pytest.mark.parametrize(
     ("passage", "expected"),
     [
         pytest.param(
-            "8 beyond the declared double, in `auth.py`, `csrf.py` and `auth_routes.py`.",
+            "9 beyond the declared double, in `auth.py`, `csrf.py` and `auth_routes.py`.",
             {"auth.py", "authroutes.py", "csrf.py"},
             id="the modules the scan gives",
         ),
         pytest.param(
-            "8 beyond the declared double, in `auth.py`. They also appear in `store.py`.",
+            "9 beyond the declared double, in `auth.py`. They also appear in `store.py`.",
             {"auth.py", "store.py"},
             id="a module the scan does not give is seen",
         ),
         pytest.param(
-            "8 beyond the declared double, in `auth.py`. They also appear in `store.PY`.",
+            "9 beyond the declared double, in `auth.py`. They also appear in `store.PY`.",
             {"auth.py", "store.py"},
             id="the extension folds case, so an upper-case one does not evade",
         ),
         pytest.param(
-            "8 beyond the declared double, in `auth.py` and `csrf.py`.",
+            "9 beyond the declared double, in `auth.py` and `csrf.py`.",
             {"auth.py", "csrf.py"},
             id="a module the scan does give, omitted, is seen missing",
         ),
@@ -1740,7 +1740,7 @@ def test_a_repeated_price_clause_is_refused(tmp_path: Path) -> None:
     """
     document = tmp_path / "carrier.md"
     document.write_text(
-        "● A bullet. 8 beyond the declared double, in `auth.py`. Of the 6 beyond the "
+        "● A bullet. 9 beyond the declared double, in `auth.py`. Of the 6 beyond the "
         "declared double, all are in `auth.py`.\n",
         encoding="utf-8",
     )

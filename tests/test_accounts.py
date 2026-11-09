@@ -388,12 +388,12 @@ def test_enrolment_is_two_steps_and_the_pending_secret_grants_nothing() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret = accounts.begin_enrolment(account)
+    secret, token = accounts.begin_enrolment(account)
 
     assert not accounts.is_enrolled(account)
     assert not accounts.verify_code(account, totp.code_now(secret))
 
-    codes = accounts.finish_enrolment(account, totp.code_now(secret))
+    codes = accounts.finish_enrolment(account, totp.code_now(secret), token=token)
 
     assert codes is not None
     assert accounts.is_enrolled(account)
@@ -419,8 +419,8 @@ def test_a_code_cannot_be_spent_twice() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret = accounts.begin_enrolment(account)
-    accounts.finish_enrolment(account, totp.code_now(secret))
+    secret, token = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     moment = time.time() + totp.STEP_SECONDS * 4
     code = totp.code_now(secret, now=moment)
 
@@ -440,8 +440,8 @@ def test_a_code_from_earlier_in_the_window_is_refused_after_a_later_one() -> Non
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret = accounts.begin_enrolment(account)
-    accounts.finish_enrolment(account, totp.code_now(secret))
+    secret, token = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     moment = time.time() + totp.STEP_SECONDS * 4
     earlier = totp.code_now(secret, now=moment - totp.STEP_SECONDS)
 
@@ -458,8 +458,8 @@ def test_an_unreadable_counter_refuses_every_code() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret = accounts.begin_enrolment(account)
-    accounts.finish_enrolment(account, totp.code_now(secret))
+    secret, token = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     account["totp_last_step"] = "not a number"
 
     moment = time.time() + totp.STEP_SECONDS * 4
@@ -477,21 +477,21 @@ def test_resetting_the_factor_resets_the_counter() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret = accounts.begin_enrolment(account)
-    accounts.finish_enrolment(account, totp.code_now(secret))
+    secret, token = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     accounts.reset_factor(account)
 
     assert account["totp_last_step"] == accounts.NO_STEP
 
-    fresh = accounts.begin_enrolment(account)
-    assert accounts.finish_enrolment(account, totp.code_now(fresh)) is not None
+    fresh, fresh_token = accounts.begin_enrolment(account)
+    assert accounts.finish_enrolment(account, totp.code_now(fresh), token=fresh_token) is not None
 
 
 def test_enrolment_with_a_wrong_code_confirms_nothing() -> None:
     account = accounts.new_account("a@b.uk", GOOD)
-    accounts.begin_enrolment(account)
+    _, token = accounts.begin_enrolment(account)
 
-    assert accounts.finish_enrolment(account, "000000") is None
+    assert accounts.finish_enrolment(account, "000000", token=token) is None
     assert not accounts.is_enrolled(account)
 
 
@@ -499,8 +499,8 @@ def test_a_reset_factor_forces_re_enrolment_and_drops_recovery_codes() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret = accounts.begin_enrolment(account)
-    accounts.finish_enrolment(account, totp.code_now(secret))
+    secret, token = accounts.begin_enrolment(account)
+    accounts.finish_enrolment(account, totp.code_now(secret), token=token)
 
     accounts.reset_factor(account)
 

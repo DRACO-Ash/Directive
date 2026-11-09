@@ -233,12 +233,15 @@ def pending_actor(*, now: float | None = None) -> str | None:
     return username
 
 
-def pending_epoch_matches(account: dict[str, Any] | None) -> bool:
+def pending_epoch_matches(account: dict[str, Any]) -> bool:
     """Return whether the pending sign-in predates no change to this account.
 
     Compared where the second factor is accepted, not where the marker is read, because a
     marker that has merely gone stale should refuse THIS attempt rather than look like a
     corrupt session elsewhere.
+
+    Takes a real record. Both callers run `accounts.may_sign_in` first, which is a
+    `TypeGuard`, so `None` cannot arrive and the annotation no longer pretends it can.
     """
     return accounts.epoch_of(account) == _session_epoch()
 
@@ -324,8 +327,12 @@ def live_standing() -> tuple[Standing, str]:
         #: Development has no account list to consult, so there is nothing to revoke
         #: against and nothing that can be unreadable.
         return Standing.GRANTED, current_role()
-    data_dir = str(current_app.config["DIRECTIVE_DATA_DIR"])
     try:
+        #: The config read is INSIDE the `try`, which it was not: `KeyError` sat in the
+        #: tuple below while the key was read above it, so a missing key was a 500 rather
+        #: than the fault this catch claims to turn it into. The factory always sets it, so
+        #: nothing was exploitable; the catch stated a protection it did not provide.
+        data_dir = str(current_app.config["DIRECTIVE_DATA_DIR"])
         rows = accounts.load(data_dir)
         account = accounts.find(rows, actor)
     except (accounts.AccountError, KeyError, OSError):

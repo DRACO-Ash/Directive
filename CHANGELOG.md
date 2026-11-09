@@ -279,6 +279,43 @@ fed the diagnostics read-out, which builds its own report and never called it.
 `bootstrap_configured` was called only by `describe`. Deleted rather than wired in, because
 adding account counts to a shipped response is a disclosure decision and not a tidy-up.
 
+**The seventh round found an account takeover, and it is the most serious finding of this
+release.** `enrol_page` reuses a stored pending second-factor secret rather than minting one
+per load. It has to: minting on every GET meant refreshing the page invalidated the code the
+person had just scanned, which this build fixed in V2.5's first commit. But the reuse read
+the ACCOUNT, so two callers who both knew the password were shown the same secret. An
+attacker loads the enrolment page before the real owner ever signs in; the owner is then
+shown the attacker's secret, confirms it, and the attacker holds the account's live second
+factor. Reproduced independently before fixing, and the precondition is weaker than it
+first appears: no administrator action is involved, and for the bootstrap administrator the
+attacker is anyone who can read the platform's environment tab, a reader
+`docs/DEPLOYMENT.md` already names.
+
+An unconfirmed secret now belongs to one half-finished sign-in. `begin_enrolment` returns a
+random token with it, the session holds the token and the secret stays on the volume, and
+only the holder can be shown it again or confirm it. A second session gets a fresh secret.
+An epoch bump clears the pending secret as well, so "every session this account holds
+stops" includes one that is holding a secret. The refresh behaviour the account-wide reuse
+existed for is held by its own test, because a fix that minted afresh every time would
+satisfy the takeover test and reintroduce the original defect.
+
+**The round's other three MAJORs were the previous round's new gates held by nothing.** The
+corrupt-epoch refusal at the second factor survived `if False:` across the whole suite. The
+test named for it could not fail: it asserted that a redirect location contained
+`/sign-in`, which is satisfied by `/sign-in/verify`, the success destination. And
+`enrol_submit`'s half of the pending gate survived deletion.
+
+**Both replacement tests then passed for the wrong reason on first writing**, and that is
+recorded because it is the same failure one layer along: one was satisfied by the replay
+counter rather than the epoch, the other by the secret-clearing rather than the gate. Each
+was corrected until the mutant it names dies for the reason it names, which took isolating
+the condition rather than merely reproducing the attack.
+
+Four MINORs with them, all closed: `file_present`'s docstring named the wrong order of
+operations, `KeyError` sat in a catch while the key it protects was read outside the `try`,
+`epoch_of(None)` was dead fail-closed code that read as a held control and is now excluded
+by the type, and `docs/AUTH-REPLACEMENT-PLAN.md` cites code deleted in V2.5 and now says so.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
@@ -591,8 +628,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 29 findings
-  on 29 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 30 findings
+  on 30 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

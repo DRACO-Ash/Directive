@@ -46,6 +46,11 @@ def _data_dir() -> str:
 #: same-site absolute path.
 NEXT_KEY = "directive_signin_next"
 
+#: The token naming the unconfirmed second-factor secret THIS sign-in was shown. Held on
+#: the session; the secret itself stays on the volume, because the session cookie is signed
+#: and not encrypted.
+ENROLMENT_KEY = "directive_enrolment"
+
 #: The longest self-asserted actor accepted, well inside the audit field's 320-byte cap.
 MAXIMUM_ACTOR_LENGTH = 200
 
@@ -430,12 +435,20 @@ def enrol_page() -> str | Response:
             return redirect(url_for(SIGN_IN_ENDPOINT))
         #: Reuse a pending secret rather than issuing a new one on every load. This GET
         #: used to mint one each time, so refreshing the page after scanning the key made
-        #: the code in the app stop working, with nothing on screen to say why. Idempotent
-        #: now: the secret changes only when a fresh sign-in starts enrolment over.
-        secret = str(account.get("totp_pending") or "")
+        #: the code in the app stop working, with nothing on screen to say why.
+        #:
+        #: Reused for THIS SIGN-IN only, which is the part that was wrong. The reuse read
+        #: the account, so two callers who both knew the password were shown the same
+        #: secret, and a gate drove the takeover that follows from it: an attacker loads
+        #: this page first, the owner is then shown the attacker's secret, confirms it, and
+        #: the attacker holds the account's live second factor. No administrator action is
+        #: needed. The token names one half-finished sign-in and lives on the session;
+        #: another session gets a fresh secret, and only the holder can confirm one.
+        secret = accounts.pending_secret_for(account, session.get(ENROLMENT_KEY))
         if not secret:
-            secret = accounts.begin_enrolment(account)
+            secret, token = accounts.begin_enrolment(account)
             accounts.save(_data_dir(), rows)
+            session[ENROLMENT_KEY] = token
     return _never_stored(
         render_template(
             "enrol.html",
@@ -464,7 +477,9 @@ def enrol_submit() -> Response:
         if blocked:
             auth.abandon_second_factor()
             return _refuse(blocked)
-        codes = accounts.finish_enrolment(account, request.form.get("code"))
+        codes = accounts.finish_enrolment(
+            account, request.form.get("code"), token=session.get(ENROLMENT_KEY)
+        )
         if codes is None:
             return _refuse(f"the enrolment code for {username!r} did not match")
         accounts.clear_failures(account)

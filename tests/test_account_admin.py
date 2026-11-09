@@ -1004,11 +1004,37 @@ def test_an_unreadable_stored_epoch_refuses_every_session_and_every_sign_in(
     account["session_epoch"] = "corrupt"
     accounts.save(data_dir, rows)
 
-    assert accounts.epoch_of(_stored(app, MEMBER)) == accounts.FAR_FUTURE_STEP
+    assert accounts.epoch_of(account) == accounts.FAR_FUTURE_STEP
     assert second_admin.get("/api/registers").status_code == 401, "an old session survived"
-    refused = _give_first_factor(app.test_client(), MEMBER, PHRASE)
-    assert refused.status_code == 302
-    assert "/sign-in" in refused.headers["Location"], "a fresh sign-in was minted"
+
+    # Driven through BOTH factors, because the first one does not refuse this and never
+    # claimed to: a corrupt epoch is caught where the second factor is accepted. The
+    # assertion here used to be `"/sign-in" in Location` against the first factor's
+    # response, which is `/sign-in/verify` on success, so the substring matched either way
+    # and the test could not fail. A gate measured that and the message said the opposite.
+    # `totp_last_step` is reset with it, and that matters: the enrolment above spent the
+    # current step, so a code generated now would be refused as a replay and the test would
+    # pass without the epoch branch ever running. A gate's mutant proved that: removing the
+    # branch left the first version of this test green. Only the epoch may refuse here.
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    corrupted = accounts.find(rows, MEMBER)
+    assert corrupted is not None
+    corrupted["totp_last_step"] = accounts.NO_STEP
+    accounts.save(data_dir, rows)
+
+    fresh = app.test_client()
+    sent_on = _give_first_factor(fresh, MEMBER, PHRASE)
+    assert sent_on.headers["Location"].endswith("/sign-in/verify"), "the first factor refuses"
+
+    secret = str(_stored(app, MEMBER)["totp_secret"])
+    completed = fresh.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": _token(fresh, "/sign-in/verify")},
+    )
+
+    assert fresh.get("/api/registers").status_code == 401, "a fresh session was minted"
+    assert completed.headers["Location"] == "/sign-in", "and it lands back on the form"
 
 
 def test_a_missing_account_file_is_a_fault_not_a_revocation(
@@ -1090,3 +1116,144 @@ def test_the_diagnostics_map_survives_an_unreadable_account_list(
     stored.write_bytes(kept)
 
     assert "inputs" in body, "the recovery channel closed during the fault it diagnoses"
+
+
+def test_an_outstanding_enrolment_cannot_complete_past_the_pending_gate(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The enrolment route's half of the pending gate, which was held by nothing.
+
+    The verify route's half is held by the password-change test; deleting the same call
+    from `enrol_submit` left the whole suite green, and a gate drove the attack through it.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+    page = caller.get("/sign-in/enrol").get_data(as_text=True)
+    found = re.search(r'class="secret mono">([A-Z2-7]+)<', page)
+    assert found is not None, "the marker did not reach the enrolment page"
+
+    # A CORRUPT epoch rather than a disable-and-re-enable, and the difference is the
+    # difference between a test that holds this gate and one that agrees with it. A bump
+    # also clears `totp_pending`, so the enrolment is refused for want of a secret and the
+    # gate never runs: a gate's mutant proved the first version of this test green with the
+    # call deleted. Corrupting the epoch leaves the pending secret in place, so the only
+    # thing that can refuse is `_pending_refusal` on this route.
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, MEMBER)
+    assert account is not None
+    account["session_epoch"] = "corrupt"
+    accounts.save(data_dir, rows)
+    assert str(_stored(app, MEMBER).get("totp_pending") or ""), "the secret must survive"
+
+    completed = caller.post(
+        "/sign-in/enrol",
+        data={
+            "code": totp.code_now(found.group(1)),
+            "csrf_token": _token(caller, "/sign-in/enrol"),
+        },
+    )
+
+    assert caller.get("/api/registers").status_code == 401, "a stale enrolment completed"
+    assert completed.status_code == 302
+    assert not str(_stored(app, MEMBER).get("totp_secret") or ""), "a factor was confirmed"
+
+
+# ============================ a planted second factor ============================
+
+
+def test_one_callers_enrolment_secret_cannot_be_confirmed_by_another(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """An account takeover, driven end to end by a gate, and it needed no admin action.
+
+    `enrol_page` reuses a stored pending secret rather than minting one per request, which
+    it has to: minting on every GET meant a refresh invalidated the code the person had just
+    scanned. But the reuse read the ACCOUNT, so two callers who both knew the password were
+    shown the SAME secret. An attacker loads the page first; the owner, signing in for the
+    first time, is shown the attacker's secret and confirms it; the attacker then holds the
+    account's live second factor.
+
+    The precondition is knowing the password, which for the bootstrap administrator means
+    anyone who can read the platform's environment tab, a reader `docs/DEPLOYMENT.md`
+    already names. The token binds a pending secret to one half-finished sign-in.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+
+    attacker = app.test_client()
+    _give_first_factor(attacker, MEMBER, PHRASE)
+    planted = re.search(
+        r'class="secret mono">([A-Z2-7]+)<', attacker.get("/sign-in/enrol").get_data(as_text=True)
+    )
+    assert planted is not None
+
+    owner = app.test_client()
+    _give_first_factor(owner, MEMBER, PHRASE)
+    shown = re.search(
+        r'class="secret mono">([A-Z2-7]+)<', owner.get("/sign-in/enrol").get_data(as_text=True)
+    )
+    assert shown is not None
+
+    assert shown.group(1) != planted.group(1), "the owner was shown the attacker's secret"
+    #: And the attacker cannot confirm theirs either, because the owner's visit replaced the
+    #: stored secret and the token that owned it.
+    refused = attacker.post(
+        "/sign-in/enrol",
+        data={
+            "code": totp.code_now(planted.group(1)),
+            "csrf_token": _token(attacker, "/sign-in/enrol"),
+        },
+    )
+    assert attacker.get("/api/registers").status_code == 401
+    assert refused.status_code == 302
+    assert not str(_stored(app, MEMBER).get("totp_secret") or ""), "a secret was confirmed"
+
+
+def test_a_refresh_still_shows_the_same_secret(app: Flask, admin: FlaskClient) -> None:
+    """The property the account-wide reuse was introduced for, kept.
+
+    Minting a secret on every GET made refreshing the enrolment page invalidate the code
+    the person had just scanned, with nothing on screen to say why. Binding the secret to
+    the sign-in keeps that fixed while closing the takeover above, and a test that only
+    held the takeover would be satisfied by minting afresh every time.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+
+    seen = {
+        re.search(  # type: ignore[union-attr]
+            r'class="secret mono">([A-Z2-7]+)<', caller.get("/sign-in/enrol").get_data(as_text=True)
+        ).group(1)
+        for _ in range(3)
+    }
+
+    assert len(seen) == 1, f"three loads showed {len(seen)} different secrets"
+    confirmed = caller.post(
+        "/sign-in/enrol",
+        data={"code": totp.code_now(seen.pop()), "csrf_token": _token(caller, "/sign-in/enrol")},
+    )
+    assert confirmed.status_code == 200, "the scanned code no longer enrols"
+
+
+def test_an_epoch_bump_clears_an_unconfirmed_enrolment_secret(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """Stopping every session has to include a secret one of them is holding.
+
+    Otherwise a disable-and-re-enable leaves the attacker's planted factor on the record for
+    the owner to confirm later, which is the takeover above with an administrator action in
+    the middle of it.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+    caller.get("/sign-in/enrol")
+    assert str(_stored(app, MEMBER).get("totp_pending") or ""), "no pending secret was written"
+
+    _post(admin, f"/accounts/{MEMBER}/state", state=accounts.DISABLED)
+
+    after = _stored(app, MEMBER)
+    assert not str(after.get("totp_pending") or ""), "the planted secret survived the bump"
+    assert not str(after.get("totp_pending_token") or ""), "the token survived the bump"

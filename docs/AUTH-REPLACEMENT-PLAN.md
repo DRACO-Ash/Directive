@@ -11,6 +11,11 @@ Information Security Officer.
 > is a platform configuration this repository cannot check: `TBC, re-verify` with the
 > platform team.
 >
+> **The scope sections below are written against the pre-V2.5 tree and name code that no
+> longer exists**, `describe()` and `tests/test_entra_sign_in.py` among it. They are the
+> state on 2026-11-06 and are not maintained against the build; read them as the estimate
+> that informed the decision, not as a description of the application.
+>
 > The rest of this document is kept as drafted, including Options A and B, because the
 > reasoning behind a decision is evidence an assessor reads and a plan rewritten after the
 > fact to agree with what was built is worth nothing. Where it says nothing is approved and

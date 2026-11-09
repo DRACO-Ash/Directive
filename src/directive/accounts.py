@@ -54,6 +54,11 @@ from . import totp
 #: The directory under `DATA_DIR`. Deliberately not `records`, which the export globs.
 ACCOUNTS_DIRNAME = "accounts"
 
+#: Bytes of randomness in the token that owns an unconfirmed enrolment secret. The same
+#: order as a session identifier, because that is what it is: a bearer value naming one
+#: half-finished sign-in.
+ENROLMENT_TOKEN_BYTES = 32
+
 #: The counter value meaning "no code has been accepted yet". Not zero: counter zero is a
 #: real RFC 6238 step, the one covering the Unix epoch, and a sentinel that collides with a
 #: legitimate value is not a sentinel.
@@ -375,8 +380,15 @@ def file_present(data_dir: str) -> bool:
     A caller that cannot find an actor needs to know which of two things happened: the
     account was removed from a list it can read, or the list itself is not available. The
     first is a revocation and the second is a fault, and `auth.live_standing` answers them
-    differently. An error reading the directory answers False here and is resolved by the
-    load that follows, which raises.
+    differently.
+
+    An error reading the directory answers False here, and that is safe for a reason worth
+    stating precisely, because the sentence here named the wrong order. The only caller
+    runs `accounts.load` FIRST and this second, so a directory that cannot be read has
+    already raised `AccountError` and been classified as a fault; this function is reached
+    only when the load succeeded, where False genuinely means "no file". The swallow is
+    belt and braces against a mount that fails between the two reads, and a False there is
+    still the safe direction: the caller treats it as a fault and refuses the request.
     """
     try:
         return accounts_path(data_dir).exists()
@@ -469,6 +481,7 @@ def new_account(username: str, password: str, *, role: str = MEMBER) -> dict[str
         "role": role,
         "state": ACTIVE,
         "totp_secret": CLEARED,
+        "totp_pending_token": CLEARED,
         #: The last counter a one-time code was accepted at, so the same code cannot be
         #: spent twice. `-1` rather than `0`: counter zero is a real RFC 6238 step (the
         #: Unix epoch) and a sentinel that collides with a legitimate value is not one.
@@ -546,21 +559,63 @@ def set_password(account: dict[str, Any], password: str) -> int:
     return bump_epoch(account)
 
 
-def begin_enrolment(account: dict[str, Any]) -> str:
-    """Return a new second-factor secret, stored unconfirmed on the account.
+def begin_enrolment(account: dict[str, Any]) -> tuple[str, str]:
+    """Return a new second-factor secret and the token that OWNS it.
 
     Stored before it is confirmed so the person can be shown it once and asked to prove
     their app has it. Until `finish_enrolment` runs, `enrolled` is False and the secret
     cannot be used to sign in.
+
+    **The token exists because an unconfirmed secret on the account is shared state, and
+    sharing it was an account takeover.** `enrol_page` reuses a stored pending secret rather
+    than minting one per request, which it has to: minting on every GET meant refreshing the
+    page invalidated the code the person had just scanned. But the reuse read the ACCOUNT,
+    so two callers who both knew the password saw the same secret. A security gate drove it
+    end to end and it needs no administrator action at all: an attacker holding the password
+    visits the enrolment page before the real owner ever signs in, the owner is then shown
+    the attacker's secret, confirms it, and the attacker holds the account's live second
+    factor. For the bootstrap administrator that attacker is anyone who can read the
+    platform's environment tab, which `docs/DEPLOYMENT.md` already states is a real reader.
+
+    So the secret belongs to ONE half-finished sign-in. The token is random, stored beside
+    the secret, and returned to the caller to put on its session; `enrol_page` reuses the
+    secret only for the session holding the token, and `finish_enrolment` refuses without
+    it. The secret itself stays server-side rather than moving into the session cookie,
+    which is signed and not encrypted.
     """
     secret = totp.new_secret()
+    token = secrets.token_urlsafe(ENROLMENT_TOKEN_BYTES)
     account["totp_pending"] = secret
+    account["totp_pending_token"] = token
     account["updated"] = _now_text()
-    return secret
+    return secret, token
+
+
+def pending_secret_for(account: dict[str, Any], token: object) -> str:
+    """Return the unconfirmed secret this token owns, or an empty string.
+
+    Constant-time on the token, because it is a bearer value for a secret that is about to
+    become an account's second factor.
+    """
+    held = str(account.get("totp_pending_token") or "")
+    secret = str(account.get("totp_pending") or "")
+    if not held or not secret or not isinstance(token, str) or not token:
+        return ""
+    if not held.isascii() or not token.isascii():
+        #: `compare_digest` raises on a non-ASCII string, and this runs on an
+        #: unauthenticated route. Fail closed rather than 500.
+        return ""
+    return secret if hmac.compare_digest(held, token) else ""
+
+
+def clear_pending_enrolment(account: dict[str, Any]) -> None:
+    """Forget an unconfirmed second-factor secret and the token that owned it."""
+    account["totp_pending"] = CLEARED
+    account["totp_pending_token"] = CLEARED
 
 
 def finish_enrolment(
-    account: dict[str, Any], code: object, *, now: float | None = None
+    account: dict[str, Any], code: object, *, token: object, now: float | None = None
 ) -> list[str] | None:
     """Confirm enrolment with a code from the app. Returns recovery codes, or None.
 
@@ -572,8 +627,17 @@ def finish_enrolment(
     at `/sign-in/verify` for the rest of the window, which is the same replay the sign-in
     path was found to allow and the gate demonstrated from a second session.
     """
-    pending = str(account.get("totp_pending") or "")
+    pending = pending_secret_for(account, token)
     if not pending:
+        #: No secret, or a secret this session does not own.
+        #:
+        #: **The ownership half here is a SECOND layer and is not independently reachable**,
+        #: which is worth saying rather than leaving for a gate to measure. `enrol_page`
+        #: checks the same token and mints a fresh secret when it does not match, so a
+        #: caller arriving here with a stale token has already had the stored secret
+        #: replaced and cannot produce a code for the new one. No test holds this clause on
+        #: its own for that reason, and it is kept because a route that forgets the first
+        #: check should not be one edit from confirming another session's secret.
         return None
     try:
         matched = totp.matching_step(pending, code if isinstance(code, str) else "", now=now)
@@ -583,7 +647,7 @@ def finish_enrolment(
         return None
     codes, hashes = new_recovery_codes()
     account["totp_secret"] = pending
-    account["totp_pending"] = CLEARED
+    clear_pending_enrolment(account)
     account["totp_last_step"] = matched
     account["recovery"] = hashes
     account["updated"] = _now_text()
@@ -655,8 +719,14 @@ def last_step(account: dict[str, Any]) -> int:
         return FAR_FUTURE_STEP
 
 
-def epoch_of(account: dict[str, Any] | None) -> int:
+def epoch_of(account: dict[str, Any]) -> int:
     """Return the account's session epoch, failing CLOSED on an unreadable value.
+
+    Takes an account, never `None`. It used to accept `None` and answer the sentinel, which
+    read as a fail-closed control and was reachable from nothing: every call site either
+    passes a real record or short-circuits on `may_sign_in` first, so a gate's mutant
+    returning zero for that case survived the whole suite. Dead fail-closed code reads as a
+    held control, so the annotation now says what is true and the type checker holds it.
 
     An unreadable epoch returns a value far beyond any the application writes, so every
     session that EXISTED when the field was corrupted is refused. Reading it as zero would
@@ -668,8 +738,6 @@ def epoch_of(account: dict[str, Any] | None) -> int:
     closed at the sign-in routes rather than here, by refusing to complete a sign-in whose
     stored epoch is unreadable; this function stays a pure reader and a verdict.
     """
-    if account is None:
-        return FAR_FUTURE_STEP
     try:
         return int(account.get("session_epoch", 0))
     except (TypeError, ValueError):
@@ -683,6 +751,11 @@ def bump_epoch(account: dict[str, Any]) -> int:
     wants to keep its OWN session writes the returned value back onto it.
     """
     account["session_epoch"] = epoch_of(account) + 1 if account.get("session_epoch") else 1
+    #: An unconfirmed enrolment secret goes with the sessions. "Every session this account
+    #: holds stops" has to include a half-finished sign-in that is holding a secret, or a
+    #: disable-and-re-enable leaves the attacker's planted factor on the record for the
+    #: owner to confirm later, which is precisely the takeover the token above closes.
+    clear_pending_enrolment(account)
     account["updated"] = _now_text()
     return int(account["session_epoch"])
 
@@ -690,7 +763,7 @@ def bump_epoch(account: dict[str, Any]) -> int:
 def reset_factor(account: dict[str, Any]) -> None:
     """Remove the second factor and its recovery codes, forcing re-enrolment."""
     account["totp_secret"] = CLEARED
-    account["totp_pending"] = CLEARED
+    clear_pending_enrolment(account)
     #: Reset with the secret. A new secret produces unrelated codes, so a counter held
     #: against the old one would refuse perfectly good codes from the new device until the
     #: clock caught up with it, which on a corrupt value means never.
