@@ -299,7 +299,22 @@ def verify_submit() -> Response:
 def _complete_sign_in(
     username: str, *, role: str, must_change: bool, recovery_used: bool, remaining: int
 ) -> Response:
-    """Establish the session and write the LOGIN entry, or refuse and leave nothing behind."""
+    """Establish the session and write the LOGIN entry, or refuse and leave nothing behind.
+
+    The post-sign-in target is read BEFORE the session is established, and that ordering is
+    the fix for a defect rather than a preference. `auth.sign_in` calls `session.clear()`,
+    deliberately, so that nothing set before authentication survives it; the pop below used
+    to run after that call and therefore always returned the empty string. Every sign-in
+    through the second factor landed on the dashboard whatever link the person followed,
+    and three places in this module describe a `next` that could not work. It failed safe,
+    which is why nothing noticed.
+
+    Carrying the value across the boundary is safe because it is not trusted on the other
+    side: `auth.redirect_after_sign_in` resolves it against this origin and falls back to
+    the dashboard, and a security gate drove twelve payloads through it, scheme-relative,
+    absolute, backslash, tab, encoded-tab, NUL and a CRLF header split among them.
+    """
+    target = session.get(NEXT_KEY, "")
     auth.sign_in(username, verified=True, role=role)
     if not record_event("LOGIN", auth.audit_actor(), "SUCCESS"):
         # A verified identity this log cannot name is not one this application will accept.
@@ -312,7 +327,6 @@ def _complete_sign_in(
         current_app.logger.warning(
             "%r signed in with a recovery code; %d remain", username, remaining
         )
-    target = session.pop(NEXT_KEY, "")
     if must_change:
         # Straight to the change-password page. Be exact about what this is: it LANDS the
         # caller there, and the page says why. It does NOT refuse every other route until

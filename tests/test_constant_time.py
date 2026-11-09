@@ -99,3 +99,48 @@ def test_the_secret_itself_is_not_compared_with_equals(path: str, name: str) -> 
             f"{path}::{name} line {node.lineno} compares {sorted(identifiers & secret_like)}"
             " with an equality operator"
         )
+
+
+#: The comparisons whose LOOP must also run to completion, with the reason each one scans
+#: more than a single value. A constant-time primitive inside a loop that stops at the
+#: first match leaks WHICH iteration matched, which is a different quantity from which
+#: byte matched and is not covered by the assertion above.
+MUST_NOT_SHORT_CIRCUIT = [
+    #: Three steps of drift, so stopping early says whether the code came from the current
+    #: step or the edge of the window.
+    ("src/directive/totp.py", "matching_step"),
+    #: Ten held hashes, so stopping early says which recovery code was presented.
+    ("src/directive/accounts.py", "spend_recovery_code"),
+]
+
+
+@pytest.mark.parametrize(("path", "name"), MUST_NOT_SHORT_CIRCUIT)
+def test_a_scanning_comparison_runs_to_completion(path: str, name: str) -> None:
+    """No `return` or `break` inside the loop that does the comparing.
+
+    Structural rather than timed, deliberately: a timing assertion over three HMAC
+    evaluations is noise on a loaded runner, and it would be the kind of test that is
+    disabled the first week it flakes. What can be held exactly is the shape, and the shape
+    is the whole of the control: both functions set a flag and fall out of the loop.
+
+    Added because a gate found the property unheld. Both docstrings state it in full,
+    `totp.py` calling it out as the reason the loop does not short-circuit, and replacing
+    the comparison with `==` AND returning on the first match left the one-time password,
+    account and sign-in suites green. The `==` half is caught by the pin above; the
+    early-exit half was caught by nothing.
+    """
+    function = _function(path, name)
+    loops = [node for node in ast.walk(function) if isinstance(node, ast.For | ast.While)]
+    assert loops, f"{path}::{name} no longer loops; this pin is stale and the control unheld"
+
+    for loop in loops:
+        exits = [
+            type(node).__name__
+            for node in ast.walk(loop)
+            if isinstance(node, ast.Return | ast.Break)
+        ]
+        assert not exits, (
+            f"{path}::{name} leaves its comparison loop early via {exits}. Stopping at the "
+            "first match leaks which iteration matched, whatever the comparison inside it "
+            "costs. Set a flag and fall out of the loop."
+        )

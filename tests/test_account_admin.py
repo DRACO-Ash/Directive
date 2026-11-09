@@ -481,7 +481,7 @@ def test_an_unauthenticated_caller_can_lock_the_only_administrator_out(
 
 
 def test_the_break_glass_unlock_clears_the_lock_and_records_it(
-    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch
+    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch, caplog
 ) -> None:
     """The documented recovery, and it must actually work from a cold restart.
 
@@ -494,7 +494,8 @@ def test_the_break_glass_unlock_clears_the_lock_and_records_it(
     _lock_out(app, ADMIN)
     monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")
 
-    restarted = create_app()
+    with caplog.at_level("WARNING"):
+        restarted = create_app()
 
     assert not accounts.is_locked(_stored(restarted, ADMIN))
     entries = restarted.extensions["directive_chain"].entries
@@ -502,6 +503,34 @@ def test_the_break_glass_unlock_clears_the_lock_and_records_it(
     assert unlocks, "a lock cleared with no record is a lock nobody can evidence"
     assert unlocks[-1].source_ip == "boot", "it came from the factory, not from a caller"
     assert _give_first_factor(restarted.test_client(), ADMIN, PHRASE).status_code == 302
+    # The pod-log warning, held here because this commit's own documentation promoted it
+    # into a stated compensating control: the audit entry is best-effort, and
+    # `docs/DEPLOYMENT.md` tells an operator the warning is the backstop. Deleting the
+    # `LOGGER.warning` left the whole suite green until a gate said so, which would have
+    # made that sentence false in a document an assessor reads.
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "cleared the lockout on" in logged
+    assert ADMIN in logged, "the warning must name which account was unlocked"
+
+
+@pytest.mark.parametrize("value", ["false", "0", "yes", "no", "1", "tru", "", " "])
+def test_the_break_glass_refuses_any_value_that_is_not_true(
+    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """The variable must EQUAL `true`, and nothing else may turn the recovery on.
+
+    Held by nothing until a gate pointed it out: the test below covers the ABSENT case
+    only, so a mutant reading "any non-empty value" survived the whole suite. Under that
+    mutant an operator who sets `BOOTSTRAP_UNLOCK=false` to turn the recovery OFF turns it
+    on, which is the opposite of what they asked for and the worst direction for a control
+    whose whole justification is that it fires only when somebody means it.
+    """
+    _lock_out(app, ADMIN)
+    monkeypatch.setenv("BOOTSTRAP_UNLOCK", value)
+
+    restarted = create_app()
+
+    assert accounts.is_locked(_stored(restarted, ADMIN)), f"{value!r} turned the recovery on"
 
 
 def test_the_break_glass_does_nothing_without_the_variable(app: Flask, admin: FlaskClient) -> None:
@@ -548,11 +577,19 @@ def test_the_break_glass_only_touches_the_named_account(
 ) -> None:
     """It names `BOOTSTRAP_ADMIN`, so another locked account stays locked."""
     _make_member(admin)
-    # The MEMBER is locked first, deliberately. With the administrator locked first it is
-    # also the first locked row in file order, so a mutant picking "the first locked
-    # account" rather than the named one passed: a gate measured that and it is the
-    # difference between a test that holds the control and one that agrees with it by
-    # accident. Locking the member first makes the two answers differ.
+    # The member is moved to row ZERO of the account file, and the distinction is the whole
+    # point. The first version of this fix locked the member first in TIME, which is a
+    # different thing: the bootstrap creates the administrator, so it is row 0 whatever
+    # order the locks arrive in, and a mutant selecting "the first locked row" still
+    # happened to pick the right account. A gate measured that the mutant survived and that
+    # the comment here claimed it did not, which is a shipped record over-claiming about
+    # the test beneath it. Row order is what the mutant reads, so row order is what this
+    # test has to disagree with.
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    accounts.save(data_dir, sorted(rows, key=lambda row: row["username"] != MEMBER))
+    assert str(accounts.load(data_dir)[0]["username"]) == MEMBER, "the member must be row 0"
+
     _lock_out(app, MEMBER)
     _lock_out(app, ADMIN)
     monkeypatch.setenv("BOOTSTRAP_UNLOCK", "true")

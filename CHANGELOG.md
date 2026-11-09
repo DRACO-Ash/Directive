@@ -146,6 +146,35 @@ and the runbook now say it is best-effort with the pod log as the backstop;
 `BOOTSTRAP_UNLOCK` was missing from the suite's managed variables; the named-account test
 passed by file order; and one stale Entra sentence survived in `security_headers.py`.
 
+**And a third round, on the same axis again.** The gate confirmed everything dead by live
+attack, including the previous mutation verbatim, then failed the build because the fix for
+the previous round's sixth MINOR did not work. That MINOR was a test passing by file order;
+the fix locked the member first in TIME, and the mutant reads file ORDER, where the
+bootstrap administrator is row 0 whatever order the locks arrive in. The mutant survived
+the whole suite and the comment written with the fix asserted it did not. The member is now
+moved to row 0, which is what the mutant actually reads, and the comment says so.
+
+Four MINORs with it, each mutation-proved: `BOOTSTRAP_UNLOCK` had to equal `true` and only
+the absent case was held, so a mutant reading "any non-empty value" would have turned the
+recovery ON for an operator who set it to `false`; the pod-log warning had just been
+promoted into a documented compensating control in two shipped places while deleting it
+left the suite green; the non-short-circuiting comparison loops in `totp.matching_step` and
+`accounts.spend_recovery_code` were held by nothing although both docstrings state the
+property in full, so a structural pin now refuses a `return` or `break` inside either loop;
+and a new test acquired semaphore slots outside its own `try`.
+
+**Two observations acted on rather than filed.** The suite does not shuffle:
+`pytest-randomly` is installed nowhere and is in no lockfile, so `-p no:randomly` is
+silently unrecognised and the file-order dependence above could never have surfaced by
+itself. Recorded here because three rounds of this project's reporting, this file included,
+have implied otherwise. And the post-sign-in `next` target was discarded on every two-factor
+sign-in: `auth.sign_in` clears the session, correctly, and the target was read after that
+call, so every sign-in landed on the dashboard whatever link the person followed while three
+places in the module described a `next` that worked. It failed safe, which is why nothing
+noticed. The target is now read before the session boundary, and the origin guard that makes
+carrying it safe is held on that path by four hostile payloads rather than assumed from the
+one-step path.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
@@ -458,8 +487,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 27 findings
-  on 27 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 28 findings
+  on 28 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

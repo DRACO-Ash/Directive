@@ -538,12 +538,20 @@ def test_an_exhausted_semaphore_really_raises(monkeypatch: pytest.MonkeyPatch) -
     wrong password again, which is the defect this class was created to end.
     """
     monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.05)
-    held = [accounts._hash_slots.acquire() for _ in range(accounts.HASH_SLOTS)]
+    #: The acquisitions sit INSIDE the `try`, counted as they succeed. Built outside it,
+    #: an interrupt landing between the two calls leaked a slot for the rest of the
+    #: session, and the semaphore is process-wide, so the leak would follow every later
+    #: test. A gate measured that one leaked slot of two does not break a later test, which
+    #: is why it was MINOR rather than worse; it is still one line to close.
+    taken = 0
     try:
+        for _ in range(accounts.HASH_SLOTS):
+            accounts._hash_slots.acquire()
+            taken += 1
         with pytest.raises(accounts.ServiceBusyError, match="busy"):
             accounts.hash_password(PASSWORD)
     finally:
-        for _ in held:
+        for _ in range(taken):
             accounts._hash_slots.release()
 
 
@@ -588,3 +596,94 @@ def test_a_busy_hash_is_refused_as_a_sign_in_not_as_an_unreadable_file(
     logged = " ".join(record.getMessage() for record in caplog.records)
     assert "service busy" in logged
     assert "account list could not be read" not in logged
+
+
+# ============================ where a sign-in lands ============================
+
+
+#: The bootstrap account must replace its password at first sign-in, and that redirect
+#: outranks `next` by design. A test about where `next` lands therefore has to get past it
+#: first, or it measures the forced change instead.
+SETTLED_PASSWORD = f"{PASSWORD}-settled-by-its-owner"
+
+
+def _settle(client: FlaskClient) -> None:
+    """Complete the forced password change, so later sign-ins are ordinary ones."""
+    client.post(
+        "/account/password",
+        data={
+            "current": PASSWORD,
+            "password": SETTLED_PASSWORD,
+            "confirm": SETTLED_PASSWORD,
+            "csrf_token": form_token(client, "/account/password"),
+        },
+    )
+
+
+def test_a_same_origin_next_survives_the_second_factor(
+    app: Flask, client: FlaskClient, clock: _MovableClock
+) -> None:
+    """The `next` target must still be there on the far side of the second factor.
+
+    It was not. `auth.sign_in` clears the session, correctly, so that nothing set before
+    authentication survives it, and the target was read AFTER that call and so was always
+    empty: every sign-in through `/sign-in/verify` landed on the dashboard whatever link
+    the person had followed, while three places in the module described a `next` that
+    worked. It failed safe, which is exactly why nothing noticed for three gate rounds.
+    """
+    secret, _ = sign_in_fully(client)
+    _settle(client)
+    clock.advance(totp.STEP_SECONDS * 4)
+
+    fresh = app.test_client()
+    fresh.post(
+        "/sign-in",
+        data={
+            "username": USERNAME,
+            "password": SETTLED_PASSWORD,
+            "next": "/api/registers",
+            "csrf_token": form_token(fresh),
+        },
+    )
+    arrived = fresh.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(fresh, "/sign-in/verify")},
+    )
+
+    assert arrived.headers["Location"] == "/api/registers"
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["//evil.example/", "https://evil.example/", "/\\evil.example", "javascript:alert(1)"],
+)
+def test_a_hostile_next_still_lands_on_the_console(
+    app: Flask, client: FlaskClient, clock: _MovableClock, target: str
+) -> None:
+    """And carrying it across the session boundary must not re-open the open redirect.
+
+    The guard is `auth.redirect_after_sign_in`, which resolves the target against this
+    origin. It was already held for the one-step path; this holds it for the path that now
+    actually carries a value, because a control that moved and was not re-measured is a
+    control nobody has measured.
+    """
+    secret, _ = sign_in_fully(client)
+    _settle(client)
+    clock.advance(totp.STEP_SECONDS * 4)
+
+    fresh = app.test_client()
+    fresh.post(
+        "/sign-in",
+        data={
+            "username": USERNAME,
+            "password": SETTLED_PASSWORD,
+            "next": target,
+            "csrf_token": form_token(fresh),
+        },
+    )
+    arrived = fresh.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(fresh, "/sign-in/verify")},
+    )
+
+    assert arrived.headers["Location"] == "/console"
