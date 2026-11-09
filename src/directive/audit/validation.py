@@ -151,7 +151,11 @@ _FIELD_NAMES = re.compile(
 _PRINTABLE_ASCII = re.compile(r"\A[\x20-\x21\x23-\x7e]+\Z")
 
 #: A character a spreadsheet treats as the start of a formula.
-_FORMULA_LEAD = frozenset("=+-@")
+#: Public, because `accounts.normalise_username` imports it rather than restating it. A
+#: username that begins with one of these is a username no entry about that account can
+#: name, so the credential module refuses it at creation; keeping ONE definition is what
+#: stops the two rules drifting apart, which they did for six releases.
+FORMULA_LEAD = frozenset("=+-@")
 
 #: RFC 3339 in UTC, which is the only timestamp form accepted. A local offset would let
 #: two entries claim an order the chain contradicts. The calendar is checked separately:
@@ -193,10 +197,21 @@ def recordable(name: str, value: str) -> str:
     and discarded the whole entry, so an unauthenticated caller could still probe the
     callback route leaving nothing behind. Two rule sets drift; one does not.
 
-    Use this ONLY for a caller-influenced context field: the source address, the user agent,
-    and the one `resource_id` on the sign-in refusal path, which carries a caller-derived
-    count. Those three, and no others. Never for the actor: an actor is the subject of the
-    record, so a name that cannot be recorded refuses the sign-in instead.
+    Use this ONLY for a caller-influenced context field. Three field names reach it, and
+    be exact about the third, because this docstring said "the one `resource_id` on the
+    sign-in refusal path" and three shipped records repeated it. `source_ip` and
+    `user_agent` are read from the request in two modules each. `resource_id` is not one
+    path: `record_event` is the single writer for every authentication event, every
+    account-administration event and the boot break-glass unlock, and it passes the
+    `resource_id` of ALL of them through here. Most of those carry a username that
+    `accounts.normalise_username` has already narrowed to a set this boundary accepts, so
+    the substitution cannot bite; the boot unlock carries `BOOTSTRAP_ADMIN` straight from
+    the platform's environment, which nothing narrows, so that one genuinely can land as
+    the marker. That is the intended failure and not a gap: an entry that names the action
+    with an unrecordable subject is worth more than no entry at all.
+
+    Never for the actor: an actor is the subject of the record, so a name that cannot be
+    recorded refuses the sign-in instead.
     """
     # FIELD_LIMITS[name], never .get(name, 0). A typo at a call site would otherwise slice
     # to nothing, `_check_one` would accept the empty string as an optional field, and the
@@ -243,7 +258,7 @@ def _check_one(name: str, value: object) -> str:
             f"audit field {name!r} contains a character outside printable ASCII, which "
             f"could forge a log line or misrepresent the recorded value"
         )
-    if value[0] in _FORMULA_LEAD:
+    if value[0] in FORMULA_LEAD:
         raise AuditFieldError(
             f"audit field {name!r} starts with {value[0]!r}, which a spreadsheet treats "
             f"as a formula when the evidence pack is exported"

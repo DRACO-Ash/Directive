@@ -334,7 +334,8 @@ because a stale token means the stored secret has already been replaced and no c
 changes one without the other, so it is now recorded as reachable and untested rather than
 given a test that would pass on the code mismatch and prove nothing. The correction stands
 in the code; the sentence was never in this file, which is one detail of the gate's report
-that was itself wrong and is not accepted.
+that was itself wrong and is not accepted. The ninth round was given that correction and
+accepted it.
 
 Three more things were held by nothing and now are: the clearing of the pending secret at
 confirmation, which is the only guard on a second pass through `finish_enrolment`;
@@ -345,11 +346,47 @@ was redundant with the one inside `bump_epoch`, so it was fail-closed code that 
 held control and held nothing: the same class as the `epoch_of(None)` branch removed a
 commit earlier, and it is deleted the same way.
 
-**Two residuals are recorded rather than fixed**, both measured: a second party who knows an
-account's password can stop its owner completing a first enrolment by re-loading the page,
-which is strictly weaker than that party simply enrolling first; and `GET /sign-in/enrol`
-writes to the credential store without a request token, which gains a cross-site caller
-nothing because they cannot read the response.
+**Two residuals are recorded rather than fixed**, both measured, and both re-measured and
+re-worded at the ninth round below, because each sentence described code that the ninth
+round then changed: a second party who knows an account's password can stop its owner
+completing a first enrolment; and `GET /sign-in/enrol` writes to the credential store
+without a request token, which gains a cross-site caller nothing because they cannot read
+the response. The rows in `docs/GATE-RECORDS.md` carry the current figures and are the
+record; these two lines are kept short on purpose, because a figure repeated in two files
+is a figure that goes stale in one of them.
+
+**The ninth round found two MAJORs, and the first was a boundary disagreeing with a
+boundary.** `normalise_username` accepted a username beginning `=`, `+`, `-` or `@`, which
+the audit boundary's `FORMULA_LEAD` refuses, so an account could be created whose own
+administration entries could never name it: the evidence would read `unrecordable` where the
+subject should be, irreversibly, because an entry cannot be rewritten. The fix imports the
+audit boundary's own set rather than mirroring it, and a test asserts the two names are one
+object, because this build has already shipped a mirrored rule set that drifted.
+
+**The second is the enrolment page as a write amplifier.** The token that owns an
+unconfirmed secret was minted BY the page, so a cookie captured at the first factor carried
+no token and every replay of it was served a freshly minted secret: twelve replays, twelve
+secrets, twelve writes to the credential store, from one password verification. The token is
+now minted in `begin_second_factor`, at the first factor, where a replayed cookie already
+carries it; a session that arrives without one is redirected rather than served, so the page
+writes at most once per half-finished sign-in. Beside it sat a second hole the same fix
+exposed: `enrol_page` alone did not check the session epoch, where both its siblings do, so
+a password change or a factor reset stopped the sign-in completing while this page went on
+serving it fresh secrets and writing them to the record. That is a half-authenticated caller
+writing to the credential store after revocation, which is the case the `may_sign_in` check
+on this route was added to close one round earlier; that fix swept the disabled and locked
+half and left this one open.
+
+**Three MINORs, all of them a record reaching further than the code.** `recordable`'s
+docstring said it covered "the source address, the user agent, and the one `resource_id` on
+the sign-in refusal path. Those three, and no others", and two shipped documents repeated
+it. It covers three FIELD NAMES, and the `resource_id` one is every event `record_event`
+writes: authentication, account administration and the boot break-glass unlock alike. Most
+carry a username the account boundary has already narrowed; the boot unlock carries
+`BOOTSTRAP_ADMIN` straight from the platform environment, which nothing narrows, so that
+entry genuinely can name its subject `unrecordable`. The enrolment token was called "a
+bearer value" when it never leaves a server-signed cookie a caller cannot write. And the two
+accepted-residual rows above carried figures from the code as it stood before this round.
 
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
@@ -663,8 +700,8 @@ one.
   declared test double the exemption ledger pins by path, digest and match count. What is
   still
   open is listed under Open in scope in `docs/GATE-RECORDS.md` rather than implied to be
-  closed, and the largest item is `NAME = value` with spaces: closing it gives 30 findings
-  on 30 lines across every tracked file, the experiment being to replace `=` with
+  closed, and the largest item is `NAME = value` with spaces: closing it gives 31 findings
+  on 31 lines across every tracked file, the experiment being to replace `=` with
   `[ \t]*=[ \t]*` in that rule alone. The sweep-cost figures in this bullet are asserted by
   `tests/test_sweep_cost_figures.py`, against the live tree and against this sentence.
 ● The sweep and the pre-write hook are asserted to be one rule set by

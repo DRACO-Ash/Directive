@@ -70,6 +70,11 @@ EPOCH_KEY = "directive_epoch"
 PENDING_KEY = "directive_pending"
 PENDING_SINCE_KEY = "directive_pending_since"
 
+#: The token naming the unconfirmed second-factor secret THIS sign-in owns. Minted at the
+#: first factor, before the enrolment page exists to be replayed at, and held here rather
+#: than carrying the secret itself: the session cookie is signed and not encrypted.
+ENROLMENT_KEY = "directive_enrolment"
+
 #: How long a half-finished sign-in stays open. Long enough to read a code off a phone,
 #: short enough that a borrowed browser is not a standing invitation.
 PENDING_SECONDS = 300
@@ -214,6 +219,11 @@ def begin_second_factor(username: str, *, epoch: int) -> None:
     session[PENDING_KEY] = username
     session[PENDING_SINCE_KEY] = time.time()
     session[EPOCH_KEY] = epoch
+    #: Before the enrolment page can mint anything, so a cookie captured here and replayed
+    #: already carries it. Minted inside the page, it could never be in a replayed cookie
+    #: and every replay minted afresh: one password hash bought five minutes of writes to
+    #: the credential store at request rate.
+    session[ENROLMENT_KEY] = accounts.new_enrolment_token()
     session.permanent = False
 
 

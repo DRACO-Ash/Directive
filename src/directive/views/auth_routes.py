@@ -46,11 +46,6 @@ def _data_dir() -> str:
 #: same-site absolute path.
 NEXT_KEY = "directive_signin_next"
 
-#: The token naming the unconfirmed second-factor secret THIS sign-in was shown. Held on
-#: the session; the secret itself stays on the volume, because the session cookie is signed
-#: and not encrypted.
-ENROLMENT_KEY = "directive_enrolment"
-
 #: The longest self-asserted actor accepted, well inside the audit field's 320-byte cap.
 MAXIMUM_ACTOR_LENGTH = 200
 
@@ -433,6 +428,15 @@ def enrol_page() -> str | Response:
         if not accounts.may_sign_in(account) or accounts.is_enrolled(account):
             auth.abandon_second_factor()
             return redirect(url_for(SIGN_IN_ENDPOINT))
+        #: The epoch, which this route alone did not check. Both siblings did, so a
+        #: password change or a factor reset stopped a half-finished sign-in completing
+        #: while this page went on serving it fresh secrets and WRITING them to the record:
+        #: a half-authenticated caller writing to the credential store after revocation,
+        #: which is the case the `may_sign_in` line above was added to close one round ago.
+        #: That fix closed the disabled and locked half and left this one open.
+        if _pending_refusal(account, username):
+            auth.abandon_second_factor()
+            return redirect(url_for(SIGN_IN_ENDPOINT))
         #: Reuse a pending secret rather than issuing a new one on every load. This GET
         #: used to mint one each time, so refreshing the page after scanning the key made
         #: the code in the app stop working, with nothing on screen to say why.
@@ -444,11 +448,19 @@ def enrol_page() -> str | Response:
         #: the attacker holds the account's live second factor. No administrator action is
         #: needed. The token names one half-finished sign-in and lives on the session;
         #: another session gets a fresh secret, and only the holder can confirm one.
-        secret = accounts.pending_secret_for(account, session.get(ENROLMENT_KEY))
+        #: Refused outright without one, rather than minting. A pending sign-in always
+        #: carries a token, because `begin_second_factor` mints it; a request that does not
+        #: is either a cookie from before this release or a forgery, and in both cases the
+        #: safe answer is to start again. Minting here instead is what made the page a
+        #: write amplifier.
+        owned = session.get(auth.ENROLMENT_KEY)
+        if not isinstance(owned, str) or not owned:
+            auth.abandon_second_factor()
+            return redirect(url_for(SIGN_IN_ENDPOINT))
+        secret = accounts.pending_secret_for(account, owned)
         if not secret:
-            secret, token = accounts.begin_enrolment(account)
+            secret = accounts.begin_enrolment(account, token=owned)
             accounts.save(_data_dir(), rows)
-            session[ENROLMENT_KEY] = token
     return _never_stored(
         render_template(
             "enrol.html",
@@ -478,7 +490,7 @@ def enrol_submit() -> Response:
             auth.abandon_second_factor()
             return _refuse(blocked)
         codes = accounts.finish_enrolment(
-            account, request.form.get("code"), token=session.get(ENROLMENT_KEY)
+            account, request.form.get("code"), token=session.get(auth.ENROLMENT_KEY)
         )
         if codes is None:
             return _refuse(f"the enrolment code for {username!r} did not match")

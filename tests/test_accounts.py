@@ -41,17 +41,51 @@ def test_a_username_is_normalised(raw: str, expected: str) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ["", "   ", "ash higgins", "ash\they", "ash/../etc", "ash\u0000", "ashé", 42, None, b"x"],
+    [
+        "",
+        "   ",
+        "ash higgins",
+        "ash\they",
+        "ash/../etc",
+        "ash\u0000",
+        "ashé",
+        42,
+        None,
+        b"x",
+        #: The LEADING characters, added after a gate found the docstring below true of the
+        #: byte cap and false of the characters. Each of these was accepted for six
+        #: releases, and each produced an account that no audit entry about it could name:
+        #: six of six Administration entries recorded `unrecordable`, `ACCOUNT_LOCKED` was
+        #: dropped outright, and the account could never sign in. `=` was already refused
+        #: by the character allowlist; it is here so the set reads complete.
+        "-ash@bluestaq.uk",
+        "+ash@bluestaq.uk",
+        "@ash.bluestaq.uk",
+        "=ash@bluestaq.uk",
+    ],
 )
 def test_an_unusable_username_is_refused(raw: object) -> None:
     """An allowlist of characters, not a pattern over Unicode.
 
     A username becomes an `actor` and a `resource_id` on an audit entry, and the audit
-    boundary takes printable ASCII only. A name the log cannot carry is a sign-in that
-    cannot be attributed, so it is refused here where a person can be told why.
+    boundary takes printable ASCII only AND refuses a leading formula character. A name the
+    log cannot carry is a sign-in that cannot be attributed, so it is refused here where a
+    person can be told why.
     """
     with pytest.raises(accounts.AccountError):
         accounts.normalise_username(raw)
+
+
+def test_the_username_rule_and_the_audit_rule_are_one_definition() -> None:
+    """Imported, not mirrored, so the two cannot drift apart again.
+
+    They did drift, for six releases, and the cost is in `normalise_username`'s comment.
+    This asserts the shared object rather than the behaviour, because behaviour alone would
+    be satisfied by a second copy of the same characters.
+    """
+    from directive.audit import validation  # noqa: PLC0415 - only this test needs it
+
+    assert accounts.FORMULA_LEAD is validation.FORMULA_LEAD
 
 
 def test_a_username_may_not_exceed_the_audit_field_it_must_fit() -> None:
@@ -360,7 +394,7 @@ def test_the_enabled_administrators_are_counted() -> None:
 def test_redacted_is_an_allowlist_and_carries_no_secret() -> None:
     """A denylist is one new field away from leaking it, and the next field is a secret."""
     account = accounts.new_account("a@b.uk", GOOD, role=accounts.ADMIN)
-    accounts.begin_enrolment(account)
+    accounts.begin_enrolment(account, token=accounts.new_enrolment_token())
     account["a_future_secret"] = "must not appear"  # noqa: S105 - the point of the test
 
     shown = accounts.redacted(account)
@@ -388,7 +422,8 @@ def test_enrolment_is_two_steps_and_the_pending_secret_grants_nothing() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    secret = accounts.begin_enrolment(account, token=token)
 
     assert not accounts.is_enrolled(account)
     assert not accounts.verify_code(account, totp.code_now(secret))
@@ -419,7 +454,8 @@ def test_a_code_cannot_be_spent_twice() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    secret = accounts.begin_enrolment(account, token=token)
     accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     moment = time.time() + totp.STEP_SECONDS * 4
     code = totp.code_now(secret, now=moment)
@@ -440,7 +476,8 @@ def test_a_code_from_earlier_in_the_window_is_refused_after_a_later_one() -> Non
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    secret = accounts.begin_enrolment(account, token=token)
     accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     moment = time.time() + totp.STEP_SECONDS * 4
     earlier = totp.code_now(secret, now=moment - totp.STEP_SECONDS)
@@ -458,7 +495,8 @@ def test_an_unreadable_counter_refuses_every_code() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    secret = accounts.begin_enrolment(account, token=token)
     accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     account["totp_last_step"] = "not a number"
 
@@ -477,19 +515,22 @@ def test_resetting_the_factor_resets_the_counter() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    secret = accounts.begin_enrolment(account, token=token)
     accounts.finish_enrolment(account, totp.code_now(secret), token=token)
     accounts.reset_factor(account)
 
     assert account["totp_last_step"] == accounts.NO_STEP
 
-    fresh, fresh_token = accounts.begin_enrolment(account)
+    fresh_token = accounts.new_enrolment_token()
+    fresh = accounts.begin_enrolment(account, token=fresh_token)
     assert accounts.finish_enrolment(account, totp.code_now(fresh), token=fresh_token) is not None
 
 
 def test_enrolment_with_a_wrong_code_confirms_nothing() -> None:
     account = accounts.new_account("a@b.uk", GOOD)
-    _, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    accounts.begin_enrolment(account, token=token)
 
     assert accounts.finish_enrolment(account, "000000", token=token) is None
     assert not accounts.is_enrolled(account)
@@ -499,7 +540,8 @@ def test_a_reset_factor_forces_re_enrolment_and_drops_recovery_codes() -> None:
     from directive import totp  # noqa: PLC0415 - only this test needs it
 
     account = accounts.new_account("a@b.uk", GOOD)
-    secret, token = accounts.begin_enrolment(account)
+    token = accounts.new_enrolment_token()
+    secret = accounts.begin_enrolment(account, token=token)
     accounts.finish_enrolment(account, totp.code_now(secret), token=token)
 
     accounts.reset_factor(account)
@@ -512,18 +554,32 @@ def test_a_corrupted_factor_secret_refuses_rather_than_raising() -> None:
     assert accounts.verify_code({"totp_secret": "not!base32!"}, "123456") is False
 
 
-def test_two_enrolments_on_one_account_get_different_unguessable_tokens() -> None:
+def test_two_sign_ins_get_different_unguessable_enrolment_tokens() -> None:
     """A unique token that is SHORT is still guessable, which the route test cannot see.
 
     The route-level test refuses a second session the live secret, and a one-byte token
     would satisfy it while being guessable in a few hundred attempts. So the length is
     asserted here, at the source, alongside the uniqueness.
+
+    Minted by `new_enrolment_token` rather than by `begin_enrolment`, because the token has
+    to exist before the enrolment page can be loaded: created inside the page, it could
+    never be in a replayed cookie and every replay minted a secret and wrote the credential
+    store. See that function's own docstring for the measurement.
     """
-    account = accounts.new_account("a@b.uk", GOOD)
+    first = accounts.new_enrolment_token()
+    second = accounts.new_enrolment_token()
 
-    _, first = accounts.begin_enrolment(account)
-    _, second = accounts.begin_enrolment(account)
-
-    assert first != second, "two enrolments shared a token"
+    assert first != second, "two sign-ins shared a token"
     assert len(first) >= 43, f"a {len(first)}-character token is guessable"
-    assert account["totp_pending_token"] == second, "the account holds the latest token"
+
+
+def test_an_enrolment_secret_is_owned_by_the_token_it_was_minted_with() -> None:
+    """The caller supplies the token, so the account records WHICH sign-in owns the secret."""
+    account = accounts.new_account("a@b.uk", GOOD)
+    mine, theirs = accounts.new_enrolment_token(), accounts.new_enrolment_token()
+
+    secret = accounts.begin_enrolment(account, token=mine)
+
+    assert accounts.pending_secret_for(account, mine) == secret
+    assert accounts.pending_secret_for(account, theirs) == ""
+    assert account["totp_pending_token"] == mine

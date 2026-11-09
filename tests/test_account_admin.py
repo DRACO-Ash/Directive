@@ -40,7 +40,6 @@ from flask.testing import FlaskClient
 from werkzeug.test import TestResponse
 
 from directive import accounts, auth, create_app, totp
-from directive.views import auth_routes
 
 SUITE_KEY = bytes(range(32)).hex()
 ADMIN = "ash.higgins@bluestaq.uk"
@@ -1144,16 +1143,18 @@ def test_an_outstanding_enrolment_cannot_complete_past_the_pending_gate(
     rows = accounts.load(data_dir)
     account = accounts.find(rows, MEMBER)
     assert account is not None
+    # The request token is captured BEFORE the epoch is corrupted. `enrol_page` now
+    # refuses a stale pending sign-in like both of its siblings, so fetching the token
+    # afterwards would read a redirect and the helper would fail on its own assertion
+    # rather than on the gate this test names.
+    csrf = _token(caller, "/sign-in/enrol")
     account["session_epoch"] = "corrupt"
     accounts.save(data_dir, rows)
     assert str(_stored(app, MEMBER).get("totp_pending") or ""), "the secret must survive"
 
     completed = caller.post(
         "/sign-in/enrol",
-        data={
-            "code": totp.code_now(found.group(1)),
-            "csrf_token": _token(caller, "/sign-in/enrol"),
-        },
+        data={"code": totp.code_now(found.group(1)), "csrf_token": csrf},
     )
 
     assert caller.get("/api/registers").status_code == 401, "a stale enrolment completed"
@@ -1341,9 +1342,72 @@ def test_no_pre_authentication_key_survives_a_completed_sign_in(
     with caller.session_transaction() as held:
         survived = [
             name
-            for name in (auth.PENDING_KEY, auth.PENDING_SINCE_KEY, auth_routes.ENROLMENT_KEY)
+            for name in (auth.PENDING_KEY, auth.PENDING_SINCE_KEY, auth.ENROLMENT_KEY)
             if name in held
         ]
         assert held.get(auth.ACTOR_KEY) == MEMBER, "the sign-in did not complete"
 
     assert not survived, f"these outlived the session boundary: {survived}"
+
+
+def test_a_replayed_pre_enrolment_cookie_mints_once_not_once_per_request(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """One password hash must buy one write, not a write per request.
+
+    The enrolment token used to be minted BY the page, alongside the secret, so a caller
+    who kept the cookie from the first factor and replayed it was never carrying a token
+    and was served a freshly minted secret every time. A gate measured 25 replays of one
+    cookie producing 25 secrets and 25 fsynced rewrites of the credential store in 0.06
+    seconds, each taking the global lock that every sign-in and every administration route
+    also takes, for five minutes per hash. Reproduced here before the fix and after.
+
+    Minting the token at the first factor is what closes it: a replayed cookie already
+    carries the token, so it matches and the page writes nothing.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    victim = app.test_client()
+    _give_first_factor(victim, MEMBER, PHRASE)
+    captured = _session_cookie(victim)
+    stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
+
+    secrets_served, file_states = set(), set()
+    for _ in range(12):
+        replay = app.test_client()
+        replay.set_cookie("directive_session", captured)
+        found = re.search(
+            r'class="secret mono">([A-Z2-7]+)<', replay.get("/sign-in/enrol").get_data(as_text=True)
+        )
+        assert found is not None, "the replay was not served the page at all"
+        secrets_served.add(found.group(1))
+        file_states.add(stored.stat().st_mtime_ns)
+
+    assert len(secrets_served) == 1, f"{len(secrets_served)} secrets minted from one hash"
+    assert len(file_states) == 1, f"{len(file_states)} writes to the credential store"
+
+
+def test_the_enrolment_page_refuses_a_sign_in_the_epoch_has_moved_past(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The enrolment page alone did not check the epoch, and it WRITES.
+
+    Both siblings check it, so a password change or a factor reset stopped a half-finished
+    sign-in completing while this page went on serving fresh secrets and planting them on
+    the record: a half-authenticated caller writing to the credential store after
+    revocation, which is the case the `may_sign_in` check here was added to close one round
+    ago. That fix swept the disabled and locked half and left this one open.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    victim = app.test_client()
+    _give_first_factor(victim, MEMBER, PHRASE)
+    victim.get("/sign-in/enrol")
+
+    _post(admin, f"/accounts/{MEMBER}/reset-factor")
+    assert not str(_stored(app, MEMBER).get("totp_pending") or ""), "the remedy did not clear"
+
+    served = victim.get("/sign-in/enrol")
+
+    assert served.status_code == 302, "a revoked sign-in was served a secret"
+    assert not str(_stored(app, MEMBER).get("totp_pending") or ""), (
+        "a revoked sign-in re-planted a secret on the credential store"
+    )

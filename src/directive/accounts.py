@@ -50,13 +50,16 @@ from pathlib import Path
 from typing import Any, TypeGuard
 
 from . import totp
+from .audit.validation import FORMULA_LEAD
 
 #: The directory under `DATA_DIR`. Deliberately not `records`, which the export globs.
 ACCOUNTS_DIRNAME = "accounts"
 
-#: Bytes of randomness in the token that owns an unconfirmed enrolment secret. The same
-#: order as a session identifier, because that is what it is: a bearer value naming one
-#: half-finished sign-in.
+#: Bytes of randomness in the token that owns an unconfirmed enrolment secret. Sized like a
+#: session identifier because guessing one would hand the guesser another sign-in's
+#: unconfirmed secret. NOT a bearer value, and that phrase stood here until a gate called it
+#: an over-claim: the token rides inside the server-signed session cookie, so a caller can
+#: neither choose one nor write one, and on its own it opens nothing.
 ENROLMENT_TOKEN_BYTES = 32
 
 #: The counter value meaning "no code has been accepted yet". Not zero: counter zero is a
@@ -127,6 +130,23 @@ STATES = (ACTIVE, DISABLED)
 #: binding one, because an account whose creation cannot be audited is an account that
 #: should not exist. The rule belongs here, where a person can be told about it, rather
 #: than at the boundary where the entry is refused and the operator reads a cap figure.
+#:
+#: **That sentence was true of the CAP and false of the characters, for six releases.** The
+#: set below admits `-`, `+` and `@` anywhere, including first, and the audit boundary
+#: refuses exactly those as a leading character because a spreadsheet reads them as a
+#: formula. So a username could be created that no entry about it could name. A gate drove
+#: the consequences and each was reproduced here: six of six AUD-001 Administration entries
+#: recorded `resource_id='unrecordable'`, a promotion to administrator among them;
+#: `ACCOUNT_LOCKED` was dropped entirely by an unauthenticated trigger, because
+#: `record_event` returns False on an unrecordable actor and the sign-in path discards it;
+#: and the account could never sign in, after enrolling a factor and burning ten recovery
+#: codes it was never shown. With `BOOTSTRAP_ADMIN=+ops@bluestaq.uk` that bricks the
+#: deployment: the sole administrator is created, enrols, and is refused forever, while
+#: `ensure_bootstrap` will not make another because the list is not empty.
+#:
+#: The leading rule is therefore IMPORTED from the audit boundary rather than restated
+#: here. Two rule sets drift, which is the argument `validation.recordable`'s own docstring
+#: makes, and this is what drifting cost.
 MAXIMUM_USERNAME = 128
 _USERNAME_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyz0123456789.-_@+"  # lower case only; see `normalise_username`
@@ -177,6 +197,14 @@ def normalise_username(raw: object) -> str:
     if bad:
         raise AccountError(
             f"a username may use letters, digits and . - _ @ + only, not {''.join(bad)[:16]!r}"
+        )
+    if value[0] in FORMULA_LEAD:
+        #: The audit boundary's own set, imported rather than mirrored. A name the log
+        #: cannot carry is an account that cannot be administered, signed into, or locked
+        #: out on the record, so it is refused here where the person is told why.
+        raise AccountError(
+            f"a username may not begin with {value[0]!r}: the audit log refuses it, because "
+            "a spreadsheet reads it as a formula when the evidence pack is exported"
         )
     return value
 
@@ -559,8 +587,23 @@ def set_password(account: dict[str, Any], password: str) -> int:
     return bump_epoch(account)
 
 
-def begin_enrolment(account: dict[str, Any]) -> tuple[str, str]:
-    """Return a new second-factor secret and the token that OWNS it.
+def new_enrolment_token() -> str:
+    """Return a token naming one half-finished sign-in.
+
+    Minted by `auth.begin_second_factor`, before the enrolment page can be loaded, and that
+    ordering is the whole point. It used to be minted BY the page, alongside the secret, so
+    a caller who kept the cookie from the first factor and replayed it was never carrying a
+    token and was served a freshly minted secret every time. A gate measured 25 replays of
+    one cookie producing 25 secrets and 25 fsynced rewrites of the credential store in 0.06
+    seconds, each one taking the lock every sign-in and every administration route also
+    takes, from a single 430 millisecond password hash. Establishing the token before the
+    first mint means a replayed cookie already carries it and matches.
+    """
+    return secrets.token_urlsafe(ENROLMENT_TOKEN_BYTES)
+
+
+def begin_enrolment(account: dict[str, Any], *, token: str) -> str:
+    """Return a new second-factor secret, owned by the caller's sign-in token.
 
     Stored before it is confirmed so the person can be shown it once and asked to prove
     their app has it. Until `finish_enrolment` runs, `enrolled` is False and the secret
@@ -584,21 +627,21 @@ def begin_enrolment(account: dict[str, Any]) -> tuple[str, str]:
     which is signed and not encrypted.
     """
     secret = totp.new_secret()
-    token = secrets.token_urlsafe(ENROLMENT_TOKEN_BYTES)
     account["totp_pending"] = secret
     account["totp_pending_token"] = token
     account["updated"] = _now_text()
-    return secret, token
+    return secret
 
 
 def pending_secret_for(account: dict[str, Any], token: object) -> str:
     """Return the unconfirmed secret this token owns, or an empty string.
 
-    Compared in constant time, and that is belt and braces here rather than a boundary: the
-    token arrives from a server-signed session the caller cannot write, so there is no
-    oracle to time. The sentence here called it "a bearer value", which overstates the
-    exposure and a gate said so; the comparison stays because the cost is nil and because
-    the day something does hand this a caller-chosen value, the control is already right.
+    Compared in constant time, and be exact about what that buys, because this docstring has
+    been corrected twice for reaching too far. It is not a boundary control: the token
+    arrives from a server-signed session the caller cannot write, so there is no oracle to
+    time, and calling the token "a bearer value" overstated the exposure. The comparison
+    stays because it costs nothing and because the day something does hand this a
+    caller-chosen value, the control is already the right one.
 
     The COMPARISON, not the guards above it, is what refuses a second session the live
     secret, and it is reachable only on a second load: a session arriving with no token at
