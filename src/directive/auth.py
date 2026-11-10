@@ -468,6 +468,11 @@ def admin_required[Handler: Callable[..., Any]](handler: Handler) -> Handler:
             # The LIVE role, not the session's copy of it. A demoted administrator is
             # refused here from the next request, including the request that would undo
             # their own demotion, which a gate drove successfully against the old code.
+            #: Forward-looking, and kept deliberately rather than deleted as dead. No
+            #: `/api/` route carries `admin_required` today, so an engineering gate found
+            #: this branch at zero coverage; its sibling in `required` IS live, and
+            #: deleting this one would leave the trap that the first administration route
+            #: under `/api/` redirects a refused caller instead of answering 403.
             if request.path.startswith("/api/"):
                 return {"error": "not permitted"}, 403
             return redirect(url_for(DASHBOARD_ENDPOINT))

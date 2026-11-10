@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import functools
 import hashlib
 import hmac
 import json
@@ -351,7 +352,22 @@ def needs_rehash(stored: str) -> bool:
 #: username takes the full hashing time, which tells an unauthenticated caller which of the
 #: two they guessed. The work is real, not a sleep: a timed sleep is a constant an attacker
 #: can subtract, and real hashing tracks the machine's own speed.
-_DECOY = hash_password("decoy-account-password-never-used-" + secrets.token_hex(16))
+@functools.cache
+def _decoy_hash() -> str:
+    """Return a throwaway hash for `absorb_timing`, derived on first use and kept.
+
+    **Derived lazily, because at import it could stop the process booting.** This was a
+    module-level `_DECOY = hash_password(...)`, which runs 128 MiB of scrypt while the
+    module is being imported. A `MemoryError` there becomes `ServiceBusyError` and escapes
+    out of the import, so the container cannot start at all and the operator loses the
+    diagnostics read-out, which CLAUDE.md makes the recovery channel for exactly that kind
+    of bad configuration. An engineering gate found it. Nothing in the boot path may depend
+    on a 128 MiB allocation succeeding.
+
+    Cached rather than recomputed, so the cost is paid once by the first caller that needs
+    it, on a path that exists to spend time anyway.
+    """
+    return hash_password("decoy-account-password-never-used-" + secrets.token_hex(16))
 
 
 
@@ -396,7 +412,7 @@ def absorb_timing() -> None:
     wait, so the effort was spent either way.
     """
     try:
-        verify_password(_DECOY, "any value at all, it will not match")
+        verify_password(_decoy_hash(), "any value at all, it will not match")
     except ServiceBusyError:
         return
 

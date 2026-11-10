@@ -9,6 +9,8 @@ from starving the liveness probe of threads.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -202,10 +204,40 @@ def test_the_decoy_spends_real_effort_rather_than_sleeping(
     assert calls, "absorb_timing spent no hashing effort, so it is a sleep by another name"
 
 
-def test_the_decoy_matches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """And the effort it spends is wasted on purpose: no supplied value can match it."""
-    assert accounts.verify_password(accounts._DECOY, GOOD) is False
-    assert accounts.verify_password(accounts._DECOY, "") is False
+def test_the_decoy_matches_nothing_and_is_not_derived_at_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The effort is wasted on purpose, and deriving it must not be able to stop a boot.
+
+    The decoy was a module-level constant, so 128 MiB of scrypt ran while the module was
+    imported and a `MemoryError` there would have escaped out of the import, stopping the
+    container and taking the diagnostics read-out with it. That read-out is this project's
+    stated recovery channel for a bad configuration value, so nothing in the boot path may
+    depend on a 128 MiB allocation succeeding. An engineering gate found it; this asserts
+    both halves.
+    """
+    #: In a SUBPROCESS, because in this one another test may already have derived it and
+    #: the assertion would be about the order tests ran in. The first draft of this line
+    #: read `... or True`, which is the defect an engineering gate had just found elsewhere
+    #: in the suite, written again while fixing it.
+    root = Path(__file__).resolve().parents[1]
+    fresh = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, 'src'); from directive import accounts; "
+            "print(accounts._decoy_hash.cache_info().currsize)",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        check=True,
+    )
+    assert fresh.stdout.strip() == "0", (
+        "importing the module derived the decoy, so a 128 MiB allocation can stop a boot"
+    )
+    assert accounts.verify_password(accounts._decoy_hash(), GOOD) is False
+    assert accounts.verify_password(accounts._decoy_hash(), "") is False
 
 
 def test_a_busy_hash_is_not_a_wrong_password(monkeypatch: pytest.MonkeyPatch) -> None:
