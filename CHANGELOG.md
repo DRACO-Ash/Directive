@@ -611,6 +611,51 @@ predicate answering "is this record an administrator" invites the next maintaine
 the record instead of on live standing, which is exactly the defect this release already
 fixed when a disabled administrator kept its permissions until the cookie expired.
 
+**The engineering gate found three MAJORs on a build the security gate had just passed**,
+which is the whole argument for running both rather than treating one as a proxy for the
+other. All three were controls that existed, read as held, and did not do what they said.
+
+**The load-shedding refusal could not fire from any route.** The module header argued a
+sign-in flood is bounded because hashing is capped at two concurrent slots and a caller that
+cannot get one is shed. Every scrypt call runs while the account-file lock is held, so
+hashing was serialised to one, the semaphore could never reach its limit, and callers queued
+on an untimed lock: eight concurrent sign-ins ran fully serial with the slowest waiting 4.56
+seconds against a three-second budget and nothing shed. The bound is now on the lock, where
+the queue forms, and the header states what that buys and what it does not. Hashing stays
+serialised at one, so the real ceiling is 128 MiB rather than the 256 implied, and the cost
+is throughput.
+
+**`needs_rehash` had no caller while two records promised it did**, the header saying an
+account hashed under older parameters "is re-hashed on next sign-in" and `hash_password`
+promising replacement "on the next successful sign-in". Wired rather than deleted, because
+raising the cost as OWASP raises it is the reason the parameters are stored beside the hash
+at all, and proven over the route in both directions: a hash planted at a quarter of the
+cost comes back current, and an upgrade that cannot run never costs anybody their sign-in.
+
+**The administration blueprint's 503 described a case it never answers.** A signed-in
+administrator meeting a corrupt list is stopped by the decorator, which catches the same
+error and redirects, measured. The handler still covers the race where the list is readable
+when the guard looks and unreadable when the view does, so it is kept and held by a test
+that fails the second read; corrupting the file would reproduce the case the guard already
+handles and pass without touching it.
+
+**Fixing the first exposed three defects of my own**, and the pattern in them is the same:
+each was caught by a deterministic test or by the project's own guards, never by reading the
+change. Bounding the three route bodies left `ensure_bootstrap`'s acquire unbounded ahead of
+them, so a request could still queue without limit before reaching a shed it would never
+arrive at. The budget was a default argument, which binds at import, so `HASH_WAIT_SECONDS`
+could not be tuned by an operator or a test: a tunable that cannot be tuned is worse than a
+literal, because it reads as a control. And a test asserting `... or True` was written while
+removing another one, in a test about boot safety. The loop's architecture ledger then
+refused the lazy decoy's new `functools` import until it was declared with its reason, which
+is that ledger working as intended.
+
+**Two findings are left open rather than quietly closed.** The three authentication test
+modules carry duplicated fixtures and parallel helpers, and the comment density in the
+authentication surface has become a record of the review rather than of the code. Both are
+refactors across files this release has edited heavily, and they belong in their own change
+rather than folded into one that alters authentication behaviour.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
