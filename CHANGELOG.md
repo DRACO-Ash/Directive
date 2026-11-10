@@ -785,6 +785,40 @@ account whose stored hash is stale, because the upgrade returns before hashing o
 Corrected, with its provenance named, which is the distinction this release keeps having to
 learn.
 
+**The fourth engineering round was asked to hunt a class rather than clear a diff, and
+that is the part worth keeping.** Three rounds running, the finding had been half of a
+symmetric control: a check one route had and its sibling did not, three bodies bounded while
+a fourth acquire sat unbounded ahead of them, a clause held on one blueprint and not the
+other. So the gate was pointed at the whole authentication surface with one question, where
+do two call sites, two blueprints or two except clauses implement one decision, and is each
+side held. It returned three more instances and one false claim.
+
+**The sharpest finding is about how this project tests, not about a line of code.** Both
+`OSError` conversions in `accounts.save` were at zero hits, and the cause is that every
+write-fault test in the suite stubs `accounts.save` itself, including the ones written
+earlier in this release. The conversion inside it had therefore never executed, which meant
+no mutation of those lines could ever be caught: a guarantee rather than an observation.
+Narrowing the tuple turns a recorded refusal into a 500 with no audit entry on a route an
+unauthenticated caller reaches. Both are driven now with a real `OSError`, and the cleanup
+beside them is held too, because a fault between staging and renaming must leave no
+`.accounts-*` file carrying password hashes behind.
+
+**One finding was a label rather than a control, and the distinction mattered.** Three of
+four `accounts.save` call sites on the sign-in blueprint are unguarded, so a read-only mount
+raised from a WRITE and the handler reported that the list could not be READ. The refusal
+itself is correct and stays: the save it follows persists the spent one-time-password step,
+and granting a session without it would make that code replayable. What was wrong was that
+on a mount where nobody can sign in at all, the single error line an operator has
+contradicted itself inside one sentence. The handler now says "reached" and lets `load` and
+`save` name the direction, and the three existing assertions that depend on the old phrase
+were checked to make sure the rewording did not quietly empty them.
+
+**And a claim written in the previous commit held nothing.** A docstring said asserting both
+halves pinned the order of two exception clauses; a mutant swapping them left it green,
+because it drives the error that lands in the generic branch either way. Corrected and
+attributed to the sibling that does hold it, rather than reworded, since a claim that holds
+nothing is what that commit existed to stop shipping.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
