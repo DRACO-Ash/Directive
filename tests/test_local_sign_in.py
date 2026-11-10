@@ -15,6 +15,7 @@ import json
 import re
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from flask import Flask
@@ -827,3 +828,201 @@ def test_an_unreadable_accounts_directory_is_a_refusal_not_a_500(
     assert refused.status_code == 302, "a 500 is not a refusal"
     actions = [entry.action for entry in app.extensions["directive_chain"].entries[before:]]
     assert "LOGIN_FAILED" in actions, "the refusal left no AUD-001 record"
+
+
+# ================= the refusal paths no test executed =================
+#
+# Six reachable controls that the coverage report listed at zero hits across the whole suite,
+# found by a security gate reading that report rather than the code. Each is driven here, and
+# each was proved red by deleting the body it names. Grouped because they share one cause: a
+# refusal is easy to write and easy to leave undriven, and this build's own bar is that a
+# control is unfinished until a mutation shows it can fail.
+
+
+def _refuses_every_actor(*_args: object, **_kwargs: object) -> bool:
+    """Stand in for `record_event` when the actor cannot be recorded.
+
+    A named function rather than a lambda: the analyser profile refuses an unused lambda
+    argument, and `record_event` takes eight, so the signature has to swallow them.
+    """
+    return False
+
+
+def test_a_lockout_during_a_sign_in_refuses_the_second_factor(
+    app: Flask, client: FlaskClient
+) -> None:
+    """A third party can lock the account between the two factors, and this is the only layer.
+
+    A lockout does NOT bump the epoch, deliberately, because it is not a credential change
+    and an account that unlocks should not have signed its owner out everywhere. So
+    `_pending_refusal` does not catch this case and `may_sign_in` on the second-factor route
+    is the whole of the defence. It had never been executed by a test.
+    """
+    secret, _ = sign_in_fully(client)
+    victim = app.test_client()
+    give_password(victim)
+
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    for _ in range(accounts.MAXIMUM_FAILURES):
+        accounts.record_failure(account)
+    accounts.save(data_dir, rows)
+    assert accounts.is_locked(account), "the account did not lock"
+
+    refused = victim.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(victim, "/sign-in/verify")},
+    )
+
+    assert refused.status_code == 302, "a locked account completed its second factor"
+    assert victim.get("/api/registers").status_code == 401, "the locked caller holds a session"
+
+
+def test_ten_wrong_second_factor_codes_write_the_account_locked_entry(
+    app: Flask, client: FlaskClient
+) -> None:
+    """AUD-001 requires the lockout event, and nothing drove it from this route.
+
+    The sibling on the password path is covered. This one is reached only by exhausting the
+    allowance against the SECOND factor, which no test did, so the audit entry AUD-001 asks
+    for was written by a line the suite never ran.
+    """
+    sign_in_fully(client)
+    victim = app.test_client()
+    give_password(victim)
+
+    for _ in range(accounts.MAXIMUM_FAILURES):
+        victim.post(
+            "/sign-in/verify",
+            data={"code": "000000", "csrf_token": form_token(victim, "/sign-in/verify")},
+        )
+
+    actions = [entry.action for entry in app.extensions["directive_chain"].entries]
+    assert "ACCOUNT_LOCKED" in actions, f"no lockout was recorded from the second factor: {actions}"
+
+
+def test_the_second_factor_refuses_a_request_with_no_pending_sign_in(
+    client: FlaskClient,
+) -> None:
+    """Posting a code with no half-finished sign-in. Reachable by anyone, driven by nobody."""
+    refused = client.post(
+        "/sign-in/verify",
+        data={"code": "000000", "csrf_token": form_token(client, "/sign-in")},
+    )
+
+    assert refused.status_code in {302, 403}, "a code was accepted with no pending sign-in"
+    assert client.get("/api/registers").status_code == 401
+
+
+def test_enrolment_refuses_a_request_with_no_pending_sign_in(client: FlaskClient) -> None:
+    """The same shape on the enrolment route, and equally undriven."""
+    refused = client.post(
+        "/sign-in/enrol",
+        data={"code": "000000", "csrf_token": form_token(client, "/sign-in")},
+    )
+
+    assert refused.status_code in {302, 403}, "an enrolment was accepted with no pending sign-in"
+    assert client.get("/api/registers").status_code == 401
+
+
+def test_a_sign_in_whose_actor_cannot_be_recorded_is_signed_straight_back_out(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The application's own stated reason for existing, held by nothing until now.
+
+    AUD-001 requires the user principal name on an authentication event, so a verified
+    identity this log cannot name is not one this application will accept. Both second-factor
+    routes sign the caller straight back out when the LOGIN entry cannot be written. Neither
+    path had ever been executed: the actor is recordable for every username the suite uses,
+    which is exactly why the branch needs forcing rather than waiting for.
+    """
+    secret, _ = sign_in_fully(client)
+    #: The confirming code is SPENT at enrolment, so a code taken in the same 30-second step
+    #: is refused as a replay and the POST below never reaches the branch under test. The
+    #: first version of this test passed on exactly that, 302 for the wrong reason, caught by
+    #: measuring the line's coverage rather than trusting the green. Clearing the counter is
+    #: the smallest thing that isolates the gate from the replay guard.
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    account["totp_last_step"] = accounts.NO_STEP
+    accounts.save(data_dir, rows)
+
+    caller = app.test_client()
+    give_password(caller)
+
+    monkeypatch.setattr(auth_routes, "record_event", _refuses_every_actor)
+    refused = caller.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(caller, "/sign-in/verify")},
+    )
+
+    assert refused.status_code == 302, "an unrecordable actor was signed in"
+    assert caller.get("/api/registers").status_code == 401, "the session survived the refusal"
+
+
+def test_an_enrolment_whose_actor_cannot_be_recorded_is_signed_straight_back_out(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same control on the enrolment route, which completes a sign-in of its own."""
+    give_password(client)
+    page = client.get("/sign-in/enrol").get_data(as_text=True)
+    found = re.search(r'class="secret mono">([A-Z2-7]+)<', page)
+    token = re.search(r'name="csrf_token" value="([^"]+)"', page)
+    assert found is not None
+    assert token is not None
+
+    monkeypatch.setattr(auth_routes, "record_event", _refuses_every_actor)
+    refused = client.post(
+        "/sign-in/enrol",
+        data={"code": totp.code_now(found.group(1)), "csrf_token": token.group(1)},
+    )
+
+    assert refused.status_code == 302, "an unrecordable actor was enrolled and signed in"
+    assert client.get("/api/registers").status_code == 401, "the session survived the refusal"
+
+
+def test_a_sign_in_survives_an_audit_log_that_is_unavailable(
+    app: Flask, client: FlaskClient
+) -> None:
+    """An unrecordable ACTOR refuses the sign-in; an unavailable LOG must not.
+
+    The two failure modes are different and `record_event`'s docstring says so: an actor that
+    cannot be named is a property of this sign-in and will not fix itself, while a volume
+    fault is transient infrastructure, and refusing every sign-in during one would lock the
+    operator out of the diagnostics that explain it. The catch-all that keeps them apart was
+    executed by no test, so the behaviour the docstring promises was held by nothing.
+
+    The session is still worth nothing on its own: every mutating route fails closed without
+    a chain, which is asserted here rather than assumed.
+    """
+    secret, _ = sign_in_fully(client)
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    account["totp_last_step"] = accounts.NO_STEP
+    accounts.save(data_dir, rows)
+
+    class _FaultyChain:
+        """A journal whose volume has gone away mid-request."""
+
+        entries: ClassVar[list[object]] = []
+
+        def append(self, _entry: dict[str, str]) -> None:
+            raise OSError("the volume went away")
+
+    caller = app.test_client()
+    give_password(caller)
+    app.extensions["directive_chain"] = _FaultyChain()
+
+    completed = caller.post(
+        "/sign-in/verify",
+        data={"code": totp.code_now(secret), "csrf_token": form_token(caller, "/sign-in/verify")},
+    )
+
+    assert completed.status_code == 302, "a volume fault refused a correct sign-in"
+    assert caller.get("/console").status_code == 200, "the operator was locked out by a fault"

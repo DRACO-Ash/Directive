@@ -1559,6 +1559,25 @@ def test_a_wrong_enrolment_code_is_refused_at_the_route(app: Flask, admin: Flask
         assert auth.ACTOR_KEY not in held, "a wrong code signed the caller in"
 
 
+def test_an_unknown_account_state_is_refused_at_the_route(app: Flask, admin: FlaskClient) -> None:
+    """`set_state` refuses a state outside the vocabulary, and nothing drove it.
+
+    Reachable by any administrator posting a bogus `state` field, and at zero hits across the
+    whole suite until a gate read the coverage report. The record must be untouched
+    afterwards, which is the half that matters: a refusal that has already half-written the
+    row is not a refusal.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    before = _stored(app, MEMBER)
+
+    refused = _post(admin, f"/accounts/{MEMBER}/state", state="NOT_A_STATE")
+
+    assert refused.status_code == 302, "an unknown state was accepted"
+    after = _stored(app, MEMBER)
+    assert after.get("state") == before.get("state"), "an unknown state changed the record"
+    assert after.get("updated") == before.get("updated"), "a refused write touched the record"
+
+
 def test_abandoning_a_half_finished_sign_in_clears_its_enrolment_token(
     app: Flask, admin: FlaskClient
 ) -> None:

@@ -690,14 +690,21 @@ def finish_enrolment(
         #:
         #: This branch is REDUNDANT. `totp._decode` refuses an empty secret, so without it the
         #: call below raises `TotpError`, the handler catches it, and the answer is the same
-        #: `None`. Neither layer is exercised by the suite and the coverage report names both.
-        #: It is kept as defence in depth rather than deleted, because the cost is one branch
-        #: and what it guards is an empty string reaching a decoder.
+        #: `None`. It is kept as defence in depth rather than deleted, because the cost is one
+        #: branch and what it guards is an empty string reaching a decoder.
         #:
-        #: What IS held, by a route test, is the composition that matters: a POST from a
-        #: session carrying the pending marker and no enrolment token is refused, signs nobody
-        #: in, and writes no secret. Reaching it needs a cookie minted before this release and
-        #: signed with the same key, because `begin_second_factor` sets both keys together and
+        #: Be exact about what the suite runs, because the sentence here said "neither layer
+        #: is exercised by the suite and the coverage report names both" and that was written
+        #: describing the state BEFORE the test four lines below was added, in the same commit
+        #: that added it. THIS branch is executed, by
+        #: `test_a_tokenless_post_confirms_nothing_and_signs_nobody_in`. The fallback layers
+        #: are not: the coverage report names the handler below and `totp.py`'s empty-secret
+        #: refusal, and not this line.
+        #:
+        #: What that test holds is the composition that matters: a POST from a session
+        #: carrying the pending marker and no enrolment token is refused, signs nobody in, and
+        #: writes no secret. Reaching it needs a cookie minted before this release and signed
+        #: with the same key, because `begin_second_factor` sets both keys together and
         #: `abandon_second_factor` clears them together.
         return None
     try:
@@ -866,11 +873,6 @@ def may_sign_in(
     return (
         account is not None and account.get("state") == ACTIVE and not is_locked(account, now=now)
     )
-
-
-def is_admin(account: dict[str, Any] | None) -> bool:
-    """Return whether this account may administer other accounts."""
-    return account is not None and account.get("role") == ADMIN
 
 
 def active_admins(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
