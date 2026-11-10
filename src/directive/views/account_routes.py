@@ -323,9 +323,20 @@ def _unreadable_account_list(error: accounts.AccountError) -> tuple[str, int]:
     A different answer from the sign-in blueprint's, deliberately. There the refusal must
     write an AUD-001 row and send the caller back to the form; here the caller is already
     an authenticated administrator, nothing has changed, and the honest answer is that the
-    service cannot serve this request right now. A redirect would be wrong in particular:
-    every error path on this blueprint redirects to `/accounts`, and `/accounts` is one of
-    the routes that cannot be served, so it would loop.
+    service cannot serve this request right now.
+
+    **Be exact about when this answers, because the first version of this docstring was wrong
+    twice.** It is NOT the ordinary answer to a corrupt list. `auth.admin_required` runs
+    first and calls `live_standing`, which catches the same `AccountError` and redirects, so
+    a signed-in administrator meeting a corrupt list gets `302 /sign-in?next=/accounts`,
+    measured, never a 503. What reaches here is the RACE: the list was readable when the
+    decorator looked and unreadable when the view did. That window is real, a lost mount is
+    the likeliest cause, and without this handler it is a 500 with no explanation.
+
+    The claim that a redirect "would loop", because every error path here goes to
+    `/accounts` and `/accounts` cannot be served, was also false: the decorator's redirect
+    goes to `/sign-in`, which renders. Both corrections came from an engineering gate that
+    drove the case rather than reading the comment.
     """
     current_app.logger.error("account administration unavailable: %s", error)
     return "The account list could not be read. An operator should check the volume.", 503

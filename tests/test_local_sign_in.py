@@ -265,7 +265,13 @@ def test_no_password_hash_reaches_the_evidence_export(client: FlaskClient) -> No
 
     assert "scrypt" not in pack
     assert "totp_secret" not in pack
-    assert "accounts" not in pack.lower().split('"registers"')[0] or True
+    #: The export's own key, not the word "accounts" anywhere in the payload: a register
+    #: could legitimately be named for one. This line read `... or True` until an
+    #: engineering gate spotted it, which made it an assertion that could not fail sitting
+    #: in the test that holds a credential store apart from a disclosure.
+    assert "accounts" not in (pack_body := client.get("/api/export").get_json() or {}), (
+        f"the export carries an accounts key: {sorted(pack_body)}"
+    )
     assert PASSWORD not in pack
 
 
@@ -914,7 +920,7 @@ def test_the_second_factor_refuses_a_request_with_no_pending_sign_in(
         data={"code": "000000", "csrf_token": form_token(client, "/sign-in")},
     )
 
-    assert refused.status_code in {302, 403}, "a code was accepted with no pending sign-in"
+    assert refused.status_code == 302, "a code was accepted with no pending sign-in"
     assert client.get("/api/registers").status_code == 401
 
 
@@ -925,7 +931,7 @@ def test_enrolment_refuses_a_request_with_no_pending_sign_in(client: FlaskClient
         data={"code": "000000", "csrf_token": form_token(client, "/sign-in")},
     )
 
-    assert refused.status_code in {302, 403}, "an enrolment was accepted with no pending sign-in"
+    assert refused.status_code == 302, "an enrolment was accepted with no pending sign-in"
     assert client.get("/api/registers").status_code == 401
 
 

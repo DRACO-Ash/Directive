@@ -1578,6 +1578,40 @@ def test_an_unknown_account_state_is_refused_at_the_route(app: Flask, admin: Fla
     assert after.get("updated") == before.get("updated"), "a refused write touched the record"
 
 
+def test_a_list_that_fails_between_the_guard_and_the_view_answers_503(
+    app: Flask, admin: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one window in which the administration blueprint's 503 can answer.
+
+    An engineering gate found the handler at zero coverage and established why: a signed-in
+    administrator meeting a corrupt list is stopped by `auth.admin_required` first, which
+    calls `live_standing`, catches the same `AccountError` and redirects, so the view never
+    runs and the 503 never fires. What is left is the race where the list is readable when
+    the guard looks and unreadable when the view does, which a lost mount produces.
+
+    Driven by failing the SECOND read rather than by corrupting the file, because corrupting
+    it reproduces the case the guard already handles and would pass without touching this
+    handler at all.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    real = accounts.load
+    reads = {"count": 0}
+
+    def _fails_after_the_guard(data_dir: str) -> list[dict[str, object]]:
+        reads["count"] += 1
+        if reads["count"] >= 2:
+            raise accounts.AccountError("the account list could not be read")
+        return real(data_dir)
+
+    monkeypatch.setattr(accounts, "load", _fails_after_the_guard)
+    answered = admin.get("/accounts")
+
+    assert answered.status_code == 503, (
+        f"the race answered {answered.status_code}, so the handler is still unreachable"
+    )
+    assert b"operator" in answered.data.lower(), "the 503 says nothing an operator can act on"
+
+
 def test_abandoning_a_half_finished_sign_in_clears_its_enrolment_token(
     app: Flask, admin: FlaskClient
 ) -> None:
