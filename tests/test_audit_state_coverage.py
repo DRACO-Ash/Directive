@@ -1632,6 +1632,12 @@ PERMITTED_IMPORTS = frozenset(
         "datetime",
         "errno",
         "fcntl",
+        #: `accounts.py` only: `functools.cache` holds the decoy hash `absorb_timing` spends
+        #: its effort against. It used to be a module-level constant, so 128 MiB of scrypt ran
+        #: at import and a `MemoryError` there would have stopped the container booting, taking
+        #: the diagnostics read-out with it. Caching is what makes deriving it lazily free
+        #: after the first call. It reaches nothing: no request, no clock, no filesystem.
+        "functools",
         "hashlib",
         "hmac",
         "json",
