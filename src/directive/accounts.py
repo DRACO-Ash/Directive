@@ -370,7 +370,6 @@ def _decoy_hash() -> str:
     return hash_password("decoy-account-password-never-used-" + secrets.token_hex(16))
 
 
-
 def upgrade_hash_if_stale(account: dict[str, Any], password: object) -> bool:
     """Re-hash a stored password under current parameters. Returns whether it changed.
 
@@ -401,6 +400,7 @@ def upgrade_hash_if_stale(account: dict[str, Any], password: object) -> bool:
         return False
     account["updated"] = _now_text()
     return True
+
 
 def absorb_timing() -> None:
     """Spend the same hashing effort a real verification would, and discard it.
