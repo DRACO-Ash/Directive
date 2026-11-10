@@ -168,6 +168,13 @@ def test_a_hash_made_under_weaker_parameters_still_verifies_and_is_flagged() -> 
     #: gate then found the fix held by nothing: reverting it left all 1645 tests green.
     #: The realistic trigger is a release rollback after the cost is raised, which is the
     #: one operation storing the parameters beside the hash exists to survive.
+    #: This plant hashes at TWICE `SCRYPT_N`, so it costs about 256 MiB and takes the
+    #: suite's peak child memory to roughly 321 MiB, against 177 MiB for a
+    #: current-parameter hash. Recorded because the App Store test stage's memory limit is
+    #: `TBC, re-verify`: under a tighter one this fails with `ServiceBusyError` out of the
+    #: `MemoryError` conversion rather than on an assertion, which reads as a capacity bug
+    #: rather than as the budget it is. `needs_rehash` never hashes, so only the
+    #: `verify_password` line below needs a real digest.
     stronger = _planted(accounts.SCRYPT_N * 2, accounts.SCRYPT_R, accounts.SCRYPT_P)
     assert accounts.verify_password(stronger, GOOD), "the stronger hash does not verify"
     assert not accounts.needs_rehash(stronger), "a stronger hash would be rewritten DOWN"
@@ -180,6 +187,32 @@ def test_a_hash_made_under_weaker_parameters_still_verifies_and_is_flagged() -> 
     )
     assert accounts.needs_rehash(_planted(accounts.SCRYPT_N, accounts.SCRYPT_R // 2, 2)), (
         "a set with today's work and half the memory read as current"
+    )
+
+
+def test_the_work_axis_decides_once_the_parallelism_is_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second axis is dormant at today's parameters, by arithmetic, so it is driven here.
+
+    With `SCRYPT_P` at 1, today's work factor `n * r * p` EQUALS today's memory factor
+    `n * r`, and every stored set has `p >= 1`, so memory being current implies work being
+    current: the work comparison can never be the clause that fires. An engineering gate
+    proved it both ways, algebraically and by deleting the disjunct and passing the whole
+    suite.
+
+    The clause is still right, and it goes live the day `SCRYPT_P` rises, which is the only
+    parameter movement that separates the two axes. Rather than record a branch nothing can
+    reach, this raises the parallelism and asserts the work axis then decides a case the
+    memory axis cannot see: identical memory, less work.
+    """
+    monkeypatch.setattr(accounts, "SCRYPT_P", 2)
+
+    same_memory_less_work = _planted(accounts.SCRYPT_N, accounts.SCRYPT_R, 1)
+
+    assert accounts.needs_rehash(same_memory_less_work), (
+        "with the parallelism raised, a hash at the old p was not flagged, so the work axis "
+        "decides nothing"
     )
 
 

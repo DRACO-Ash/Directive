@@ -1673,3 +1673,49 @@ def test_the_enrolment_page_refuses_a_sign_in_the_epoch_has_moved_past(
     assert stored.stat().st_mtime_ns == before, (
         "a revoked sign-in caused a write to the credential store"
     )
+
+
+def test_a_busy_hash_on_the_password_route_is_not_reported_as_an_unreadable_volume(
+    app: Flask,
+    admin: FlaskClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sibling of the sign-in shed handler, held on one side of the application only.
+
+    `password_submit` catches `ServiceBusyError` around its password check, and its own
+    comment says "Same reasoning as the sign-in route: a capacity event recorded as a
+    credential failure is a false record in an immutable log". The sign-in side of that
+    reasoning is held by a test; this side was held by nothing, at zero hits in the loop's
+    own coverage artefact, and an engineering gate deleted the clause and watched 207 tests
+    pass.
+
+    What the clause prevents, measured both ways before this test existed: with it, a
+    capacity event answers `302 /account/password?error=...busy...`; without it, the same
+    event falls through to the blueprint handler and tells the operator "The account list
+    could not be read. An operator should check the volume." about a volume that is
+    healthy. The `could not be read` assertion is the one that makes the mutant lethal,
+    because the status alone does not separate the two paths.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = _sign_in(app, MEMBER, PHRASE)
+    before = len(app.extensions["directive_chain"].entries)
+
+    def _busy(*_args: object, **_kwargs: object) -> bool:
+        raise accounts.ServiceBusyError("no hashing slot was free")
+
+    monkeypatch.setattr(accounts, "verify_password", _busy)
+    with caplog.at_level("WARNING"):
+        answered = _change_own(caller, PHRASE, "a-replacement-of-real-length")
+
+    assert answered.status_code == 302, f"a capacity event answered {answered.status_code}"
+    location = answered.headers.get("Location", "")
+    assert "busy" in location, f"the caller was not told the service is busy: {location!r}"
+    assert "could not be read" not in location, "a healthy volume was reported as unreadable"
+    assert "could not be read" not in caplog.text, (
+        "the operator was sent to check a volume that is healthy"
+    )
+    actions = [entry.action for entry in app.extensions["directive_chain"].entries[before:]]
+    assert "PASSWORD_CHANGE_FAILED" not in actions, (
+        f"a capacity event was recorded as a credential failure: {actions}"
+    )

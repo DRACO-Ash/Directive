@@ -1314,7 +1314,10 @@ def test_the_first_run_bootstrap_is_shed_rather_than_queued(
     assert refused.headers.get("Location", "").endswith("/sign-in"), (
         f"the caller went on to {refused.headers.get('Location')!r} instead of being shed"
     )
-    assert waited < 3.0, f"the first-run caller queued for {waited:.2f}s instead of being shed"
+    #: Near the patched budget of 0.25 s rather than the unpatched 3.0. Asserting `< 3.0`
+    #: let a regression that restored a multi-second budget pass, which is ten times looser
+    #: than the thing the test is named for.
+    assert waited < 1.0, f"the first-run caller queued for {waited:.2f}s instead of being shed"
     assert "busy" in caplog.text, f"the shed was not recorded as a capacity event: {caplog.text!r}"
     assert client.get("/api/registers").status_code == 401, "a shed sign-in granted a session"
 
@@ -1361,3 +1364,38 @@ def test_a_starved_bootstrap_is_deferred_rather_than_reported_as_a_failure(
     )
     assert "Traceback" not in caplog.text, "a capacity event was logged with a traceback"
     assert not accounts.load(data_dir), "a starved bootstrap left an account behind"
+
+
+def test_a_bootstrap_password_the_rules_refuse_is_reported_as_a_failure(
+    app: Flask, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The generic clause beside the busy one, and the ordering between them.
+
+    Covering the capacity case left this at zero hits, and it is the one a real first-run
+    deployment actually meets: `new_account` raises a plain `AccountError` whenever
+    `check_password_rules` refuses, so a `BOOTSTRAP_ADMIN_PASSWORD` under the minimum lands
+    here. It must read as a configuration fault, with the traceback an operator needs,
+    which is the opposite of the deferral its sibling records.
+
+    Asserting both halves pins the ORDER of the two clauses from the other side: if the
+    specific one were moved below the generic one, a capacity event would land in this
+    branch and be reported as a bad password.
+    """
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    stored = accounts.accounts_path(data_dir)
+    if stored.exists():
+        stored.unlink()
+
+    def _refused(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise accounts.AccountError("the password is shorter than the minimum")
+
+    monkeypatch.setattr(accounts, "new_account", _refused)
+    with caplog.at_level("WARNING"), app.app_context():
+        created = auth.ensure_bootstrap(data_dir)
+
+    assert created is False, "a refused bootstrap reported that it had created an account"
+    assert "not created" in caplog.text, (
+        f"a configuration fault was not reported as one: {caplog.text!r}"
+    )
+    assert "deferred" not in caplog.text, "a bad password was reported as a capacity event"
+    assert not accounts.load(data_dir), "a refused bootstrap left an account behind"
