@@ -445,7 +445,7 @@ def absorb_timing() -> None:
     wait, so the effort was spent either way.
 
     **One asymmetry remains and is recorded rather than hidden.** The decoy is derived on
-    first use, so the FIRST unknown-username request in a process pays for deriving it as
+    first use, so the FIRST request in a process that reaches it pays for deriving it as
     well as for the comparison: measured at 0.833 seconds against 0.381 in steady state and
     0.395 for a real verification. That is one request per process, and it errs towards the
     absent account being slower rather than faster, which is the harmless direction. It is
