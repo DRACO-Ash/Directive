@@ -662,6 +662,35 @@ authentication surface has become a record of the review rather than of the code
 refactors across files this release has edited heavily, and they belong in their own change
 rather than folded into one that alters authentication behaviour.
 
+**The engineering re-review found five MAJORs in the fixes for the previous three, and
+four of them were tests and claims rather than code.** That ratio is the finding worth
+keeping. The code defect was one: the rehash's `save` sat outside any `try` while the
+comment above it promised the upgrade never refuses a sign-in, so a read-only volume turned
+a correct password into a refusal and logged it as a list that could not be read, about a
+list that read perfectly.
+
+The other four were all assertions of the form "this is held", made by me, each wrong in a
+different way. The guard test never reached the guard, because the fixture's hash is current
+so nothing was upgraded and the patched function was called zero times. Both shed tests
+passed with the route bound reverted, because the bootstrap variable is set in the fixture
+and the shed fired somewhere else entirely: they held a configuration that does not ship.
+The busy-versus-unreadable test asserted an action and an outcome that both handlers write
+identically. And the memory ceiling corrected in the round before was itself wrong, measured
+here at two concurrent hashes and therefore 256 MiB, putting two shipped records into
+contradiction when one of them had been right all along.
+
+**What separated the tests that hold a control from the tests that pass beside it was
+mutation, every time.** All four were green before and after the thing they name was
+deleted. Each of the three surviving mutants is now proved dead, and the busy one dies with
+the false record visible in its own output: "could not be read: the sign-in service is
+busy".
+
+The export assertion is worth its own line, because it has now been wrong twice. It read
+`... or True`, which could not fail; the replacement fetched the export a second time and
+fell back to `or {}`, so a non-JSON answer would have satisfied it silently. The same
+vacuity through a different door. It asserts the response is an object first, and tests that
+object.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
