@@ -405,13 +405,19 @@ def test_a_busy_hash_does_not_count_against_the_lockout(
 
 
 def test_a_corrupt_account_file_refuses_and_records_rather_than_raising(
-    app: Flask, client: FlaskClient
+    app: Flask, client: FlaskClient, caplog
 ) -> None:
     """An unauthenticated route must leave a record even when the volume is unreadable.
 
     It answered 500 with no audit entry at all, against the refusal path's stated contract.
     The generic error page leaked nothing, so this is about the missing AUD-001 row: "the
     volume is corrupt" is a failed authentication and wants one.
+
+    This is also the one test that holds the fault handler's WORDING, which for a round was
+    asserted by nothing: a gate measured `grep "could not be reached" tests/` returning
+    nothing at all after the phrase was changed. The sibling shed test can only assert the
+    phrase is ABSENT, so its presence has to be pinned somewhere, and this is the path that
+    legitimately produces it.
     """
     # One request first, so the bootstrap administrator exists and there is a file to
     # corrupt. Without it this would measure the "no accounts yet" path instead.
@@ -419,9 +425,13 @@ def test_a_corrupt_account_file_refuses_and_records_rather_than_raising(
     stored = accounts.accounts_path(str(app.config["DIRECTIVE_DATA_DIR"]))
     stored.write_text("{ this is not json", encoding="utf-8")
 
-    refused = give_password(client)
+    with caplog.at_level("ERROR"):
+        refused = give_password(client)
 
     assert refused.status_code == 302, "a 500 is not a refusal"
+    assert "could not be reached" in caplog.text, (
+        f"the fault handler did not name the account list as unreachable: {caplog.text!r}"
+    )
     assert client.get("/api/registers").status_code == 401
     actions = [entry.action for entry in app.extensions["directive_chain"].entries]
     assert "LOGIN_FAILED" in actions, "the refusal must still be recorded"
@@ -595,9 +605,17 @@ def test_a_busy_hash_is_refused_as_a_sign_in_not_as_an_unreadable_file(
     `ServiceBusyError` subclasses `AccountError`, so deleting the explicit `except` in the
     route leaves the handler to catch it and the outward behaviour identical: the security
     property still holds through the second control, which is why the gate scored it MINOR.
-    What changes is the server log, which would start calling a capacity event "the account
-    list could not be read", and mislabelling a capacity event is the whole reason this
-    class exists. So the test keys on the reason rather than on the status code.
+    What changes is WHICH layer records it. Caught here, the route names the username and
+    the stage: "the sign-in for 'x' could not be hashed: service busy". Uncaught, it leaves
+    the view and the blueprint's `_shed_under_load` takes it, since Flask prefers the more
+    specific class, and the log carries "sign-in shed under load" with no username in it.
+    So the test keys on the reason rather than on the status code.
+
+    An earlier version of this docstring said the uncaught case "would start calling a
+    capacity event 'the account list could not be read'". That was wrong twice over and a
+    gate caught it: the generic fault handler never sees this error while the busy handler
+    is registered, and the phrase it logs has since changed. The assertion below was pinned
+    to that dead phrase and so held nothing; it keys on the live discriminator now.
     """
     give_password(client, password=WRONG_PASSWORD)
 
@@ -609,8 +627,10 @@ def test_a_busy_hash_is_refused_as_a_sign_in_not_as_an_unreadable_file(
         give_password(client)
 
     logged = " ".join(record.getMessage() for record in caplog.records)
-    assert "service busy" in logged
-    assert "account list could not be read" not in logged
+    assert "service busy" in logged, f"the route did not name the stage that shed: {logged!r}"
+    assert "shed under load" not in logged, (
+        "the capacity event escaped the route and was recorded by the blueprint handler"
+    )
 
 
 # ============================ where a sign-in lands ============================
@@ -1119,14 +1139,20 @@ def test_a_shed_sign_in_is_recorded_as_busy_and_not_as_an_unreadable_volume(
     assert all(entry.action == "LOGIN_FAILED" for entry in entries), (
         f"a shed sign-in was recorded as something else: {[e.action for e in entries]}"
     )
-    #: The REASON, which is the only thing that differs between the two handlers: both end
-    #: in `_refuse`, so both write LOGIN_FAILED and FAILURE. Asserting the action and the
-    #: outcome alone left this test green with the busy handler deleted, which a gate proved
-    #: by mutation. The sibling test on the unreadable path keys on the log the same way.
+    #: The REASON, and it has to be a phrase only ONE of the two handlers can emit. Both
+    #: end in `_refuse`, so both write LOGIN_FAILED and FAILURE, and both interpolate the
+    #: error into their log line. That last part is what emptied the earlier version of
+    #: this assertion: once the fault handler's wording moved from "read" to "reached", a
+    #: shed falling through to it still carried the word "busy" from the interpolated
+    #: error, so `"busy" in logged` held whichever handler fired and `"could not be read"`
+    #: could no longer appear at all. A gate deleted the busy handler and the whole suite
+    #: stayed green. These two phrases are each emitted by exactly one handler and by
+    #: nothing else: "shed under load" by `_shed_under_load`, "could not be reached" by
+    #: `_unreadable_account_list`.
     logged = caplog.text
-    assert "busy" in logged, f"the shed was not recorded as a capacity event: {logged!r}"
-    assert "could not be read" not in logged, (
-        "a healthy volume under load was recorded as an unreadable one"
+    assert "shed under load" in logged, f"the shed was not recorded as a capacity event: {logged!r}"
+    assert "could not be reached" not in logged, (
+        "a healthy volume under load was recorded as an unreachable one"
     )
 
 
@@ -1270,8 +1296,8 @@ def test_a_failed_upgrade_write_does_not_refuse_the_sign_in(
     assert "could not be upgraded" in caplog.text, (
         f"the failure was not logged as an upgrade: {caplog.text!r}"
     )
-    assert "could not be read" not in caplog.text, (
-        "a write fault was reported to the operator as a read fault"
+    assert "could not be written" in caplog.text, (
+        f"a write fault did not reach the operator as a write fault: {caplog.text!r}"
     )
 
 

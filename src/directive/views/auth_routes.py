@@ -616,8 +616,8 @@ def _unreadable_account_list(error: accounts.AccountError) -> Response:
     narrowed to the unparseable-JSON trigger rather than closed. Fixed in `accounts.load`
     rather than here, because a handler can only catch what the layer below it raises.
     """
-    #: "reached", not "read", and the difference is the operator's whole diagnosis. Three of
-    #: the four `accounts.save` call sites on this blueprint are unguarded, so a read-only
+    #: "reached", not "read", and the difference is the operator's whole diagnosis. Four of
+    #: the five `accounts.save` call sites on this blueprint are unguarded, so a read-only
     #: mount raises from a WRITE and landed here: the one ERROR line an operator had then
     #: contradicted itself inside a sentence, "could not be read: the account list could not
     #: be written", at the moment nobody can sign in at all. An engineering gate measured it

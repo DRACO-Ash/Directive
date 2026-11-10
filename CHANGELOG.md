@@ -794,30 +794,71 @@ do two call sites, two blueprints or two except clauses implement one decision, 
 side held. It returned three more instances and one false claim.
 
 **The sharpest finding is about how this project tests, not about a line of code.** Both
-`OSError` conversions in `accounts.save` were at zero hits, and the cause is that every
-write-fault test in the suite stubs `accounts.save` itself, including the ones written
-earlier in this release. The conversion inside it had therefore never executed, which meant
-no mutation of those lines could ever be caught: a guarantee rather than an observation.
+`OSError` conversions in `accounts.save` were at zero hits, and the cause is that the one
+place in the suite where a write fault is driven stubs `accounts.save` itself, at
+`tests/test_local_sign_in.py:1259`. The conversion inside it had therefore never executed,
+which meant no mutation of those lines could ever be caught: a guarantee rather than an
+observation. An earlier version of this paragraph said EVERY write-fault test stubs it,
+which generalises from a set of one; the conclusion holds and the quantifier did not.
 Narrowing the tuple turns a recorded refusal into a 500 with no audit entry on a route an
 unauthenticated caller reaches. Both are driven now with a real `OSError`, and the cleanup
 beside them is held too, because a fault between staging and renaming must leave no
 `.accounts-*` file carrying password hashes behind.
 
-**One finding was a label rather than a control, and the distinction mattered.** Three of
-four `accounts.save` call sites on the sign-in blueprint are unguarded, so a read-only mount
+**One finding was a label rather than a control, and the distinction mattered.** Four of
+the five `accounts.save` call sites on the sign-in blueprint are unguarded, so a read-only mount
 raised from a WRITE and the handler reported that the list could not be READ. The refusal
 itself is correct and stays: the save it follows persists the spent one-time-password step,
 and granting a session without it would make that code replayable. What was wrong was that
 on a mount where nobody can sign in at all, the single error line an operator has
 contradicted itself inside one sentence. The handler now says "reached" and lets `load` and
-`save` name the direction, and the three existing assertions that depend on the old phrase
-were checked to make sure the rewording did not quietly empty them.
+`save` name the direction. **The rewording then emptied one of the three assertions that
+depended on the old phrase, and the fifth engineering round caught it.** See below; the
+sentence that used to sit here claimed the three had been checked, and they had not.
 
 **And a claim written in the previous commit held nothing.** A docstring said asserting both
 halves pinned the order of two exception clauses; a mutant swapping them left it green,
 because it drives the error that lands in the generic branch either way. Corrected and
 attributed to the sibling that does hold it, rather than reworded, since a claim that holds
 nothing is what that commit existed to stop shipping.
+
+**The fifth engineering round is the one that ends this release, and it ends it by showing
+that a fix of mine broke a control rather than by finding a new defect.** The reword above
+moved the fault handler's message from "read" to "reached". The single assertion separating
+a shed sign-in from an unreadable volume was keyed on the word "busy" being present and
+"could not be read" being absent, and BOTH handlers end in `_refuse` and interpolate the
+error into their log line. So after the reword a shed falling through to the fault handler
+still said "busy", and the dead phrase could no longer appear whichever handler fired. The
+gate removed the busy handler outright and the whole suite stayed green, then proved the
+same mutant red against the pre-reword wording: a regression created by the fix, not a gap
+the fix inherited. Both phrases now assert on something exactly one handler emits, "shed
+under load" and "could not be reached", and the second is pinned positively by the
+corrupt-file test, which is the path that legitimately produces it. Two sibling assertions
+keyed on the same dead phrase were re-keyed with it.
+
+**The round also found four false statements in the two shipped records, three of them
+written by the round before.** The sign-in blueprint has five `accounts.save` call sites and
+one guard, not four and one: the "four" was the `accounts.load` count, correct for reads and
+transplanted onto writes. One test stubs `accounts.save`, not every write-fault test in the
+suite. And the claim that the three dependent assertions had been checked against the
+rewording was false in the specific way that mattered, since one of them had been emptied by
+it. All four are corrected above and in `docs/GATE-RECORDS.md`. Seven over-claiming records
+in this release were found in shipped documents; these were found in the record of the gate
+round that found the others, which is the honest place to say the habit belongs to the
+project and not to one document.
+
+**What is NOT fixed, and the reason is a decision rather than an oversight.** The same
+read-versus-write mislabelling is still live on `account_bp`: a write fault answers an
+authenticated administrator "The account list could not be read." while the log one line
+away says "could not be written". It is a wrong operator-facing string on the administration
+half, behind authentication, with no security consequence, and correcting it would empty
+five further assertions keyed on the old phrase in exactly the way described above. It is
+recorded as accepted residual with its measurement, alongside the bare `raise` at
+`accounts.py:614` and the duplicated stored-hash helpers, rather than carried into another
+gate round. Twenty-one gate rounds have run against this release and one returned PASS; the
+application has survived every direct attack since the third security round, and what the
+last four rounds found was test-holding and record wording. Stopping here is Ash's decision,
+taken with that record in front of them.
 
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
