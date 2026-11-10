@@ -552,6 +552,32 @@ describe: it was the newest sentence in a shipped, assessor-facing record, it ma
 about what a gate had measured, and what it told the next reader was to stop attacking the
 code, at a commit where a control was held by nothing.
 
+**The thirteenth round read the prose, because that was the whole diff.** Nothing but
+comment text had changed, so the gate aimed at the newest sentences in the tree and found
+two MAJORs there, with the running service byte-identical to the code it had already
+cleared. It also confirmed both of the previous round's new tests lethal and neither
+vacuous, including the key test whose shape, an equality it computes itself, was flagged as
+one that can be made hollow.
+
+**The first MAJOR is the paragraph above, which is corrected in place rather than removed.**
+Its wrong version and the reason it was wrong are kept there, because a record that quietly
+fixes its own flattering sentence teaches nobody anything.
+
+**The second is a control described as held when the coverage report said otherwise.** The
+comment written to fix the twelfth round's MAJOR ended "and it is held by a test"; the line
+had zero hits in the report that had already been read. The branch is also redundant, which
+was measured rather than argued: `totp._decode` refuses an empty secret, so without the
+branch the call below raises and the handler returns the same `None`. Both facts are now in
+the comment. The MINOR beside it was the route's own refusal of a wrong enrolment code, also
+never executed, which is a coverage gap rather than the design choice the failure-count
+observation is.
+
+Two route tests now hold the compositions that matter rather than the branches: a POST from
+a session carrying the pending marker and no enrolment token is refused, confirms nothing
+and signs nobody in; and a wrong code is refused at the route. The claim that they cover
+those lines was checked by measuring the lines at zero hits before and one after, not by
+observing that the tests pass, which is the mistake that produced this round's second MAJOR.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
