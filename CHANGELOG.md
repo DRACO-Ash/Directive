@@ -691,6 +691,42 @@ fell back to `or {}`, so a non-JSON answer would have satisfied it silently. The
 vacuity through a different door. It asserts the response is an object first, and tests that
 object.
 
+**The security gate re-reviewed the engineering fixes and found two MAJORs, neither of them
+a bypass.** It went at the two genuinely new surfaces: the first write to the credential
+store on the sign-in path, and a refusal an unauthenticated caller can reach. The write held
+under direct attack. It cannot be driven without the password, a duplicated form field
+cannot split what was verified from what is re-hashed, a write fault leaves the old hash
+intact and verifying and counts no failure, and the row is request-local so no later write
+can persist a half-updated one. The shed is not an enumeration oracle: the lock is taken
+before the account is looked up, so a present account, a wrong password and an absent
+username are identical in timing, body and stored state.
+
+**What failed was a guard held by nothing and a figure contradicted by measurement**, which
+is the shape most findings in this release have taken. The guard on the rehash `save` was at
+zero coverage for a second consecutive round while being asserted as held, and the mutant
+that deletes it now dies with the defect in its own output: a write fault reported to the
+operator as a read fault, refusing a correct password. The per-caller bound in
+`docs/DEPLOYMENT.md` was wrong by about twice, because the lock wait and the hashing-slot
+wait are separate budgets that stack while the hash runs under the lock.
+
+**One MINOR was a live defect this release created.** `needs_rehash` compared parameters for
+inequality, so a hash made under STRONGER parameters counted as stale and one successful
+sign-in rewrote it down to today's. The gate planted `n=262144` against `SCRYPT_N=131072`
+and watched it become `131072`. The realistic trigger is a release rollback after the cost
+is raised, which is the one operation this storage format exists to survive. It was inert
+for as long as the predicate had no caller and went live the moment the previous round wired
+it, which is the second time in two rounds that wiring something dormant exposed a defect
+that had been sitting harmlessly unused.
+
+**An availability cost is accepted with its measurement rather than fixed.** 16
+unauthenticated connections at 3.1 requests a second take the dependency-free `/livez` to
+3.19 seconds against this image's 4-second `HEALTHCHECK`, and refuse a correct-password
+sign-in at 7.50 seconds; at 8 connections nothing moves. The remedy that bounds it is one
+deadline per request shared by both waits. It is named in the code, in the deployment record
+and in the residual, and not taken, because it would be a third change to this concurrency
+path in one release and the previous two introduced three defects between them. That is a
+deferral with the evidence attached, and it is the ISM's to overrule.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
