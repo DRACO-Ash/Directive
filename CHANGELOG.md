@@ -578,6 +578,39 @@ and signs nobody in; and a wrong code is refused at the route. The claim that th
 those lines was checked by measuring the lines at zero hits before and one after, not by
 observing that the tests pass, which is the mistake that produced this round's second MAJOR.
 
+**The fourteenth round is the first security PASS of this release**, and it was reached by
+attacking rather than by agreeing. The gate re-drove the derivation, the enrolment
+composition, the epoch, the lockout, the role boundary, the security headers and the audit
+actor rules itself, having been told that twelve rounds before it had cleared them. Nothing
+could be defeated. Five replays of a pre-enrolment cookie produced one secret and no write,
+which is the attack that defeated three successive fixes. Asked outright whether the useful
+attack surface on the running service is exhausted at this commit, it said yes, and gave its
+reasons: the application has been byte-identical through three diffs and everything it drove
+held.
+
+**All six findings were coverage or prose, and doing them caught three mistakes of mine that
+a passing test would never have shown.** A test that asserted a 302 and got one from the
+replay guard rather than the branch it was written for, because enrolment spends the
+confirming code. A line number quoted from memory that an earlier edit in the same file had
+moved. And a comment describing a state the same commit had just invalidated. Each was found
+by measuring the line's coverage before and after, which is now the standing practice for
+any claim that a test holds a particular control.
+
+Seven refusal paths are driven that the whole suite had never executed: a lockout landing
+between the two factors, which is the only layer for that case because a lockout
+deliberately does not bump the epoch and `_pending_refusal` therefore does not catch it; the
+AUD-001 lockout entry from the second-factor route; both "no pending sign-in" refusals; both
+sign-out paths for a verified identity the log cannot name, which is the attribution gap
+this application exists to close; the catch-all that keeps an unavailable LOG from being
+treated like an unrecordable ACTOR, so a transient volume fault cannot lock the operator out
+of the diagnostics that explain it; and `set_state`'s refusal of a state outside its
+vocabulary.
+
+`accounts.is_admin` is deleted rather than given a test. It had no caller anywhere, and a
+predicate answering "is this record an administrator" invites the next maintainer to gate on
+the record instead of on live standing, which is exactly the defect this release already
+fixed when a disabled administrator kept its permissions until the cookie expired.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
