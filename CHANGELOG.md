@@ -727,6 +727,36 @@ and in the residual, and not taken, because it would be a third change to this c
 path in one release and the previous two introduced three defects between them. That is a
 deferral with the evidence attached, and it is the ISM's to overrule.
 
+**The engineering gate's second re-review found three MAJORs, and every one was a fix that
+landed in the code while the test meant to hold it did not.** That is a different failure
+from the previous rounds, where tests passed for the wrong reason: here the behaviour was
+right and the suite could not tell. Reverting the downgrade comparison left all 1645 tests
+green, because the two assertions on the predicate covered the two directions that hold
+under either version. The busy clause on the boot path had every statement at zero hits.
+And a one-word contradiction survived between two shipped records, in the paragraph about
+two shipped records contradicting each other.
+
+**It also found the downgrade fix blind on an axis.** `n * r * p` tracks scrypt's work and
+not its memory, so `n=65536, r=8, p=2` and `n=131072, r=4, p=2` carry today's work at half
+the memory and read as current. Both axes are compared now, verified across five parameter
+sets. Dormant only because nothing but `SCRYPT_N` has ever moved here.
+
+**One repaired test is worth naming, because it was failing for the wrong reason rather
+than passing for one.** The first-run shed test killed its mutant by deadlock, not by its
+assertions: a 302 and a 401 are both produced by a successful first factor too. It now
+asserts the destination and the logged reason, and is proved against a mutation that
+satisfies both original checks.
+
+**The availability deferral was accepted, with its record corrected in three ways.** The
+gate agreed that CLAUDE.md binds this build to record, own and measure an in-model finding
+rather than to fix it inside one release, and that a third change to this concurrency path
+carried more risk than the residual, the previous two having put three defects into the
+tree. What the row got wrong: it named `/livez` where the HEALTHCHECK polls `/readyz`, so
+the measured 3.19 seconds is a floor rather than the figure; it omitted `--retries=3`, which
+decides whether an excursion is a restart; and it named one remedy as though it were the
+only one, when halving a single constant would halve both budgets at no review risk. The
+acceptance is now explicitly void if the platform probes tighter than this image.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
