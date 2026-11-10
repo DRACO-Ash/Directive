@@ -36,9 +36,15 @@ file lock is held, so hashing was already serialised to ONE and the semaphore co
 reach its limit: over HTTP the refusal was unreachable and callers queued without bound.
 Eight concurrent sign-ins ran fully serial and the slowest waited 4.56 seconds against a
 3-second budget, shedding nothing. The bound is now on the LOCK, in `held_or_busy`, which is
-where the queue forms. Hashing stays serialised at one, so the real ceiling is 128 MiB and
-the cost is throughput; the semaphore remains as a second ceiling and still covers
-`absorb_timing`, which is the one hashing path that does not hold the lock.
+where the queue forms.
+
+**And the ceiling is 256 MiB, not 128.** This paragraph said 128 for one round, reasoning
+that the lock serialises hashing to one. It serialises the LOCK-HELD paths. `absorb_timing`
+hashes outside the lock, on the unknown-username path, and `HASH_SLOTS` is still two, so six
+concurrent requests against an unusable username measured a peak of two scrypt calls in
+flight. The semaphore is the ceiling, at two hashes of 128 MiB; the lock decides throughput
+on the paths it covers. `docs/DEPLOYMENT.md` said two all along and was right while this
+paragraph was wrong, which is the sort of disagreement a shipped record should never carry.
 
 **What this module does not do.** It does not decide who may sign in, write audit entries,
 or touch a session. Those belong to ``auth`` and ``views.auth_routes``. This module answers
@@ -338,6 +344,10 @@ def verify_password(stored: str, supplied: object) -> bool:
 
 def needs_rehash(stored: str) -> bool:
     """Return whether a stored password was made under weaker parameters than today's."""
+    #: The unparseable case is at zero coverage and cannot be reached through a route:
+    #: `verify_password` refuses a hash it cannot parse before this is ever asked, so the
+    #: only caller reaches here with a hash that parsed. Recorded rather than given a route
+    #: test that could not drive it.
     try:
         n, r, p, _, _ = _parse_stored(stored)
     except AccountError:
@@ -410,6 +420,15 @@ def absorb_timing() -> None:
     differently from a present one under load, which is the enumeration oracle this
     function exists to close. A caller that could not get a slot has already spent the
     wait, so the effort was spent either way.
+
+    **One asymmetry remains and is recorded rather than hidden.** The decoy is derived on
+    first use, so the FIRST unknown-username request in a process pays for deriving it as
+    well as for the comparison: measured at 0.833 seconds against 0.381 in steady state and
+    0.395 for a real verification. That is one request per process, and it errs towards the
+    absent account being slower rather than faster, which is the harmless direction. It is
+    the price of deriving the decoy lazily, and lazily is not optional: at import a 128 MiB
+    allocation that fails stops the container booting and takes the diagnostics read-out
+    with it.
     """
     try:
         verify_password(_decoy_hash(), "any value at all, it will not match")
@@ -998,17 +1017,25 @@ def held_or_busy(timeout: float | None = None) -> Iterator[None]:
     has none left, which is the restart loop the header exists to prevent.
 
     So the WAIT is bounded here, where the queue actually forms. Be exact about what that
-    buys and what it does not, because the header over-claimed once already. It bounds how
-    long any one caller occupies a thread and it makes the refusal reachable. It does NOT
-    restore the two-at-a-time hashing the header implied: hashing stays serialised at one,
-    which costs throughput and halves the 256 MiB ceiling to 128 MiB. The serialisation is
-    now a stated property rather than an accident of where the lock sits.
+    buys and what it does not, because the header over-claimed once already and this
+    paragraph then over-corrected. It bounds how long any one caller occupies a thread, and
+    it makes the refusal reachable. It does NOT change the memory ceiling: `absorb_timing`
+    hashes outside this lock and `HASH_SLOTS` is two, so two hashes of 128 MiB can still be
+    in flight, measured. What it costs is throughput on the lock-held paths, where hashing
+    is serialised to one; that serialisation is a stated property now rather than an
+    accident of where the lock sits.
+
+    One caller can spend TWO budgets on a single `POST /sign-in` while `BOOTSTRAP_ADMIN` and
+    `BOOTSTRAP_ADMIN_PASSWORD` are both set, because `ensure_bootstrap` acquires before the
+    route body does. `docs/DEPLOYMENT.md` tells the operator to remove the password once the
+    first administrator exists, and `ensure_bootstrap` then returns before acquiring at all.
     """
     #: Resolved HERE rather than as a default argument, which is how it was first written.
     #: A default binds at definition time, so `HASH_WAIT_SECONDS` became a number frozen at
-    #: import and changing the constant changed nothing: not for an operator tuning it, and
-    #: not for a test, which is how it was caught. A tunable that cannot be tuned is worse
-    #: than a literal, because it reads as a control.
+    #: import and changing the constant changed nothing. Be exact about who that blocked,
+    #: because the first version of this comment said "not for an operator tuning it": the
+    #: constant has no environment binding, so an operator cannot tune it either way. It
+    #: blocked a TEST, which is how it was caught.
     budget = HASH_WAIT_SECONDS if timeout is None else timeout
     if not _file_lock.acquire(timeout=budget):
         raise ServiceBusyError("the sign-in service is busy. Try again in a moment.")

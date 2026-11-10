@@ -622,8 +622,14 @@ hashing was serialised to one, the semaphore could never reach its limit, and ca
 on an untimed lock: eight concurrent sign-ins ran fully serial with the slowest waiting 4.56
 seconds against a three-second budget and nothing shed. The bound is now on the lock, where
 the queue forms, and the header states what that buys and what it does not. Hashing stays
-serialised at one, so the real ceiling is 128 MiB rather than the 256 implied, and the cost
-is throughput.
+serialised at one on the paths the lock covers, so the cost is throughput there. **The
+memory ceiling is unchanged at 256 MiB, and this sentence said 128 for one round.**
+`absorb_timing` hashes OUTSIDE the lock, on the unknown-username path, and the semaphore is
+still two, so six concurrent requests measured two scrypt calls in flight. The re-review
+caught it: a figure contradicted by measurement, in the paragraph whose whole purpose is
+pod-sizing arithmetic, in the round that exists to correct that paragraph against
+measurement, and contradicting `docs/DEPLOYMENT.md`, which said two all along and was
+right.
 
 **`needs_rehash` had no caller while two records promised it did**, the header saying an
 account hashed under older parameters "is re-hashed on next sign-in" and `hash_password`

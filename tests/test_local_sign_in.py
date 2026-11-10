@@ -261,17 +261,22 @@ def test_no_password_hash_reaches_the_evidence_export(client: FlaskClient) -> No
     """
     sign_in_fully(client)
 
-    pack = json.dumps(client.get("/api/export").get_json())
+    payload = client.get("/api/export").get_json()
+    pack = json.dumps(payload)
 
     assert "scrypt" not in pack
     assert "totp_secret" not in pack
     #: The export's own key, not the word "accounts" anywhere in the payload: a register
-    #: could legitimately be named for one. This line read `... or True` until an
-    #: engineering gate spotted it, which made it an assertion that could not fail sitting
-    #: in the test that holds a credential store apart from a disclosure.
-    assert "accounts" not in (pack_body := client.get("/api/export").get_json() or {}), (
-        f"the export carries an accounts key: {sorted(pack_body)}"
-    )
+    #: could legitimately be named for one.
+    #:
+    #: This line has been wrong twice. It read `... or True` until an engineering gate
+    #: spotted it, which made it an assertion that could not fail sitting in the test that
+    #: holds a credential store apart from a disclosure. The replacement fetched the export
+    #: a SECOND time and fell back to `or {}`, so a non-JSON answer would have satisfied it
+    #: silently: the same vacuity through a different door. The response is asserted to be
+    #: an object first, and then that object is the thing tested.
+    assert isinstance(payload, dict), f"the export answered {type(payload).__name__}, not JSON"
+    assert "accounts" not in payload, f"the export carries an accounts key: {sorted(payload)}"
     assert PASSWORD not in pack
 
 
@@ -1057,6 +1062,14 @@ def test_a_sign_in_is_shed_rather_than_queued_when_the_account_file_is_held(
     length of the wait, and three seconds per run is three seconds of nothing happening.
     """
     monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.25)
+    #: Without this the shed fires in `ensure_bootstrap`, which acquires before the route
+    #: body does, and this test passes with the three route bodies reverted to the UNBOUNDED
+    #: lock: an engineering gate proved exactly that with a mutant and a green suite. The
+    #: deployment runbook tells the operator to remove this variable once the first
+    #: administrator exists, at which point `ensure_bootstrap` returns before acquiring
+    #: anything and the route bodies carry the bound alone. That is the configuration that
+    #: ships, so that is the configuration this holds.
+    monkeypatch.delenv("BOOTSTRAP_ADMIN_PASSWORD", raising=False)
     held = accounts.with_lock()
     assert held.acquire(timeout=5), "the account-file lock was already held"
     try:
@@ -1072,7 +1085,10 @@ def test_a_sign_in_is_shed_rather_than_queued_when_the_account_file_is_held(
 
 
 def test_a_shed_sign_in_is_recorded_as_busy_and_not_as_an_unreadable_volume(
-    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+    app: Flask,
+    client: FlaskClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Two refusals that mean opposite things about the machine must not share a reason.
 
@@ -1083,12 +1099,14 @@ def test_a_shed_sign_in_is_recorded_as_busy_and_not_as_an_unreadable_volume(
     prefers as the more specific class, and this is what holds that.
     """
     monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.25)
+    monkeypatch.delenv("BOOTSTRAP_ADMIN_PASSWORD", raising=False)
     held = accounts.with_lock()
     assert held.acquire(timeout=5), "the account-file lock was already held"
     try:
         with app.app_context():
             caplog_before = len(app.extensions["directive_chain"].entries)
-        give_password(client)
+        with caplog.at_level("WARNING"):
+            give_password(client)
     finally:
         held.release()
 
@@ -1098,6 +1116,40 @@ def test_a_shed_sign_in_is_recorded_as_busy_and_not_as_an_unreadable_volume(
     assert all(entry.action == "LOGIN_FAILED" for entry in entries), (
         f"a shed sign-in was recorded as something else: {[e.action for e in entries]}"
     )
+    #: The REASON, which is the only thing that differs between the two handlers: both end
+    #: in `_refuse`, so both write LOGIN_FAILED and FAILURE. Asserting the action and the
+    #: outcome alone left this test green with the busy handler deleted, which a gate proved
+    #: by mutation. The sibling test on the unreadable path keys on the log the same way.
+    logged = caplog.text
+    assert "busy" in logged, f"the shed was not recorded as a capacity event: {logged!r}"
+    assert "could not be read" not in logged, (
+        "a healthy volume under load was recorded as an unreadable one"
+    )
+
+
+def _plant_a_stale_hash(app: Flask) -> None:
+    """Rewrite the stored password at a quarter of the current cost, valid but stale.
+
+    A quarter rather than something arbitrary: it has to be a hash the current rules still
+    VERIFY, or a test using it fails at the password check and proves nothing about the
+    upgrade. Shared by the two tests that need one, because they drifted apart once already
+    and one of them silently stopped planting anything.
+    """
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+    weak = accounts.SCRYPT_N // 4
+    salt = secrets.token_bytes(accounts.SALT_BYTES)
+    digest = accounts._scrypt(PASSWORD, salt, n=weak, r=accounts.SCRYPT_R, p=accounts.SCRYPT_P)
+    account["password"] = "$".join(
+        (
+            f"scrypt$n={weak},r={accounts.SCRYPT_R},p={accounts.SCRYPT_P}",
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        )
+    )
+    accounts.save(data_dir, rows)
 
 
 def test_a_stale_password_hash_is_upgraded_by_a_successful_sign_in(
@@ -1122,17 +1174,9 @@ def test_a_stale_password_hash_is_upgraded_by_a_successful_sign_in(
     account = accounts.find(rows, USERNAME)
     assert account is not None
 
-    weak = accounts.SCRYPT_N // 4
-    salt = secrets.token_bytes(accounts.SALT_BYTES)
-    digest = accounts._scrypt(PASSWORD, salt, n=weak, r=accounts.SCRYPT_R, p=accounts.SCRYPT_P)
-    account["password"] = "$".join(
-        (
-            f"scrypt$n={weak},r={accounts.SCRYPT_R},p={accounts.SCRYPT_P}",
-            base64.b64encode(salt).decode("ascii"),
-            base64.b64encode(digest).decode("ascii"),
-        )
-    )
-    accounts.save(data_dir, rows)
+    _plant_a_stale_hash(app)
+    account = accounts.find(accounts.load(data_dir), USERNAME)
+    assert account is not None
     assert accounts.needs_rehash(str(account["password"])), "the planted hash is not stale"
 
     caller = app.test_client()
@@ -1157,14 +1201,26 @@ def test_an_upgrade_that_cannot_run_does_not_refuse_the_sign_in(
     hash raise.
     """
     sign_in_fully(client)
+    #: A STALE hash first. Without it `needs_rehash` is False, the function returns before
+    #: the guard, and the patched `hash_password` is never called: an engineering gate
+    #: measured the call count at zero and the coverage report listed the guard unexecuted,
+    #: while this test passed. It asserted the sign-in still worked, which it would have
+    #: whatever the guard did.
+    _plant_a_stale_hash(app)
+
+    calls = {"count": 0}
 
     def _refuses(*_args: object, **_kwargs: object) -> str:
+        calls["count"] += 1
         raise accounts.ServiceBusyError("no slot for the upgrade")
 
     monkeypatch.setattr(accounts, "hash_password", _refuses)
     caller = app.test_client()
     accepted = give_password(caller)
 
+    assert calls["count"] == 1, (
+        f"the upgrade was attempted {calls['count']} times, so the guard was not reached"
+    )
     assert accepted.status_code == 302, "a failed upgrade refused a correct password"
     assert "/sign-in/verify" in accepted.headers.get("Location", ""), (
         "the caller was not sent to the second factor"

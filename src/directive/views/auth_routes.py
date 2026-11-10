@@ -237,10 +237,24 @@ def sign_in_submit() -> Response:
             # different things in the log, which is what matters.
             return _refuse(refusal)
         #: The password was right, so this is the moment the parameters can be raised: the
-        #: plaintext is in hand and will not be again. Housekeeping, and it never refuses a
-        #: sign-in, which is why its result is only a reason to save.
+        #: plaintext is in hand and will not be again.
+        #:
+        #: **The SAVE is inside the guard, not just the hash.** `upgrade_hash_if_stale`
+        #: refuses nothing, but this `save` raises `AccountError` on any write fault and it
+        #: sat outside any `try`, so a read-only volume turned a correct password into a
+        #: refusal with `LOGIN_FAILED` against it, and the blueprint handler logged "the
+        #: account list could not be read" about a list that read perfectly. Measured by an
+        #: engineering gate: the same fault with a current hash signed in normally. That is
+        #: the false-record class `ServiceBusyError` exists to prevent, reintroduced on the
+        #: write side, on a route an unauthenticated caller reaches. Housekeeping must cost
+        #: nobody their sign-in, and the upgrade retries on the next one.
         if accounts.upgrade_hash_if_stale(account, request.form.get("password")):
-            accounts.save(_data_dir(), rows)
+            try:
+                accounts.save(_data_dir(), rows)
+            except accounts.AccountError as error:
+                current_app.logger.warning(
+                    "the password hash for %r could not be upgraded: %s", username, error
+                )
         enrolled = accounts.is_enrolled(account)
         epoch = accounts.epoch_of(account)
 
