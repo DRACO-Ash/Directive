@@ -8,6 +8,35 @@ the release-level record the deploy gate reads.
 Dates are UTC. A release is not "shipped" until it is deployed, and nothing has been
 deployed yet, so every row below records a release that was cut, gated and merged.
 
+## V2.6, 2026-11-10, the same work under a number no other package carries
+
+**Why this release exists, and it is not new work.** Everything in it is the V2.5 section
+below. The number moved because `dist/` already holds `directive-2.5-20261109-0445d61.zip`,
+built on 2026-11-09 from `0445d61`, which is the commit the FIRST security gate run of this
+release scored. Twenty gate rounds have landed since: the derived enrolment secret, the
+bounded lock, the hash upgrade, the audit-reach fix in `accounts.load`, and the shed-versus
+-fault separation. A package built today is not that package by any measure an operator
+could check, and the platform shows an operator only the version.
+
+**The rule this follows is V2.4's, and it was bought at the price of a whole release.** V2.3
+went to the App Store four times under one version from four different commits, so
+`build-package.sh` now refuses to package a version it has already packaged from a different
+commit. It offered two ways out: bump, or delete the stale archive and rebuild 2.5. **Taken
+the first, on a fail-closed reading.** Whether that archive was uploaded is not recorded
+anywhere this repository can read. The header above says nothing has been DEPLOYED, which is
+true and not the same question, since V2.3's four uploads were all rejected without ever
+being deployed. A control that cannot be verified is treated as failed, so the assumption is
+that a 2.5 may exist on the platform, and the cost of being wrong is one unused version
+number against the exact failure V2.4 exists to prevent.
+
+**Gate position at this version.** `security-reviewer` PASS at `c10a197`, carried forward:
+every change since is held by the fifth engineering round's mutations and the loop, and the
+round itself judged the slice not to need re-referral. `engineering-reviewer` FAIL at
+`533e57f` with its two control findings fixed in `0f012d7` and everything else recorded as
+accepted residual in `docs/GATE-RECORDS.md`. **This release is therefore cut with one binding
+gate outstanding, which is Ash's decision and is stated here rather than implied.** The
+deploy gate reads this file and will see it.
+
 ## V2.5, 2026-11-08, Entra ID out, a local account list in
 
 **Why this release exists.** The IT team confirmed that this application cannot
