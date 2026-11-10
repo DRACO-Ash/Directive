@@ -1719,3 +1719,36 @@ def test_a_busy_hash_on_the_password_route_is_not_reported_as_an_unreadable_volu
     assert "PASSWORD_CHANGE_FAILED" not in actions, (
         f"a capacity event was recorded as a credential failure: {actions}"
     )
+
+
+def test_a_refused_new_password_says_why_and_not_that_the_volume_is_unreadable(
+    app: Flask, admin: FlaskClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The rule-refusal clause one line below the busy one, and equally unheld.
+
+    `password_submit` catches `AccountError` from `set_password` and turns it into a reason
+    on the form. Its twin on `create_account` is covered and held; this one was at zero hits
+    in the loop's own coverage artefact, and an engineering gate deleted it and passed the
+    whole suite. Without it, an authenticated person typing an eleven-character password is
+    told "The account list could not be read. An operator should check the volume." about a
+    volume that is healthy.
+
+    Strictly more reachable than the busy case beside it, which needs a starved hashing
+    slot: this one needs somebody choosing a short password.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = _sign_in(app, MEMBER, PHRASE)
+
+    with caplog.at_level("ERROR"):
+        answered = _change_own(caller, PHRASE, "too-short-x")
+
+    assert answered.status_code == 302, f"a refused password answered {answered.status_code}"
+    location = answered.headers.get("Location", "")
+    assert "error=" in location, f"the caller was not told why: {location!r}"
+    assert "could not be read" not in location, "a healthy volume was reported as unreadable"
+    assert "could not be read" not in caplog.text, (
+        "the operator was sent to check a volume that is healthy"
+    )
+    assert accounts.verify_password(str(_stored(app, MEMBER)["password"]), PHRASE), (
+        "a refused change altered the stored password"
+    )

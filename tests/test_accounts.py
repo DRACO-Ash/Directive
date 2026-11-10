@@ -723,3 +723,65 @@ def test_an_enrolment_secret_belongs_to_one_sign_in_by_construction() -> None:
         "the key is not an input, so anyone who can read the token can derive the secret"
     )
     assert account == before, "deriving a secret wrote to the account record"
+
+
+def test_a_prepare_fault_becomes_a_verdict_not_a_bare_operating_system_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`save`'s own conversion, which every write-fault test in the suite bypasses.
+
+    They all stub `accounts.save` itself, so the conversion inside it has never run: the
+    loop's coverage artefact names both of its clauses at zero hits. That is not merely
+    untested, it is untestable by mutation, because no mutant of a line nothing executes
+    can be caught. An engineering gate narrowed the tuple and measured the consequence on
+    the sign-in route: 302 with a recorded refusal became 500 with NO audit entry, on a
+    route an unauthenticated caller reaches.
+
+    So this drives a real `OSError` out of `tempfile.mkstemp` rather than stubbing the
+    function that would convert it.
+    """
+
+    def _read_only(*_args: object, **_kwargs: object) -> tuple[int, str]:
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(accounts.tempfile, "mkstemp", _read_only)
+
+    with pytest.raises(accounts.AccountError) as raised:
+        accounts.save(str(tmp_path), [accounts.new_account("a@b.uk", GOOD)])
+
+    assert "could not be prepared" in str(raised.value), (
+        f"the fault was not converted into a verdict: {raised.value}"
+    )
+    assert not isinstance(raised.value, accounts.ServiceBusyError), (
+        "a write fault was reported as a capacity event"
+    )
+
+
+def test_a_write_fault_becomes_a_verdict_and_leaves_no_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second conversion, and the staged file it must clear up.
+
+    Also at zero hits for the same reason. The staged copy carries the hashes at mode 0600
+    and is written before the rename, so a fault between the two must not leave it behind:
+    an abandoned `.accounts-*` beside the real file is a second copy of the credential store
+    that nothing afterwards is responsible for.
+    """
+    real_fsync = accounts.os.fsync
+
+    def _fails_once(descriptor: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(accounts.os, "fsync", _fails_once)
+    target = accounts.accounts_path(str(tmp_path))
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(accounts.AccountError) as raised:
+        accounts.save(str(tmp_path), [accounts.new_account("a@b.uk", GOOD)])
+
+    monkeypatch.setattr(accounts.os, "fsync", real_fsync)
+    assert "could not be written" in str(raised.value), (
+        f"the fault was not converted into a verdict: {raised.value}"
+    )
+    staged = list(target.parent.glob(".accounts-*"))
+    assert not staged, f"a staged copy of the credential store was left behind: {staged}"

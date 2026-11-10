@@ -616,8 +616,19 @@ def _unreadable_account_list(error: accounts.AccountError) -> Response:
     narrowed to the unparseable-JSON trigger rather than closed. Fixed in `accounts.load`
     rather than here, because a handler can only catch what the layer below it raises.
     """
-    current_app.logger.error("sign-in refused: the account list could not be read: %s", error)
-    return _refuse("the account list could not be read")
+    #: "reached", not "read", and the difference is the operator's whole diagnosis. Three of
+    #: the four `accounts.save` call sites on this blueprint are unguarded, so a read-only
+    #: mount raises from a WRITE and landed here: the one ERROR line an operator had then
+    #: contradicted itself inside a sentence, "could not be read: the account list could not
+    #: be written", at the moment nobody can sign in at all. An engineering gate measured it
+    #: on the second factor with a correct code. The refusal itself is right and stays, since
+    #: the save it follows persists the spent one-time-password step and granting without it
+    #: would make that code replayable.
+    #:
+    #: The message names neither direction now and `accounts.load` and `accounts.save` each
+    #: supply their own, which is the discriminator the interpolation below already carries.
+    current_app.logger.error("sign-in refused: the account list could not be reached: %s", error)
+    return _refuse("the account list could not be reached")
 
 
 def _refuse(reason: str) -> Response:

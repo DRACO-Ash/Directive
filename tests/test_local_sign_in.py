@@ -1080,7 +1080,10 @@ def test_a_sign_in_is_shed_rather_than_queued_when_the_account_file_is_held(
         held.release()
 
     assert refused.status_code == 302, "a shed sign-in was not refused"
-    assert waited < 3.0, f"the caller queued for {waited:.2f}s instead of being shed"
+    #: Near the patched budget of 0.25 s. This read `< 3.0` while its sibling was tightened
+    #: for exactly that reason in the same commit: same decision, two tests, one side fixed,
+    #: which is the habit that commit was meant to break.
+    assert waited < 1.0, f"the caller queued for {waited:.2f}s instead of being shed"
     assert client.get("/api/registers").status_code == 401, "a shed sign-in granted a session"
 
 
@@ -1377,9 +1380,15 @@ def test_a_bootstrap_password_the_rules_refuse_is_reported_as_a_failure(
     here. It must read as a configuration fault, with the traceback an operator needs,
     which is the opposite of the deferral its sibling records.
 
-    Asserting both halves pins the ORDER of the two clauses from the other side: if the
-    specific one were moved below the generic one, a capacity event would land in this
-    branch and be reported as a bad password.
+    The ordering of the two clauses is pinned by the SIBLING, not by this test, and the
+    sentence here claimed otherwise until a gate moved the generic clause above the specific
+    one and watched this test stay green. It drives a plain `AccountError`, which lands in
+    the generic branch under either ordering, so it cannot see the swap. Delete
+    `test_a_starved_bootstrap_is_deferred_rather_than_reported_as_a_failure` and nothing
+    holds the order at all.
+
+    Recorded rather than quietly reworded, because a claim that holds nothing is exactly
+    what the commit this was written in exists to stop shipping.
     """
     data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
     stored = accounts.accounts_path(data_dir)
