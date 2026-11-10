@@ -757,6 +757,34 @@ decides whether an excursion is a restart; and it named one remedy as though it 
 only one, when halving a single constant would halve both budgets at no review risk. The
 acceptance is now explicitly void if the platform probes tighter than this image.
 
+**The engineering gate's third re-review closed all three previous MAJORs and found one
+new, and the new one is a pattern rather than an incident: half of a symmetric control.**
+The separation between a capacity event and an unreadable volume exists in two places. The
+clause on `/account/password` carries a comment saying "Same reasoning as the sign-in
+route". The sign-in side was held by a test; this side was at zero hits, survived deletion
+across 207 tests, and without it a hashing-capacity event tells the operator "The account
+list could not be read. An operator should check the volume." about a volume that is
+healthy.
+
+That is the third time in this release the defect has been the half not looked at rather
+than the half fixed. `enrol_page` once gained a check its sibling did not; bounding three
+route bodies left `ensure_bootstrap` unbounded ahead of them; and now this. Worth recording
+as a habit to break rather than as three unrelated findings.
+
+**The sharpest finding was a MINOR, and it was algebra.** The work disjunct added to
+`needs_rehash` one round earlier cannot fire while `SCRYPT_P` is 1: today's work factor
+equals today's memory factor, and every stored set has `p >= 1`, so memory being current
+implies work being current. A branch written to close a demonstrated gap was dormant by
+construction, which no amount of running the suite would have shown. It is driven now by
+raising the parallelism, which is the one parameter movement that separates the two axes,
+so it is held against the day somebody makes it live.
+
+**And one record said measured where it meant reasoned.** The availability residual claimed
+every correct-password sign-in on a degraded volume runs two hashes; it is only true for an
+account whose stored hash is stale, because the upgrade returns before hashing otherwise.
+Corrected, with its provenance named, which is the distinction this release keeps having to
+learn.
+
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
 sign-in, so the clause is met substantively and not literally. Both are Adam Field's to sign
