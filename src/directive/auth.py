@@ -600,6 +600,16 @@ def ensure_bootstrap(data_dir: str) -> bool:
             return False
         try:
             created = accounts.new_account(username, password, role=accounts.ADMIN)
+        except accounts.ServiceBusyError:
+            #: BEFORE the generic clause, because `new_account` hashes and a starved slot
+            #: raises this. Logged as a bootstrap FAILURE with a traceback, it is the same
+            #: busy-versus-fault conflation `_shed_under_load` was added to separate, on the
+            #: boot path: an operator reading "bootstrap administrator not created" goes
+            #: looking for a configuration error when the machine was merely out of hashing
+            #: capacity for a moment. The next sign-in tries again, because the list is
+            #: still empty.
+            LOGGER.warning("bootstrap administrator deferred: no hashing slot was free")
+            return False
         except accounts.AccountError:
             LOGGER.exception("bootstrap administrator not created")
             return False

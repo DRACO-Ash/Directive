@@ -1225,3 +1225,83 @@ def test_an_upgrade_that_cannot_run_does_not_refuse_the_sign_in(
     assert "/sign-in/verify" in accepted.headers.get("Location", ""), (
         "the caller was not sent to the second factor"
     )
+
+
+def test_a_failed_upgrade_write_does_not_refuse_the_sign_in(
+    app: Flask,
+    client: FlaskClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The guard on the rehash SAVE, which two rounds left executed by no test.
+
+    `upgrade_hash_if_stale` refuses nothing, but the `save` it triggers raises on any write
+    fault, and that call sat outside any `try`: a read-only volume turned a correct password
+    into a refusal with an immutable `LOGIN_FAILED` against it, and told the operator the
+    list could not be READ about a list that read perfectly. The guard was added, and then a
+    security gate found the guard itself at zero hits and killed it with a mutant that the
+    whole suite survived.
+
+    So this drives the fault rather than asserting around it: a stale hash to make the
+    upgrade run at all, and a `save` that raises the error a read-only mount really raises.
+    """
+    sign_in_fully(client)
+    _plant_a_stale_hash(app)
+
+    def _read_only(*_args: object, **_kwargs: object) -> None:
+        raise accounts.AccountError("the account list could not be written: [Errno 30] read-only")
+
+    before = len(app.extensions["directive_chain"].entries)
+    caller = app.test_client()
+    monkeypatch.setattr(accounts, "save", _read_only)
+    with caplog.at_level("WARNING"):
+        accepted = give_password(caller)
+
+    assert accepted.status_code == 302, "a write fault refused a correct password"
+    assert "/sign-in/verify" in accepted.headers.get("Location", ""), (
+        "the caller was not sent on to the second factor"
+    )
+    assert len(app.extensions["directive_chain"].entries) == before, (
+        "a write fault wrote an audit entry against a correct sign-in"
+    )
+    assert "could not be upgraded" in caplog.text, (
+        f"the failure was not logged as an upgrade: {caplog.text!r}"
+    )
+    assert "could not be read" not in caplog.text, (
+        "a write fault was reported to the operator as a read fault"
+    )
+
+
+def test_the_first_run_bootstrap_is_shed_rather_than_queued(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ensure_bootstrap`'s bounded acquire, which no test covered.
+
+    It is the acquire an unauthenticated caller meets FIRST during the first-run window,
+    before any account exists, and it was the defect the engineering round found by
+    deadlock: bounding the three route bodies left this one unbounded ahead of them. Both
+    shed tests then deliberately remove `BOOTSTRAP_ADMIN_PASSWORD`, which is right for what
+    they hold and leaves this uncovered, so a mutant reverting it to the unbounded lock
+    survived the whole suite.
+
+    Driven with the variable PRESENT and no accounts on the volume, which is the first-run
+    configuration, and with the lock held so the acquire cannot succeed.
+    """
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    stored = accounts.accounts_path(data_dir)
+    if stored.exists():
+        stored.unlink()
+    monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.25)
+
+    held = accounts.with_lock()
+    assert held.acquire(timeout=5), "the account-file lock was already held"
+    try:
+        start = time.time()
+        refused = give_password(client)
+        waited = time.time() - start
+    finally:
+        held.release()
+
+    assert refused.status_code == 302, "a shed first-run sign-in was not refused"
+    assert waited < 3.0, f"the first-run caller queued for {waited:.2f}s instead of being shed"
+    assert client.get("/api/registers").status_code == 401, "a shed sign-in granted a session"

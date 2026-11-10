@@ -40,9 +40,14 @@ where the queue forms.
 
 **And the ceiling is 256 MiB, not 128.** This paragraph said 128 for one round, reasoning
 that the lock serialises hashing to one. It serialises the LOCK-HELD paths. `absorb_timing`
-hashes outside the lock, on the unknown-username path, and `HASH_SLOTS` is still two, so six
-concurrent requests against an unusable username measured a peak of two scrypt calls in
-flight. The semaphore is the ceiling, at two hashes of 128 MiB; the lock decides throughput
+hashes outside the lock on the UNUSABLE-username path, which is the one the six-request
+measurement drove, and `HASH_SLOTS` is still two, so a peak of two scrypt calls was in
+flight. Be exact about which path, because this sentence said "the unknown-username path"
+and that one hashes INSIDE the lock, at `auth_routes.py` after the account is looked up.
+That placement is not a detail: it is the mechanism behind the stacked budgets recorded in
+`held_or_busy`, so naming the wrong path hid the thing the next reader needs.
+
+The semaphore is the ceiling, at two hashes of 128 MiB; the lock decides throughput
 on the paths it covers. `docs/DEPLOYMENT.md` said two all along and was right while this
 paragraph was wrong, which is the sort of disagreement a shipped record should never carry.
 
@@ -342,6 +347,17 @@ def verify_password(stored: str, supplied: object) -> bool:
     return hmac.compare_digest(candidate, digest)
 
 
+def _work_factor(n: int, r: int, p: int) -> int:
+    """Return a comparable cost for one scrypt parameter set.
+
+    `n * r` is the memory the hash occupies and `p` multiplies the work over it, so their
+    product orders two parameter sets by what an attacker must spend. Good enough for the
+    only question asked of it, which is whether a stored hash is cheaper to attack than one
+    made today; it is not a claim that two sets with equal products are equivalent.
+    """
+    return n * r * p
+
+
 def needs_rehash(stored: str) -> bool:
     """Return whether a stored password was made under weaker parameters than today's."""
     #: The unparseable case is at zero coverage and cannot be reached through a route:
@@ -354,7 +370,14 @@ def needs_rehash(stored: str) -> bool:
         return True
     # No hashing here, so `ServiceBusyError` cannot arise and the broad catch above is the
     # parse alone.
-    return (n, r, p) != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
+    #
+    #: WEAKER, not merely different. This compared the three parameters for inequality, so a
+    #: hash made under STRONGER parameters was "stale" and one successful sign-in rewrote it
+    #: down to today's: a security gate planted `n=262144` against `SCRYPT_N=131072` and
+    #: watched it become 131072. The realistic trigger is a release rollback after the cost
+    #: is raised, which is the one operation this storage format exists to survive. Inert
+    #: while the predicate had no caller, and live from the moment it was wired.
+    return _work_factor(n, r, p) < _work_factor(SCRYPT_N, SCRYPT_R, SCRYPT_P)
 
 
 #: A stored password that matches nothing, used when the named account does not exist.
@@ -1017,10 +1040,20 @@ def held_or_busy(timeout: float | None = None) -> Iterator[None]:
     has none left, which is the restart loop the header exists to prevent.
 
     So the WAIT is bounded here, where the queue actually forms. Be exact about what that
-    buys and what it does not, because the header over-claimed once already and this
-    paragraph then over-corrected. It bounds how long any one caller occupies a thread, and
-    it makes the refusal reachable. It does NOT change the memory ceiling: `absorb_timing`
-    hashes outside this lock and `HASH_SLOTS` is two, so two hashes of 128 MiB can still be
+    buys and what it does not, because the header over-claimed once, this paragraph then
+    over-corrected, and the sentence that follows was wrong by about twice after that. It
+    makes the refusal reachable. It does NOT bound how long one caller occupies a thread,
+    which is what this said: the wait here and the wait for a hashing slot in `_scrypt` are
+    separate budgets of `HASH_WAIT_SECONDS` each and they STACK, because the hash runs while
+    this lock is held. A security gate measured one correct-password `POST /sign-in`
+    occupying a thread for 5.70 seconds before being refused. Two more costs sit inside the
+    same hold and were in no figure: `absorb_timing` waits for a slot while holding this
+    lock, and every refusal fsyncs an audit entry before releasing it. The remedy is one
+    deadline per request, shared between the two waits, and `docs/DEPLOYMENT.md` carries the
+    measurement and the operational consequence.
+
+    It does NOT change the memory ceiling either: `absorb_timing` hashes outside this lock on
+    the unusable-username path and `HASH_SLOTS` is two, so two hashes of 128 MiB can still be
     in flight, measured. What it costs is throughput on the lock-held paths, where hashing
     is serialised to one; that serialisation is a stated property now rather than an
     accident of where the lock sits.
