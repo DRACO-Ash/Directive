@@ -347,13 +347,24 @@ def verify_password(stored: str, supplied: object) -> bool:
     return hmac.compare_digest(candidate, digest)
 
 
-def _work_factor(n: int, r: int, p: int) -> int:
-    """Return a comparable cost for one scrypt parameter set.
+def _memory_factor(n: int, r: int) -> int:
+    """Return the memory one scrypt parameter set occupies, in blocks.
 
-    `n * r` is the memory the hash occupies and `p` multiplies the work over it, so their
-    product orders two parameter sets by what an attacker must spend. Good enough for the
-    only question asked of it, which is whether a stored hash is cheaper to attack than one
-    made today; it is not a claim that two sets with equal products are equivalent.
+    Separate from the work factor because the two axes move independently and scrypt's
+    resistance rests on BOTH. An engineering gate demonstrated the gap in a single-axis
+    version: `n=65536, r=8, p=2` and `n=131072, r=4, p=2` both carry the same `n * r * p`
+    as today's parameters and both occupy 64 MiB against today's 128, so each read as
+    current while being half the memory to attack.
+    """
+    return n * r
+
+
+def _work_factor(n: int, r: int, p: int) -> int:
+    """Return the total work one scrypt parameter set costs.
+
+    `n * r` is the memory and `p` multiplies the work over it. Not a claim that two sets
+    with equal products are equivalent; it is one of the two axes `needs_rehash` compares,
+    and the memory axis beside it is the other.
     """
     return n * r * p
 
@@ -377,7 +388,13 @@ def needs_rehash(stored: str) -> bool:
     #: watched it become 131072. The realistic trigger is a release rollback after the cost
     #: is raised, which is the one operation this storage format exists to survive. Inert
     #: while the predicate had no caller, and live from the moment it was wired.
-    return _work_factor(n, r, p) < _work_factor(SCRYPT_N, SCRYPT_R, SCRYPT_P)
+    #: EITHER axis below today's, because scrypt's resistance rests on both and they move
+    #: independently. A work-only comparison called `n=65536, r=8, p=2` current while it
+    #: occupies half the memory, which is only dormant because nothing but `SCRYPT_N` has
+    #: ever moved here.
+    return _memory_factor(n, r) < _memory_factor(SCRYPT_N, SCRYPT_R) or _work_factor(
+        n, r, p
+    ) < _work_factor(SCRYPT_N, SCRYPT_R, SCRYPT_P)
 
 
 #: A stored password that matches nothing, used when the named account does not exist.

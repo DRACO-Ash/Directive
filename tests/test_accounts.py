@@ -8,7 +8,9 @@ from starving the liveness probe of threads.
 
 from __future__ import annotations
 
+import base64
 import json
+import secrets
 import subprocess
 import sys
 import time
@@ -127,6 +129,19 @@ def test_two_hashes_of_one_password_differ() -> None:
     assert accounts.hash_password(GOOD) != accounts.hash_password(GOOD)
 
 
+def _planted(n: int, r: int, p: int) -> str:
+    """Return a stored password made under the given parameters, valid but not today's."""
+    salt = secrets.token_bytes(accounts.SALT_BYTES)
+    digest = accounts._scrypt(GOOD, salt, n=n, r=r, p=p)
+    return "$".join(
+        (
+            f"scrypt$n={n},r={r},p={p}",
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        )
+    )
+
+
 def test_a_hash_made_under_weaker_parameters_still_verifies_and_is_flagged() -> None:
     """The upgrade path, and the reason the parameters are stored rather than assumed."""
     salt = b"0123456789abcdef"
@@ -144,6 +159,28 @@ def test_a_hash_made_under_weaker_parameters_still_verifies_and_is_flagged() -> 
     assert accounts.verify_password(weak, GOOD)
     assert accounts.needs_rehash(weak)
     assert not accounts.needs_rehash(accounts.hash_password(GOOD))
+
+    #: The direction that was WRONG and that neither assertion above could see. This
+    #: compared the three parameters for inequality, so a hash made under stronger
+    #: parameters counted as stale and one successful sign-in rewrote it DOWN to today's.
+    #: Weaker-than-current and equal-to-current both hold under `!=` as well as under a
+    #: cost comparison, which is why a security gate found the defect and an engineering
+    #: gate then found the fix held by nothing: reverting it left all 1645 tests green.
+    #: The realistic trigger is a release rollback after the cost is raised, which is the
+    #: one operation storing the parameters beside the hash exists to survive.
+    stronger = _planted(accounts.SCRYPT_N * 2, accounts.SCRYPT_R, accounts.SCRYPT_P)
+    assert accounts.verify_password(stronger, GOOD), "the stronger hash does not verify"
+    assert not accounts.needs_rehash(stronger), "a stronger hash would be rewritten DOWN"
+
+    #: And both axes, because scrypt rests on memory as well as work. These two carry the
+    #: same `n * r * p` as today's parameters and half the memory, so a work-only
+    #: comparison called them current.
+    assert accounts.needs_rehash(_planted(accounts.SCRYPT_N // 2, accounts.SCRYPT_R, 2)), (
+        "a set with today's work and half the memory read as current"
+    )
+    assert accounts.needs_rehash(_planted(accounts.SCRYPT_N, accounts.SCRYPT_R // 2, 2)), (
+        "a set with today's work and half the memory read as current"
+    )
 
 
 @pytest.mark.parametrize(

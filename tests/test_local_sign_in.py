@@ -24,7 +24,7 @@ from flask import Flask
 from flask.testing import FlaskClient
 from werkzeug.test import TestResponse
 
-from directive import accounts, create_app, totp
+from directive import accounts, auth, create_app, totp
 from directive.views import auth_routes
 
 SUITE_KEY = bytes(range(32)).hex()
@@ -1273,7 +1273,10 @@ def test_a_failed_upgrade_write_does_not_refuse_the_sign_in(
 
 
 def test_the_first_run_bootstrap_is_shed_rather_than_queued(
-    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+    app: Flask,
+    client: FlaskClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """`ensure_bootstrap`'s bounded acquire, which no test covered.
 
@@ -1297,11 +1300,64 @@ def test_the_first_run_bootstrap_is_shed_rather_than_queued(
     assert held.acquire(timeout=5), "the account-file lock was already held"
     try:
         start = time.time()
-        refused = give_password(client)
+        with caplog.at_level("WARNING"):
+            refused = give_password(client)
         waited = time.time() - start
     finally:
         held.release()
 
+    #: The DESTINATION and the reason, not just the status. A successful first factor also
+    #: answers 302, and `/api/registers` also answers 401 while the second factor is
+    #: pending, so neither alone separates a shed from a sign-in that worked. An engineering
+    #: gate found this test killing its mutant by deadlock rather than by its assertions.
     assert refused.status_code == 302, "a shed first-run sign-in was not refused"
+    assert refused.headers.get("Location", "").endswith("/sign-in"), (
+        f"the caller went on to {refused.headers.get('Location')!r} instead of being shed"
+    )
     assert waited < 3.0, f"the first-run caller queued for {waited:.2f}s instead of being shed"
+    assert "busy" in caplog.text, f"the shed was not recorded as a capacity event: {caplog.text!r}"
     assert client.get("/api/registers").status_code == 401, "a shed sign-in granted a session"
+
+
+def test_a_starved_bootstrap_is_deferred_rather_than_reported_as_a_failure(
+    app: Flask, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A capacity event on the boot path must not read as a configuration error.
+
+    `new_account` hashes, so a starved slot raises `ServiceBusyError`, which subclasses
+    `AccountError`. Caught by the generic clause it was logged with a traceback as
+    "bootstrap administrator not created", sending an operator to look for a configuration
+    fault when the machine was briefly out of hashing capacity. That is the same
+    busy-versus-fault conflation `_shed_under_load` exists to separate, on the one path
+    where nobody is signed in to notice.
+
+    The explicit clause was added and an engineering gate found all three of its statements
+    at zero hits: `ServiceBusyError` subclasses `AccountError`, so deleting the clause
+    changes nothing outwardly and the whole suite survived the mutant. This drives it.
+
+    The list must still be EMPTY afterwards, which is what makes the deferral honest: the
+    next sign-in tries again, so a momentary shortage costs a retry rather than the
+    administrator.
+    """
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    stored = accounts.accounts_path(data_dir)
+    if stored.exists():
+        stored.unlink()
+
+    def _starved(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise accounts.ServiceBusyError("no slot for the bootstrap hash")
+
+    monkeypatch.setattr(accounts, "new_account", _starved)
+    with caplog.at_level("WARNING"), app.app_context():
+        created = auth.ensure_bootstrap(data_dir)
+
+    assert created is False, "a starved bootstrap reported that it had created an account"
+    assert "deferred" in caplog.text, (
+        f"the shortage was not recorded as a deferral: {caplog.text!r}"
+    )
+    assert "no hashing slot" in caplog.text, "the reason was not recorded"
+    assert "not created" not in caplog.text, (
+        "a capacity event was reported to the operator as a bootstrap failure"
+    )
+    assert "Traceback" not in caplog.text, "a capacity event was logged with a traceback"
+    assert not accounts.load(data_dir), "a starved bootstrap left an account behind"
