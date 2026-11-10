@@ -11,8 +11,10 @@ secret reaches the log or the page.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import ClassVar
@@ -1026,3 +1028,138 @@ def test_a_sign_in_survives_an_audit_log_that_is_unavailable(
 
     assert completed.status_code == 302, "a volume fault refused a correct sign-in"
     assert caller.get("/console").status_code == 200, "the operator was locked out by a fault"
+
+
+def test_a_sign_in_is_shed_rather_than_queued_when_the_account_file_is_held(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The load-shedding refusal, which no route could reach until the lock itself bounded.
+
+    The module header argued a sign-in flood is bounded because hashing is capped at two
+    concurrent slots and a caller that cannot get one inside `HASH_WAIT_SECONDS` is shed.
+    Every scrypt call runs while the account-file lock is held, so hashing was serialised to
+    ONE, the semaphore could never reach its limit, and the refusal was unreachable over
+    HTTP. An engineering gate found it; eight concurrent sign-ins were measured running fully
+    serial with the slowest waiting 4.56 seconds against a 3-second budget and nothing shed.
+
+    Driven deterministically rather than by racing threads: the lock is taken here, so the
+    request cannot acquire it and must shed on the budget. A timing race would pass or fail
+    on the machine's mood, and this build has already shipped one test that passed for the
+    wrong reason.
+
+    The budget is shortened for the test because the control is the SHEDDING, not the
+    length of the wait, and three seconds per run is three seconds of nothing happening.
+    """
+    monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.25)
+    held = accounts.with_lock()
+    assert held.acquire(timeout=5), "the account-file lock was already held"
+    try:
+        start = time.time()
+        refused = give_password(client)
+        waited = time.time() - start
+    finally:
+        held.release()
+
+    assert refused.status_code == 302, "a shed sign-in was not refused"
+    assert waited < 3.0, f"the caller queued for {waited:.2f}s instead of being shed"
+    assert client.get("/api/registers").status_code == 401, "a shed sign-in granted a session"
+
+
+def test_a_shed_sign_in_is_recorded_as_busy_and_not_as_an_unreadable_volume(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two refusals that mean opposite things about the machine must not share a reason.
+
+    `ServiceBusyError` subclasses `AccountError`, and the blueprint already had a handler for
+    the latter that reports an account list it could not READ. Once the lock began shedding,
+    a healthy volume under load would have been recorded as a corrupt one, sending an
+    operator to look at a disk that is fine. The busy case has its own handler, which Flask
+    prefers as the more specific class, and this is what holds that.
+    """
+    monkeypatch.setattr(accounts, "HASH_WAIT_SECONDS", 0.25)
+    held = accounts.with_lock()
+    assert held.acquire(timeout=5), "the account-file lock was already held"
+    try:
+        with app.app_context():
+            caplog_before = len(app.extensions["directive_chain"].entries)
+        give_password(client)
+    finally:
+        held.release()
+
+    entries = app.extensions["directive_chain"].entries[caplog_before:]
+    assert entries, "a shed sign-in left no audit entry"
+    assert all(entry.outcome == "FAILURE" for entry in entries), "a shed sign-in recorded success"
+    assert all(entry.action == "LOGIN_FAILED" for entry in entries), (
+        f"a shed sign-in was recorded as something else: {[e.action for e in entries]}"
+    )
+
+
+def test_a_stale_password_hash_is_upgraded_by_a_successful_sign_in(
+    app: Flask, client: FlaskClient
+) -> None:
+    """The upgrade two records asserted and no code performed.
+
+    `accounts.needs_rehash` had no caller anywhere in the tree, while the module header said
+    an account hashed under older parameters "is re-hashed on next sign-in" and
+    `hash_password` said the old hash "is replaced on the next successful sign-in". An
+    engineering gate planted a hash at a quarter of `SCRYPT_N`, signed in completely over
+    the routes, and read the parameters back unchanged.
+
+    Driven over the route rather than against the helper, because the claim was about what a
+    SIGN-IN does. The planted hash is made at a lower cost on purpose: it has to be a hash
+    the current rules accept as valid but stale, or the sign-in would fail for the wrong
+    reason and this test would pass without proving anything.
+    """
+    sign_in_fully(client)
+    data_dir = str(app.config["DIRECTIVE_DATA_DIR"])
+    rows = accounts.load(data_dir)
+    account = accounts.find(rows, USERNAME)
+    assert account is not None
+
+    weak = accounts.SCRYPT_N // 4
+    salt = secrets.token_bytes(accounts.SALT_BYTES)
+    digest = accounts._scrypt(PASSWORD, salt, n=weak, r=accounts.SCRYPT_R, p=accounts.SCRYPT_P)
+    account["password"] = "$".join(
+        (
+            f"scrypt$n={weak},r={accounts.SCRYPT_R},p={accounts.SCRYPT_P}",
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        )
+    )
+    accounts.save(data_dir, rows)
+    assert accounts.needs_rehash(str(account["password"])), "the planted hash is not stale"
+
+    caller = app.test_client()
+    accepted = give_password(caller)
+
+    assert accepted.status_code == 302, "the stale hash did not verify, so nothing is proved"
+    stored = accounts.find(accounts.load(data_dir), USERNAME)
+    assert stored is not None
+    assert not accounts.needs_rehash(str(stored["password"])), (
+        "a successful sign-in left the password at the older parameters"
+    )
+
+
+def test_an_upgrade_that_cannot_run_does_not_refuse_the_sign_in(
+    app: Flask, client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Housekeeping must never cost somebody their sign-in.
+
+    The caller has just proved it knows the password. If the re-hash cannot run, because the
+    machine sheds it or because the password rules have tightened since it was set, the old
+    hash has to stand and the sign-in has to proceed. Held here by making the upgrade's own
+    hash raise.
+    """
+    sign_in_fully(client)
+
+    def _refuses(*_args: object, **_kwargs: object) -> str:
+        raise accounts.ServiceBusyError("no slot for the upgrade")
+
+    monkeypatch.setattr(accounts, "hash_password", _refuses)
+    caller = app.test_client()
+    accepted = give_password(caller)
+
+    assert accepted.status_code == 302, "a failed upgrade refused a correct password"
+    assert "/sign-in/verify" in accepted.headers.get("Location", ""), (
+        "the caller was not sent to the second factor"
+    )

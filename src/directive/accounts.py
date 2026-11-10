@@ -25,9 +25,20 @@ and named by OWASP at these parameters. The trade is recorded rather than assume
 sized at 1 GiB and gunicorn runs one worker with eight threads, so eight simultaneous
 sign-ins would ask for 1 GiB of scrypt alone and the pod would be killed. Worse, eight
 threads blocked on hashing leaves none for the liveness probe, and the platform restarts a
-container that cannot answer it. So hashing is bounded by a semaphore of two, a ceiling of
-256 MiB, and a caller that cannot get a slot within a short wait is refused rather than
-queued. Shedding a sign-in is survivable; a restart loop under load is not.
+container that cannot answer it. Shedding a sign-in is survivable; a restart loop under load
+is not.
+
+**Where that bound actually lives, corrected after an engineering gate measured it.** This
+paragraph used to say hashing is bounded by a semaphore of two, a ceiling of 256 MiB, and a
+caller that cannot get a slot inside a short wait is refused rather than queued. The
+semaphore exists and the refusal exists, but every scrypt call on every route runs while the
+file lock is held, so hashing was already serialised to ONE and the semaphore could never
+reach its limit: over HTTP the refusal was unreachable and callers queued without bound.
+Eight concurrent sign-ins ran fully serial and the slowest waited 4.56 seconds against a
+3-second budget, shedding nothing. The bound is now on the LOCK, in `held_or_busy`, which is
+where the queue forms. Hashing stays serialised at one, so the real ceiling is 128 MiB and
+the cost is throughput; the semaphore remains as a second ceiling and still covers
+`absorb_timing`, which is the one hashing path that does not hold the lock.
 
 **What this module does not do.** It does not decide who may sign in, write audit entries,
 or touch a session. Those belong to ``auth`` and ``views.auth_routes``. This module answers
@@ -38,6 +49,7 @@ owns the file that holds the stored one.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -46,6 +58,7 @@ import secrets
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -340,6 +353,38 @@ def needs_rehash(stored: str) -> bool:
 #: can subtract, and real hashing tracks the machine's own speed.
 _DECOY = hash_password("decoy-account-password-never-used-" + secrets.token_hex(16))
 
+
+
+def upgrade_hash_if_stale(account: dict[str, Any], password: object) -> bool:
+    """Re-hash a stored password under current parameters. Returns whether it changed.
+
+    **The caller `needs_rehash` did not have, and two records said it did.** The module
+    header said "an account hashed under older parameters still verifies and is re-hashed on
+    next sign-in" and `hash_password` said the old hash "is replaced on the next successful
+    sign-in". Neither happened: the predicate had no caller anywhere in the tree, and an
+    engineering gate proved it by planting a hash at a quarter of `SCRYPT_N`, signing in
+    completely over the routes, and reading the parameters back unchanged. A dead predicate
+    that reads as a held control is the class this release already deleted three functions
+    for, so this is wired rather than the claims being deleted: raising the cost as OWASP
+    raises it is worth having, and it is the reason the parameters are stored beside the
+    hash at all.
+
+    Never refuses a sign-in. The caller has just proved it knows the password, so a failure
+    to upgrade is a worse outcome than an old hash: `check_password_rules` could refuse a
+    password that was valid when it was set if the rules have since tightened, and the hash
+    itself can be shed under load. Both answer False and leave the stored hash alone.
+    """
+    stored = str(account.get("password", ""))
+    if not isinstance(password, str) or not needs_rehash(stored):
+        return False
+    try:
+        account["password"] = hash_password(password)
+    except AccountError:
+        #: Includes `ServiceBusyError`. An upgrade is housekeeping and must never cost
+        #: somebody their sign-in, so the old hash stands and the next sign-in tries again.
+        return False
+    account["updated"] = _now_text()
+    return True
 
 def absorb_timing() -> None:
     """Spend the same hashing effort a real verification would, and discard it.
@@ -906,5 +951,52 @@ def with_lock() -> threading.Lock:
     One lock for the whole file rather than one per account: a change to any account
     rewrites the whole list, so two concurrent changes to two different accounts would
     still lose one of them.
+
+    Unbounded, and therefore for AUTHENTICATED routes only. A caller that can reach these
+    has already presented a credential, so the queue is bounded by the people who hold one.
+    The unauthenticated flood surface uses `held_or_busy` instead, for the reason recorded
+    there.
     """
     return _file_lock
+
+
+@contextlib.contextmanager
+def held_or_busy(timeout: float | None = None) -> Iterator[None]:
+    """Hold the account-file lock for a bounded time, or refuse rather than queue.
+
+    **The control the module header claimed the semaphore was, measured and found absent.**
+    That header argued a sign-in flood is bounded because hashing is capped at two
+    concurrent slots and a caller that cannot get one inside `HASH_WAIT_SECONDS` is shed.
+    Every scrypt call on every route happens while the file lock above is held, so hashing
+    was already serialised to ONE and the semaphore could never reach its limit: the
+    shedding refusal was unreachable over HTTP. An engineering gate found it by reading the
+    code and it was reproduced here before this function existed, with eight concurrent
+    sign-ins against a stand-in hash of half a second each:
+
+        peak concurrent hashes measured: 1
+        8 concurrent sign-ins: wall 4.60s, fully serial
+        slowest request: 4.56s, with HASH_WAIT_SECONDS = 3.0, and nothing shed
+
+    Callers queued on an untimed lock for as long as it took. The container runs one worker
+    with eight threads, so a sustained flood occupies every thread and the liveness probe
+    has none left, which is the restart loop the header exists to prevent.
+
+    So the WAIT is bounded here, where the queue actually forms. Be exact about what that
+    buys and what it does not, because the header over-claimed once already. It bounds how
+    long any one caller occupies a thread and it makes the refusal reachable. It does NOT
+    restore the two-at-a-time hashing the header implied: hashing stays serialised at one,
+    which costs throughput and halves the 256 MiB ceiling to 128 MiB. The serialisation is
+    now a stated property rather than an accident of where the lock sits.
+    """
+    #: Resolved HERE rather than as a default argument, which is how it was first written.
+    #: A default binds at definition time, so `HASH_WAIT_SECONDS` became a number frozen at
+    #: import and changing the constant changed nothing: not for an operator tuning it, and
+    #: not for a test, which is how it was caught. A tunable that cannot be tuned is worse
+    #: than a literal, because it reads as a control.
+    budget = HASH_WAIT_SECONDS if timeout is None else timeout
+    if not _file_lock.acquire(timeout=budget):
+        raise ServiceBusyError("the sign-in service is busy. Try again in a moment.")
+    try:
+        yield
+    finally:
+        _file_lock.release()

@@ -582,7 +582,14 @@ def ensure_bootstrap(data_dir: str) -> bool:
     password = config.env("BOOTSTRAP_ADMIN_PASSWORD")
     if not username or not password:
         return False
-    with accounts.with_lock():
+    #: Bounded, because this runs on the unauthenticated sign-in path, and hashes while it
+    #: holds the lock. Bounding the three route bodies alone left this acquire unbounded
+    #: AHEAD of them, so a request could still queue here without limit before reaching a
+    #: shed it would never arrive at. A deterministic test deadlocked on exactly that and is
+    #: what found it. `break_glass_unlock` below keeps the unbounded lock deliberately: it
+    #: runs at BOOT with no caller waiting, where shedding would mean failing to unlock an
+    #: administrator rather than protecting a thread.
+    with accounts.held_or_busy():
         rows = accounts.load(data_dir)
         if rows:
             return False

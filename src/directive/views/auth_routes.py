@@ -202,7 +202,7 @@ def sign_in_submit() -> Response:
         accounts.absorb_timing()
         return _refuse("the submitted username is not usable")
 
-    with accounts.with_lock():
+    with accounts.held_or_busy():
         rows = accounts.load(_data_dir())
         account = accounts.find(rows, username)
         if not accounts.may_sign_in(account):
@@ -236,6 +236,11 @@ def sign_in_submit() -> Response:
             # return-statement cap. They do different things on the way here and say
             # different things in the log, which is what matters.
             return _refuse(refusal)
+        #: The password was right, so this is the moment the parameters can be raised: the
+        #: plaintext is in hand and will not be again. Housekeeping, and it never refuses a
+        #: sign-in, which is why its result is only a reason to save.
+        if accounts.upgrade_hash_if_stale(account, request.form.get("password")):
+            accounts.save(_data_dir(), rows)
         enrolled = accounts.is_enrolled(account)
         epoch = accounts.epoch_of(account)
 
@@ -315,7 +320,7 @@ def verify_submit() -> Response:
         return _refuse("the second factor was presented with no pending sign-in")
 
     supplied = (request.form.get("code") or "").strip()
-    with accounts.with_lock():
+    with accounts.held_or_busy():
         rows = accounts.load(_data_dir())
         account = accounts.find(rows, username)
         if not accounts.may_sign_in(account):
@@ -475,7 +480,7 @@ def enrol_submit() -> Response:
     if not username:
         return _refuse("enrolment was submitted with no pending sign-in")
 
-    with accounts.with_lock():
+    with accounts.held_or_busy():
         rows = accounts.load(_data_dir())
         account = accounts.find(rows, username)
         #: `is_enrolled` rides with `may_sign_in` here, in one branch, which is the shape
@@ -551,6 +556,24 @@ def _never_stored(body: str) -> Response:
     return response
 
 
+@auth_bp.errorhandler(accounts.ServiceBusyError)
+def _shed_under_load(error: accounts.ServiceBusyError) -> Response:
+    """Turn a load-shed into a recorded refusal with its own reason, never a 500.
+
+    Separate from the sibling below because the two say opposite things about the machine: a
+    busy refusal means the volume is healthy and the queue is full, and recording it as an
+    unreadable account list would send an operator to look at a volume that is fine. The
+    distinction already exists one layer down, where `ServiceBusyError` was given its own
+    class precisely so a capacity event could not be counted as a wrong password.
+
+    Reachable from any route on this blueprint now that `accounts.held_or_busy` bounds the
+    wait for the file lock. Before that the lock was untimed, so the caller queued and this
+    handler could not fire.
+    """
+    current_app.logger.warning("sign-in shed under load: %s", error)
+    return _refuse("the sign-in service is busy")
+
+
 @auth_bp.errorhandler(accounts.AccountError)
 def _unreadable_account_list(error: accounts.AccountError) -> Response:
     """Turn an account list this process cannot READ into a recorded refusal, never a 500.
@@ -565,7 +588,11 @@ def _unreadable_account_list(error: accounts.AccountError) -> Response:
 
     Registered as a handler rather than wrapped around each of the four reads, because a
     `try` per call site is four places to forget and this is one. `ServiceBusyError` is a
-    subclass and is caught explicitly upstream, so it never reaches here.
+    subclass and has its own handler below, which Flask prefers because it is the more
+    specific class. That sentence used to say the busy case "never reaches here" because it
+    was caught explicitly upstream; it reaches the blueprint now that the file lock itself
+    sheds, and a load-shedding refusal recorded as "the account list could not be read"
+    would be a false record of a healthy volume.
 
     **The reach of this handler depends on `accounts.load` converting EVERY operating-system
     error, and for one round it did not.** `Path.exists` sat outside that function's `try`,
