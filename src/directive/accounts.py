@@ -683,8 +683,22 @@ def finish_enrolment(
         #: a second layer still stands here is one edit from removing `enrol_submit`'s
         #: `is_enrolled` branch or its token guard, neither of which has a second layer.
         #:
-        #: What is true now: this branch is reachable by any POST from a session without a
-        #: token, which needs no stale state and no race, and it is held by a test.
+        #: What is true now, and stated carefully because the first version of this sentence
+        #: said "it is held by a test" while the line had never been executed by one. The
+        #: coverage report said so plainly and the claim went in anyway, which is the round-12
+        #: defect repeated inside the fix for it, one sentence later.
+        #:
+        #: This branch is REDUNDANT. `totp._decode` refuses an empty secret, so without it the
+        #: call below raises `TotpError`, the handler catches it, and the answer is the same
+        #: `None`. Neither layer is exercised by the suite and the coverage report names both.
+        #: It is kept as defence in depth rather than deleted, because the cost is one branch
+        #: and what it guards is an empty string reaching a decoder.
+        #:
+        #: What IS held, by a route test, is the composition that matters: a POST from a
+        #: session carrying the pending marker and no enrolment token is refused, signs nobody
+        #: in, and writes no secret. Reaching it needs a cookie minted before this release and
+        #: signed with the same key, because `begin_second_factor` sets both keys together and
+        #: `abandon_second_factor` clears them together.
         return None
     try:
         matched = totp.matching_step(secret, code if isinstance(code, str) else "", now=now)

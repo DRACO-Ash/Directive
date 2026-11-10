@@ -1489,6 +1489,76 @@ def test_the_enrolment_page_refuses_an_account_that_already_has_a_factor(
     )
 
 
+def test_a_tokenless_post_confirms_nothing_and_signs_nobody_in(
+    app: Flask, admin: FlaskClient
+) -> None:
+    """The refusal at the POST, which no test had ever executed.
+
+    `finish_enrolment`'s empty-secret branch was described in a comment as held by a test
+    while the coverage report listed the line as never executed across the whole suite, and
+    the route-level composition was unheld too. A gate found the sentence; this is the test
+    that makes the behaviour true rather than the sentence.
+
+    Driven at the boundary rather than by calling the function, because the composition is
+    what matters: a POST from a session carrying the pending marker and no enrolment token
+    must be refused, must sign nobody in, and must write no secret. Reaching that state needs
+    a cookie from before the release that minted the token at the first factor, since
+    `begin_second_factor` sets both keys together and `abandon_second_factor` clears them
+    together, so the session is built here directly rather than pretending a live path
+    produces it.
+
+    The branch itself is redundant and the comment beside it now says so: `totp._decode`
+    refuses an empty secret, so the answer would be the same without it. What this holds is
+    the outcome, which is the part an attacker would notice.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+    with caller.session_transaction() as held:
+        del held[auth.ENROLMENT_KEY]
+        #: Written straight onto the session rather than scraped from the page, because the
+        #: page is a redirect for a tokenless sign-in: there is no form to read one from, and
+        #: scraping would refuse this POST at the request-token check instead of at the gate
+        #: under test.
+        held["directive_csrf"] = "a-token-this-session-owns"
+
+    refused = caller.post(
+        "/sign-in/enrol",
+        data={"code": "123456", "csrf_token": "a-token-this-session-owns"},
+    )
+
+    assert refused.status_code == 302, "a tokenless POST was accepted"
+    assert not accounts.is_enrolled(_stored(app, MEMBER)), "a tokenless POST confirmed a factor"
+    with caller.session_transaction() as held:
+        assert auth.ACTOR_KEY not in held, "a tokenless POST signed the caller in"
+
+
+def test_a_wrong_enrolment_code_is_refused_at_the_route(app: Flask, admin: FlaskClient) -> None:
+    """The route's own refusal of a wrong code, executed by no test until now.
+
+    `finish_enrolment` returning None for a wrong code is held at the unit level. The
+    composition at the route was not: wrong code in, refusal out, nobody signed in, nothing
+    written. The coverage report listed the refusal line as never executed, which a gate
+    raised, and it is a coverage gap rather than a design choice.
+    """
+    _post(admin, "/accounts/create", username=MEMBER, password=PHRASE, role=accounts.MEMBER)
+    caller = app.test_client()
+    _give_first_factor(caller, MEMBER, PHRASE)
+    page = caller.get("/sign-in/enrol").get_data(as_text=True)
+    served = re.search(r'class="secret mono">([A-Z2-7]+)<', page)
+    token = re.search(r'name="csrf_token" value="([^"]+)"', page)
+    assert served is not None
+    assert token is not None
+
+    wrong = f"{(int(totp.code_now(served.group(1))) + 1) % 1000000:06d}"
+    refused = caller.post("/sign-in/enrol", data={"code": wrong, "csrf_token": token.group(1)})
+
+    assert refused.status_code == 302, "a wrong enrolment code was accepted"
+    assert not accounts.is_enrolled(_stored(app, MEMBER)), "a wrong code confirmed a factor"
+    with caller.session_transaction() as held:
+        assert auth.ACTOR_KEY not in held, "a wrong code signed the caller in"
+
+
 def test_abandoning_a_half_finished_sign_in_clears_its_enrolment_token(
     app: Flask, admin: FlaskClient
 ) -> None:

@@ -530,11 +530,27 @@ half-finished sign-ins from colliding on one token. The constant's comment and t
 asserting it both said otherwise, and that file had already been corrected once for the same
 kind of reach.
 
-**Worth stating because it has held for four rounds.** Every binding finding since the ninth
-has been a record over-claiming rather than a missing control: three bounds asserted wider
-than they held, then a deleted control still described as live. The code survived direct
-attack each time. What kept failing was the prose around it, written in the same commit as
-the change it described, by the author best placed to believe it.
+**A pattern worth stating, and the first version of this paragraph got it wrong in the
+direction that flatters.** What it said was that every binding finding since the ninth round
+had been a record rather than a missing control, and that "the code survived direct attack
+each time". The gate checked that against this project's own table and three of the four
+rounds contradict it. The ninth round's two MAJORs were both missing controls: a username the
+account boundary accepted and the audit boundary refused, and the enrolment page as a write
+amplifier at twelve writes from one password hash. The tenth round's MAJOR was that same
+amplifier repriced, still measured at 50 writes from two password verifications. The
+eleventh round's PRIMARY MAJOR was the per-session bound defeated in one line of attacker
+code, at 50 writes again, and the same round found a confirmed-factor replacement with a
+live session on the end of it, which this release had introduced one commit earlier. Only
+the twelfth round's MAJOR was purely a record.
+
+What IS true is narrower and still worth keeping: **a record over-claiming has been among
+the findings in every round since the ninth**, the prose was written in the same commit as
+the change it described, and the author was in every case the one best placed to believe it.
+The corrected sentence is left in place of the wrong one rather than the paragraph being
+deleted, because the wrong one is the clearest instance of the pattern it was trying to
+describe: it was the newest sentence in a shipped, assessor-facing record, it made a claim
+about what a gate had measured, and what it told the next reader was to stop attacking the
+code, at a commit where a control was held by nothing.
 
 **Deviations open at this release.** The audit-chain deviation from AUD-001, unchanged.
 And now AMD-001 section 10.4, which names Entra ID: two factors are still required on every
