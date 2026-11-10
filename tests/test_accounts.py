@@ -208,7 +208,16 @@ def test_the_work_axis_decides_once_the_parallelism_is_raised(
     """
     monkeypatch.setattr(accounts, "SCRYPT_P", 2)
 
-    same_memory_less_work = _planted(accounts.SCRYPT_N, accounts.SCRYPT_R, 1)
+    #: Assembled rather than hashed. `needs_rehash` only parses, so no digest is needed,
+    #: and `_planted` would run a full 128 MiB scrypt for nothing. The comment beside the
+    #: stronger-hash plant above says exactly this and this test ignored it in the same
+    #: commit, which matters because that plant's 321 MiB peak is recorded as a budget
+    #: against an App Store limit marked `TBC, re-verify`.
+    same_memory_less_work = (
+        f"scrypt$n={accounts.SCRYPT_N},r={accounts.SCRYPT_R},p=1$"
+        f"{base64.b64encode(b'x' * accounts.SALT_BYTES).decode('ascii')}$"
+        f"{base64.b64encode(b'y' * 32).decode('ascii')}"
+    )
 
     assert accounts.needs_rehash(same_memory_less_work), (
         "with the parallelism raised, a hash at the old p was not flagged, so the work axis "

@@ -1752,3 +1752,27 @@ def test_a_refused_new_password_says_why_and_not_that_the_volume_is_unreadable(
     assert accounts.verify_password(str(_stored(app, MEMBER)["password"]), PHRASE), (
         "a refused change altered the stored password"
     )
+
+
+def test_an_unusable_username_in_a_url_is_no_such_account_not_an_unreadable_volume(
+    app: Flask, admin: FlaskClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`_resolve`'s refusal, at zero hits, on a route any administrator can reach.
+
+    A username arriving in a URL goes through `normalise_username`, which refuses a leading
+    formula character among other things. Without this clause the `AccountError` reaches the
+    blueprint handler and answers 503 "The account list could not be read. An operator
+    should check the volume." for a volume that is healthy and a request that was simply
+    malformed. Same class as the two clauses held above it, and reachable by typing.
+    """
+    with caplog.at_level("ERROR"):
+        answered = _post(admin, "/accounts/%3Dfoo@bluestaq.uk/state", state=accounts.DISABLED)
+
+    assert answered.status_code == 302, f"a malformed username answered {answered.status_code}"
+    location = answered.headers.get("Location", "")
+    assert "no+such+account" in location or "no such account" in location, (
+        f"the administrator was not told the account does not exist: {location!r}"
+    )
+    assert "could not be read" not in caplog.text, (
+        "a malformed username was reported as an unreadable volume"
+    )
