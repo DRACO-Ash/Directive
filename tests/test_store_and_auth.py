@@ -22,6 +22,7 @@ from directive.audit.journal import read_entries
 from directive.records import RecordError
 from directive.store import StoreError
 from directive.views import refusals
+from directive.views.health import CRITICAL_INPUTS
 
 SUITE_KEY = bytes(range(32)).hex()
 
@@ -802,6 +803,60 @@ def test_the_environment_variable_is_documented(monkeypatch: pytest.MonkeyPatch)
     root = Path(__file__).resolve().parents[1]
     assert "DIRECTIVE_ENV" in (root / ".env.example").read_text(encoding="utf-8")
     assert "DIRECTIVE_ENV" in (root / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+
+#: The four variables the Entra ID identity provider needed. They are gone from the code,
+#: and a file that still names them is not merely out of date: it is a list an operator
+#: fills in. The V2.4 deploy failed with `TENANT_ID=set, CLIENT_ID=MISSING,
+#: CLIENT_SECRET=MISSING, REDIRECT_URI=set`, which is what working part-way down a list
+#: looks like in a pod log.
+RETIRED_INPUTS: tuple[str, ...] = ("TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI")
+
+
+def _environment_example() -> str:
+    """Return the shipped variable list, read by both directions below."""
+    return (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
+
+
+def test_the_environment_example_names_what_this_build_actually_needs() -> None:
+    """The shipped variable list must name every input this build requires.
+
+    Split from its sibling below deliberately. One test asserting both directions reports
+    only the first failure, so a file that was BOTH missing a required name and carrying a
+    retired one would be fixed half way and look finished. `build-package.sh` carries two
+    tests for its one-version rule for the same reason.
+
+    `.env.example` ships at the root of the upload package, so it is the list an operator
+    configuring the App Store console works from. Nothing held its CONTENTS against the
+    code until now: the sibling above pins one name, `DIRECTIVE_ENV`, and that was all.
+
+    Both directions matter and the second is the one with teeth. A MISSING name is how the
+    bootstrap pair goes unset, and with an empty account list and no bootstrap pair the
+    application BOOTS, every pipeline stage passes, and nobody can sign in, because
+    production does not offer the self-asserted path. That is worse than the V2.4 crash
+    this test is named after, which at least said what was wrong in its last line. A
+    RETIRED name is how an operator spends a deploy setting variables nothing reads.
+
+    Derived from `CRITICAL_INPUTS` rather than from a list written out here, so the file
+    and the code cannot drift apart silently the next time an input is added.
+    """
+    #: Names only, never the text. The file holds placeholders rather than credentials, but
+    #: a test that prints a dotenv file into a failure message teaches the suite a habit
+    #: that is wrong the first time the file is not what it should be.
+    absent = [name for name in CRITICAL_INPUTS if name not in _environment_example()]
+    assert not absent, f".env.example does not name what this build requires: {absent}"
+
+
+def test_the_environment_example_names_nothing_this_build_retired() -> None:
+    """And it must name nothing the code no longer reads.
+
+    A retired name is not a stale comment. It is a line in the list an operator fills in,
+    and the time they spend on it is time not spent on the names that matter.
+    """
+    retired = [name for name in RETIRED_INPUTS if name in _environment_example()]
+    assert not retired, (
+        f".env.example still names variables no code reads, which an operator will set: {retired}"
+    )
 
 
 def test_a_hostile_actor_cannot_suppress_the_failed_sign_in_entry(
